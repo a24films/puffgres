@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Row};
+use rusqlite::{Row, params};
 
 use crate::{StateDb, StateError};
 
@@ -18,7 +18,13 @@ impl ConfigRecord {
         let applied_at_str: String = row.get(5)?;
         let applied_at = DateTime::parse_from_rfc3339(&applied_at_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e)))?;
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5, // the column of applied_at - see above
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
 
         Ok(Self {
             name: row.get(0)?,
@@ -31,7 +37,8 @@ impl ConfigRecord {
     }
 }
 
-const CONFIG_SELECT_COLS: &str = "name, version, namespace, content_hash, transform_hash, applied_at";
+const CONFIG_SELECT_COLS: &str =
+    "name, version, namespace, content_hash, transform_hash, applied_at";
 
 impl StateDb {
     pub fn ensure_configs_table(&self) -> Result<(), StateError> {
@@ -69,9 +76,10 @@ impl StateDb {
     }
 
     pub fn get_config(&self, name: &str) -> Result<Option<ConfigRecord>, StateError> {
-        let mut stmt = self
-            .conn()
-            .prepare(&format!("SELECT {} FROM configs WHERE name = ?1", CONFIG_SELECT_COLS))?;
+        let mut stmt = self.conn().prepare(&format!(
+            "SELECT {} FROM configs WHERE name = ?1",
+            CONFIG_SELECT_COLS
+        ))?;
 
         let mut rows = stmt.query(params![name])?;
         match rows.next()? {
