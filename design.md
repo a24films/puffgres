@@ -1,0 +1,3 @@
+
+A few design choices throughout:
+- **State lives in separate SQLite db**. Puffgres is designed around separating replication from the operations of the primary db. Keeping shared state in Postgres (which we did in an early working version) meant that rollbacks would also wipe Puffgres state, making it much harder to recover cleanly. There's just a few tables so we skipped an ORM / rusqlite was more than enough. 

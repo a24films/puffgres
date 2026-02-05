@@ -3,6 +3,10 @@ use rusqlite::{Row, params};
 
 use crate::{StateDb, StateError};
 
+const CONFIG_SELECT_COLS: &str =
+    "name, version, namespace, content_hash, transform_hash, applied_at";
+const COL_APPLIED_AT: usize = 5;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigRecord {
     pub name: String,
@@ -15,12 +19,12 @@ pub struct ConfigRecord {
 
 impl ConfigRecord {
     fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
-        let applied_at_str: String = row.get(5)?;
+        let applied_at_str: String = row.get(COL_APPLIED_AT)?;
         let applied_at = DateTime::parse_from_rfc3339(&applied_at_str)
             .map(|dt| dt.with_timezone(&Utc))
             .map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    5, // the column of applied_at - see above
+                    COL_APPLIED_AT,
                     rusqlite::types::Type::Text,
                     Box::new(e),
                 )
@@ -36,9 +40,6 @@ impl ConfigRecord {
         })
     }
 }
-
-const CONFIG_SELECT_COLS: &str =
-    "name, version, namespace, content_hash, transform_hash, applied_at";
 
 impl StateDb {
     pub fn ensure_configs_table(&self) -> Result<(), StateError> {
