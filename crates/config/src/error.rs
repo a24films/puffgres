@@ -16,6 +16,9 @@ pub enum ConfigError {
     #[error("TOML parse error: {0}")]
     TomlError(#[from] toml::de::Error),
 
+    #[error("TOML serialization error: {0}")]
+    TomlSerError(#[from] toml::ser::Error),
+
     #[error("Config not found: {0}")]
     NotFound(String),
 }
