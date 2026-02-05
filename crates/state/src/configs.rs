@@ -5,6 +5,11 @@ use crate::{StateDb, StateError};
 
 const CONFIG_SELECT_COLS: &str =
     "name, version, namespace, content_hash, transform_hash, applied_at";
+const COL_NAME: usize = 0;
+const COL_VERSION: usize = 1;
+const COL_NAMESPACE: usize = 2;
+const COL_CONTENT_HASH: usize = 3;
+const COL_TRANSFORM_HASH: usize = 4;
 const COL_APPLIED_AT: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,11 +36,11 @@ impl ConfigRecord {
             })?;
 
         Ok(Self {
-            name: row.get(0)?,
-            version: row.get::<_, i64>(1)? as u64,
-            namespace: row.get(2)?,
-            content_hash: row.get(3)?,
-            transform_hash: row.get(4)?,
+            name: row.get(COL_NAME)?,
+            version: row.get::<_, i64>(COL_VERSION)? as u64,
+            namespace: row.get(COL_NAMESPACE)?,
+            content_hash: row.get(COL_CONTENT_HASH)?,
+            transform_hash: row.get(COL_TRANSFORM_HASH)?,
             applied_at,
         })
     }
