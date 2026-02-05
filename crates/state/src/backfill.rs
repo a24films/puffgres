@@ -261,5 +261,4 @@ mod tests {
         let result = db.save_backfill_progress(&progress);
         assert!(result.is_err());
     }
-
 }
