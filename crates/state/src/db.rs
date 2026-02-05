@@ -25,6 +25,13 @@ impl StateDb {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// Initialize all tables. Call once on startup.
+    pub fn initialize(&self) -> Result<(), StateError> {
+        self.ensure_configs_table()?;
+        self.ensure_streaming_checkpoints_table()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -50,5 +57,41 @@ mod tests {
 
         let db = StateDb::open(&path).unwrap();
         assert_eq!(db.path(), path.as_path());
+    }
+
+    #[test]
+    fn initialize_creates_all_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let db = StateDb::open(&path).unwrap();
+
+        // Initialize the database
+        db.initialize().unwrap();
+
+        // Verify each table exists by checking sqlite_master
+        let mut stmt = db
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(tables.contains(&"configs".to_string()));
+        assert!(tables.contains(&"streaming_checkpoints".to_string()));
+    }
+
+    #[test]
+    fn initialize_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let db = StateDb::open(&path).unwrap();
+
+        // Initialize multiple times - should not error
+        db.initialize().unwrap();
+        db.initialize().unwrap();
+        db.initialize().unwrap();
     }
 }
