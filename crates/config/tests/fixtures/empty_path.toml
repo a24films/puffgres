@@ -1,0 +1,14 @@
+name = "user_0001"
+version = 1
+namespace = "user"
+
+[source]
+schema = "public"
+table = "users"
+
+[id]
+column = "id"
+type = "uint"
+
+[transform]
+path = ""
