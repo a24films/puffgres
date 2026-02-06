@@ -87,24 +87,8 @@ mod tests {
 
     #[test]
     fn test_from_toml() {
-        let toml_str = r#"
-name = "user_0001"
-version = 1
-namespace = "user"
-
-[source]
-schema = "public"
-table = "user"
-
-[id]
-column = "id"
-type = "uint"
-
-[transform]
-path = "transforms/user.ts"
-"#;
-
-        let config = Config::from_toml(toml_str).unwrap();
+        let toml_str = std::fs::read_to_string("tests/fixtures/valid.toml").unwrap();
+        let config = Config::from_toml(&toml_str).unwrap();
         assert_eq!(config.name, "user_0001");
         assert_eq!(config.version, 1);
         assert_eq!(config.namespace, "user");

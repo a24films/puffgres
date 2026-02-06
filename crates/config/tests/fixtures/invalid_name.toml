@@ -1,0 +1,14 @@
+name = "123invalid"
+version = 1
+namespace = "user"
+
+[source]
+schema = "public"
+table = "users"
+
+[id]
+column = "id"
+type = "uint"
+
+[transform]
+path = "transforms/user.ts"
