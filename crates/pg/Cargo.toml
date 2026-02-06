@@ -9,3 +9,5 @@ thiserror = "2.0.18"
 tokio = { version = "1.43", features = ["full"] }
 
 [dev-dependencies]
+testcontainers = "0.26.0"
+testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
