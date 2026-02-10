@@ -1,6 +1,8 @@
 pub mod error;
+pub mod event;
 
 pub use error::ReplicationError;
+pub use event::{ColumnValue, Operation, RowEvent, TupleData};
 
 pub type Result<T> = std::result::Result<T, ReplicationError>;
 
