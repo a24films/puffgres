@@ -1,5 +1,6 @@
 pub mod connect;
 pub mod error;
+pub mod lsn;
 
 pub use error::PgError;
 
