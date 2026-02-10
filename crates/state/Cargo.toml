@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 thiserror = "2.0.18"
+
+[dev-dependencies]
+tempfile = "3.24.0"
