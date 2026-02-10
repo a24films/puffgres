@@ -10,7 +10,7 @@ struct TestContext {
 
 async fn setup_postgres() -> TestContext {
     let container = Postgres::default()
-        .with_tag("16-alpine")
+        .with_tag("17-alpine")
         .with_cmd(vec![
             "postgres".to_string(),
             "-c".to_string(),

@@ -1,5 +1,6 @@
 pub mod connect;
 pub mod error;
+pub mod publication;
 pub mod slot;
 
 pub use error::PgError;
