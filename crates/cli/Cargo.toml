@@ -11,6 +11,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 serde = { version = "1.0.228", features = ["derive"] }
+state = { path = "../state" }
 thiserror = "2.0.18"
 toml = "1.0.0"
 
