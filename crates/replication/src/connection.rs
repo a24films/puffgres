@@ -6,6 +6,7 @@ pub(crate) struct ParsedConnection {
     pub user: String,
     pub password: String,
     pub database: String,
+    pub sslmode: Option<String>,
 }
 
 pub(crate) fn parse_connection_string(s: &str) -> Result<ParsedConnection> {
@@ -20,6 +21,11 @@ pub(crate) fn parse_connection_string(s: &str) -> Result<ParsedConnection> {
     }
 
     let user = url.username();
+
+    let sslmode = url
+        .query_pairs()
+        .find(|(k, _)| k == "sslmode")
+        .map(|(_, v)| v.to_string());
 
     Ok(ParsedConnection {
         host: url.host_str().unwrap_or("localhost").to_string(),
@@ -38,6 +44,7 @@ pub(crate) fn parse_connection_string(s: &str) -> Result<ParsedConnection> {
                 path.to_string()
             }
         },
+        sslmode,
     })
 }
 

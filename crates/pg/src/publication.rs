@@ -71,10 +71,61 @@ pub async fn ensure_publication(
     tables: &[String],
 ) -> Result<()> {
     if publication_exists(client, publication_name).await? {
+        if !tables.is_empty() {
+            let current = get_publication_tables(client, publication_name).await?;
+            let missing: Vec<String> = tables
+                .iter()
+                .filter(|t| {
+                    let normalized = match t.split_once('.') {
+                        Some((schema, table)) => format!("{}.{}", schema, table),
+                        None => format!("public.{}", t),
+                    };
+                    !current.contains(&normalized)
+                })
+                .cloned()
+                .collect();
+            add_tables_to_publication(client, publication_name, &missing).await?;
+        }
         return Ok(());
     }
 
     create_publication(client, publication_name, tables).await
+}
+
+pub async fn add_tables_to_publication(
+    client: &Client,
+    publication_name: &str,
+    tables: &[String],
+) -> Result<()> {
+    if tables.is_empty() {
+        return Ok(());
+    }
+
+    let table_list: String = tables
+        .iter()
+        .map(|t| match t.split_once('.') {
+            Some((schema, name)) => {
+                format!("{}.{}", quote_identifier(schema), quote_identifier(name))
+            }
+            None => quote_identifier(t),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let query = format!(
+        "ALTER PUBLICATION {} ADD TABLE {}",
+        quote_identifier(publication_name),
+        table_list
+    );
+
+    client.execute(&query, &[]).await.map_err(|e| {
+        PgError::ReplicationError(format!(
+            "Failed to add tables to publication '{}': {}",
+            publication_name, e
+        ))
+    })?;
+
+    Ok(())
 }
 
 pub async fn get_publication_tables(
