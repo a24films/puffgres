@@ -89,6 +89,17 @@ impl StateDb {
         }
     }
 
+    /// Return the highest version among configs whose name starts with `<prefix>_`.
+    /// Returns 0 if no matching configs exist.
+    pub fn max_version_for_prefix(&self, prefix: &str) -> Result<i64, StateError> {
+        let pattern = format!("{prefix}_*");
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT MAX(version) FROM configs WHERE name GLOB ?1")?;
+        let max: Option<i64> = stmt.query_row(params![pattern], |row| row.get(0))?;
+        Ok(max.unwrap_or(0))
+    }
+
     pub fn list_configs(&self) -> Result<Vec<ConfigRecord>, StateError> {
         let mut stmt = self.conn().prepare(&format!(
             "SELECT {} FROM configs ORDER BY name",
@@ -182,6 +193,54 @@ mod tests {
     fn get_nonexistent_returns_none() {
         let (_dir, db) = setup_configs_db();
         assert!(db.get_config("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn max_version_no_matches() {
+        let (_dir, db) = setup_configs_db();
+        assert_eq!(db.max_version_for_prefix("film").unwrap(), 0);
+    }
+
+    #[test]
+    fn max_version_single_match() {
+        let (_dir, db) = setup_configs_db();
+        let mut config = sample_config("film_0001", 1);
+        config.namespace = "film_v1".to_string();
+        db.insert_config(&config).unwrap();
+
+        assert_eq!(db.max_version_for_prefix("film").unwrap(), 1);
+    }
+
+    #[test]
+    fn max_version_multiple_matches() {
+        let (_dir, db) = setup_configs_db();
+        let mut c1 = sample_config("film_0001", 1);
+        c1.namespace = "film_v1".to_string();
+        let mut c2 = sample_config("film_0002", 2);
+        c2.namespace = "film_v2".to_string();
+        let mut c3 = sample_config("film_0003", 3);
+        c3.namespace = "film_v3".to_string();
+
+        db.insert_config(&c1).unwrap();
+        db.insert_config(&c2).unwrap();
+        db.insert_config(&c3).unwrap();
+
+        assert_eq!(db.max_version_for_prefix("film").unwrap(), 3);
+    }
+
+    #[test]
+    fn max_version_ignores_other_prefixes() {
+        let (_dir, db) = setup_configs_db();
+        let mut c1 = sample_config("film_0001", 1);
+        c1.namespace = "film_v1".to_string();
+        let mut c2 = sample_config("actor_0001", 5);
+        c2.namespace = "actor_v5".to_string();
+
+        db.insert_config(&c1).unwrap();
+        db.insert_config(&c2).unwrap();
+
+        assert_eq!(db.max_version_for_prefix("film").unwrap(), 1);
+        assert_eq!(db.max_version_for_prefix("actor").unwrap(), 5);
     }
 
     #[test]
