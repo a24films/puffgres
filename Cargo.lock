@@ -308,9 +308,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.19.1"
+version = "3.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
+checksum = "5c6f81257d10a0f602a294ae4182251151ff97dbb504ef9afcdda4a64b24d9b4"
 
 [[package]]
 name = "byteorder"
@@ -358,15 +358,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-<<<<<<< HEAD
 version = "4.5.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5caf74d17c3aec5495110c34cc3f78644bfa89af6c8993ed4de2790e49b6499"
-=======
-version = "4.5.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63be97961acde393029492ce0be7a1af7e323e6bae9511ebfac33751be5e6806"
->>>>>>> ebd10a7 (feat(cli): initialize cli crate (#30))
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -374,15 +368,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-<<<<<<< HEAD
 version = "4.5.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "370daa45065b80218950227371916a1633217ae42b2715b2287b606dcd618e24"
-=======
-version = "4.5.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f13174bda5dfd69d7e947827e5af4b0f2f94a4a3ee92912fba07a66150f21e2"
->>>>>>> ebd10a7 (feat(cli): initialize cli crate (#30))
 dependencies = [
  "anstream",
  "anstyle",
@@ -1869,7 +1857,6 @@ dependencies = [
 name = "puffgres-cli"
 version = "0.1.0"
 dependencies = [
-<<<<<<< HEAD
  "chrono",
  "clap",
  "config",
@@ -1880,9 +1867,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml 1.0.2+spec-1.1.0",
-=======
- "clap",
->>>>>>> ebd10a7 (feat(cli): initialize cli crate (#30))
 ]
 
 [[package]]
@@ -3087,15 +3071,6 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 [[package]]
 name = "utf8parse"
 version = "0.2.2"
-<<<<<<< HEAD
-=======
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "uuid"
-version = "1.20.0"
->>>>>>> ebd10a7 (feat(cli): initialize cli crate (#30))
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
