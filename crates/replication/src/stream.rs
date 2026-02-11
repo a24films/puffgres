@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent};
+use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent, TlsConfig};
 
 use crate::connection::parse_connection_string;
 use crate::decoder::{self, WalMessage};
@@ -57,6 +57,13 @@ impl ReplicationStream {
     pub async fn connect(config: ReplicationStreamConfig) -> Result<Self> {
         let parsed = parse_connection_string(&config.connection_string)?;
 
+        let tls = match parsed.sslmode.as_deref() {
+            Some("require") => TlsConfig::require(),
+            Some("verify-ca") => TlsConfig::verify_ca(None),
+            Some("verify-full") => TlsConfig::verify_full(None),
+            _ => TlsConfig::disabled(),
+        };
+
         let mut repl_config = ReplicationConfig::new(
             parsed.host,
             parsed.user,
@@ -66,6 +73,7 @@ impl ReplicationStream {
             config.publication_name,
         )
         .with_port(parsed.port)
+        .with_tls(tls)
         .with_status_interval(config.status_interval);
 
         if let Some(lsn) = config.start_lsn {

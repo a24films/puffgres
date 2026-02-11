@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 tokio-postgres = "0.7.16"
+tokio-postgres-rustls-improved = { version = "0.16", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", features = ["ring"] }
+webpki-roots = "1.0"
 thiserror = "2.0.18"
 tokio = { version = "1.43", features = ["full"] }
 

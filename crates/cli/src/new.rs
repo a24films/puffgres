@@ -60,7 +60,7 @@ mod tests {
 
     use crate::test_utils::setup_project;
 
-    fn insert_applied_config(paths: &ProjectPaths, name: &str, version: i64) {
+    fn insert_applied_config(paths: &ProjectPaths, name: &str, version: u64) {
         let db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: format!("{name}_{version:04}"),

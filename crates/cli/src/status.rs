@@ -54,7 +54,7 @@ mod tests {
 
     use crate::test_utils::setup_project;
 
-    fn sample_config(name: &str, version: i64) -> ConfigRecord {
+    fn sample_config(name: &str, version: u64) -> ConfigRecord {
         ConfigRecord {
             name: name.to_string(),
             version,
