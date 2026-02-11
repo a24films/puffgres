@@ -4,6 +4,7 @@ pub mod publication;
 pub mod slot;
 
 pub use error::PgError;
+pub use tokio_postgres::types::PgLsn;
 
 pub type Result<T> = std::result::Result<T, PgError>;
 
