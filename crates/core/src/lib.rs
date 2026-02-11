@@ -1,6 +1,10 @@
+pub mod action;
 pub mod error;
+pub mod id;
 
+pub use action::Action;
 pub use error::CoreError;
+pub use id::DocumentId;
 pub use replication::{ColumnValue, Operation, RowEvent, TupleData};
 
 pub type Result<T> = std::result::Result<T, CoreError>;
