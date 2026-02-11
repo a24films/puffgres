@@ -77,249 +77,141 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn fixture(name: &str) -> String {
+        fs::read_to_string(format!("tests/fixtures/{}.toml", name)).unwrap()
+    }
+
     fn create_test_config_dir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
     }
 
-    fn write_config_file(dir: &Path, filename: &str, content: &str) {
+    fn write_file(dir: &Path, filename: &str, content: &str) {
         fs::write(dir.join(filename), content).unwrap();
     }
 
-    #[test]
-    fn test_from_toml() {
-        let toml_str = std::fs::read_to_string("tests/fixtures/valid.toml").unwrap();
-        let config = Config::from_toml(&toml_str).unwrap();
-        assert_eq!(config.name, "user_0001");
-        assert_eq!(config.version, 1);
-        assert_eq!(config.namespace, "user");
+    fn load_config_from_dir(dir: &Path, name: &str) -> Config {
+        let loader = ConfigLoader::new(dir);
+        let all = loader.load_all().unwrap();
+        all.into_iter().find(|(_, c)| c.name == name).unwrap().1
     }
 
-    #[test]
-    fn test_from_toml_invalid() {
-        let invalid_toml = "invalid toml content {[}";
-        let result = Config::from_toml(invalid_toml);
-        assert!(result.is_err());
+    mod parse {
+        use super::*;
+
+        #[test]
+        fn from_toml_valid() {
+            let config = Config::from_toml(&fixture("valid")).unwrap();
+            assert_eq!(config.name, "user_0001");
+            assert_eq!(config.version, 1);
+            assert_eq!(config.namespace, "user");
+        }
+
+        #[test]
+        fn from_toml_invalid() {
+            let result = Config::from_toml("invalid toml content {[}");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn from_file() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "film.toml", &fixture("film"));
+
+            let config = Config::from_file(&dir.path().join("film.toml")).unwrap();
+            assert_eq!(config.name, "film_0001");
+            assert_eq!(config.namespace, "film");
+        }
+
+        #[test]
+        fn from_file_not_found() {
+            let result = Config::from_file(Path::new("/nonexistent/config.toml"));
+            assert!(result.is_err());
+        }
     }
 
-    #[test]
-    fn test_from_file() {
-        let dir = create_test_config_dir();
-        let config_content = r#"
-name = "film_0001"
-version = 1
-namespace = "film"
+    mod load_all {
+        use super::*;
 
-[source]
-schema = "public"
-table = "films"
+        #[test]
+        fn empty_directory() {
+            let dir = create_test_config_dir();
+            let loader = ConfigLoader::new(dir.path());
+            assert_eq!(loader.load_all().unwrap().len(), 0);
+        }
 
-[id]
-column = "id"
-type = "uuid"
+        #[test]
+        fn nonexistent_directory() {
+            let loader = ConfigLoader::new(Path::new("/nonexistent/dir"));
+            assert_eq!(loader.load_all().unwrap().len(), 0);
+        }
 
-[transform]
-path = "transforms/film.ts"
-"#;
-        write_config_file(dir.path(), "film.toml", config_content);
+        #[test]
+        fn multiple_configs_sorted_by_filename() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "user.toml", &fixture("valid"));
+            write_file(dir.path(), "film.toml", &fixture("film"));
+            write_file(dir.path(), "readme.txt", "not a config");
 
-        let config = Config::from_file(&dir.path().join("film.toml")).unwrap();
-        assert_eq!(config.name, "film_0001");
-        assert_eq!(config.namespace, "film");
+            let loader = ConfigLoader::new(dir.path());
+            let configs = loader.load_all().unwrap();
+
+            assert_eq!(configs.len(), 2);
+            assert_eq!(configs[0].1.name, "film_0001");
+            assert_eq!(configs[1].1.name, "user_0001");
+        }
     }
 
-    #[test]
-    fn test_from_file_not_found() {
-        let result = Config::from_file(Path::new("/nonexistent/config.toml"));
-        assert!(result.is_err());
-    }
+    mod compute_hashes {
+        use super::*;
 
-    #[test]
-    fn test_loader_new() {
-        let dir = create_test_config_dir();
-        let loader = ConfigLoader::new(dir.path());
-        assert_eq!(loader.config_dir, dir.path());
-    }
+        #[test]
+        fn returns_none_when_transform_missing() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "user.toml", &fixture("valid"));
 
-    #[test]
-    fn test_load_all_empty_directory() {
-        let dir = create_test_config_dir();
-        let loader = ConfigLoader::new(dir.path());
-        let configs = loader.load_all().unwrap();
-        assert_eq!(configs.len(), 0);
-    }
+            let cfg = load_config_from_dir(dir.path(), "user_0001");
+            let loader = ConfigLoader::new(dir.path());
 
-    #[test]
-    fn test_load_all_nonexistent_directory() {
-        let loader = ConfigLoader::new(Path::new("/nonexistent/dir"));
-        let configs = loader.load_all().unwrap();
-        assert_eq!(configs.len(), 0);
-    }
+            assert!(loader.compute_transform_hash(&cfg).unwrap().is_none());
+        }
 
-    #[test]
-    fn test_load_all_multiple_configs() {
-        let dir = create_test_config_dir();
+        #[test]
+        fn returns_deterministic_hash() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "user.toml", &fixture("valid"));
+            fs::create_dir_all(dir.path().join("transforms")).unwrap();
+            write_file(
+                &dir.path().join("transforms"),
+                "user.ts",
+                "export function transform(data) { return data; }",
+            );
 
-        let config1 = r#"
-name = "user_0001"
-version = 1
-namespace = "user"
+            let cfg = load_config_from_dir(dir.path(), "user_0001");
+            let loader = ConfigLoader::new(dir.path());
 
-[source]
-schema = "public"
-table = "users"
+            let hash1 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
+            let hash2 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
 
-[id]
-column = "id"
-type = "uint"
+            assert_eq!(hash1.len(), 64);
+            assert_eq!(hash1, hash2);
+        }
 
-[transform]
-path = "transforms/user.ts"
-"#;
+        #[test]
+        fn different_content_produces_different_hash() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "user.toml", &fixture("valid"));
+            fs::create_dir_all(dir.path().join("transforms")).unwrap();
 
-        let config2 = r#"
-name = "film_0001"
-version = 1
-namespace = "film"
+            let cfg = load_config_from_dir(dir.path(), "user_0001");
+            let loader = ConfigLoader::new(dir.path());
 
-[source]
-schema = "public"
-table = "films"
+            write_file(&dir.path().join("transforms"), "user.ts", "content1");
+            let hash1 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
 
-[id]
-column = "id"
-type = "uuid"
+            write_file(&dir.path().join("transforms"), "user.ts", "content2");
+            let hash2 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
 
-[transform]
-path = "transforms/film.ts"
-"#;
-
-        write_config_file(dir.path(), "user.toml", config1);
-        write_config_file(dir.path(), "film.toml", config2);
-        // Non-TOML file should be ignored
-        write_config_file(dir.path(), "readme.txt", "This is not a config");
-
-        let loader = ConfigLoader::new(dir.path());
-        let configs = loader.load_all().unwrap();
-
-        assert_eq!(configs.len(), 2);
-        // Sorted by filename
-        assert_eq!(configs[0].1.name, "film_0001");
-        assert_eq!(configs[1].1.name, "user_0001");
-    }
-
-    #[test]
-    fn test_compute_transform_hash_file_not_exists() {
-        let dir = create_test_config_dir();
-
-        let config = r#"
-name = "user_0001"
-version = 1
-namespace = "user"
-
-[source]
-schema = "public"
-table = "users"
-
-[id]
-column = "id"
-type = "uint"
-
-[transform]
-path = "transforms/user.ts"
-"#;
-
-        write_config_file(dir.path(), "user.toml", config);
-
-        let loader = ConfigLoader::new(dir.path());
-        let all_configs = loader.load_all().unwrap();
-        let (_, cfg) = all_configs
-            .iter()
-            .find(|(_, c)| c.name == "user_0001")
-            .unwrap();
-
-        let hash = loader.compute_transform_hash(cfg).unwrap();
-        assert!(hash.is_none());
-    }
-
-    #[test]
-    fn test_compute_transform_hash_file_exists() {
-        let dir = create_test_config_dir();
-
-        let config = r#"
-name = "user_0001"
-version = 1
-namespace = "user"
-
-[source]
-schema = "public"
-table = "users"
-
-[id]
-column = "id"
-type = "uint"
-
-[transform]
-path = "transform.ts"
-"#;
-
-        write_config_file(dir.path(), "user.toml", config);
-
-        let transform_content = "export function transform(data) { return data; }";
-        write_config_file(dir.path(), "transform.ts", transform_content);
-
-        let loader = ConfigLoader::new(dir.path());
-        let all_configs = loader.load_all().unwrap();
-        let (_, cfg) = all_configs
-            .iter()
-            .find(|(_, c)| c.name == "user_0001")
-            .unwrap();
-
-        let hash = loader.compute_transform_hash(cfg).unwrap();
-        assert!(hash.is_some());
-        let hash_str = hash.unwrap();
-        assert_eq!(hash_str.len(), 64); // SHA-256 produces 64 hex characters
-
-        // Verify hash is deterministic
-        let hash2 = loader.compute_transform_hash(cfg).unwrap().unwrap();
-        assert_eq!(hash_str, hash2);
-    }
-
-    #[test]
-    fn test_compute_transform_hash_different_content() {
-        let dir = create_test_config_dir();
-
-        let config = r#"
-name = "user_0001"
-version = 1
-namespace = "user"
-
-[source]
-schema = "public"
-table = "users"
-
-[id]
-column = "id"
-type = "uint"
-
-[transform]
-path = "transform.ts"
-"#;
-
-        write_config_file(dir.path(), "user.toml", config);
-
-        let loader = ConfigLoader::new(dir.path());
-        let all_configs = loader.load_all().unwrap();
-        let (_, cfg) = all_configs
-            .iter()
-            .find(|(_, c)| c.name == "user_0001")
-            .unwrap();
-
-        write_config_file(dir.path(), "transform.ts", "content1");
-        let hash1 = loader.compute_transform_hash(cfg).unwrap().unwrap();
-
-        write_config_file(dir.path(), "transform.ts", "content2");
-        let hash2 = loader.compute_transform_hash(cfg).unwrap().unwrap();
-
-        assert_ne!(hash1, hash2);
+            assert_ne!(hash1, hash2);
+        }
     }
 }
