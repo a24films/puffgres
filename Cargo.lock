@@ -1862,11 +1862,15 @@ dependencies = [
  "config",
  "dotenvy",
  "pg",
+ "puff",
+ "puffgres-core",
+ "replication",
  "serde",
  "sha2",
  "state",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml 1.0.2+spec-1.1.0",
 ]
 
