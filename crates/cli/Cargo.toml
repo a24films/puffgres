@@ -32,6 +32,7 @@ version = "3.17.0"
 optional = true
 
 [dev-dependencies]
+chrono = "0.4"
 pg = { path = "../pg", features = ["test-utils"] }
 puffgres-cli = { path = ".", features = ["test-utils"] }
 temp-env = "0.3.6"
