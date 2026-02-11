@@ -18,4 +18,7 @@ pub enum CliError {
         path: String,
         source: toml::de::Error,
     },
+
+    #[error("State database error: {0}")]
+    State(#[from] state::StateError),
 }
