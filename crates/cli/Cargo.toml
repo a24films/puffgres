@@ -33,6 +33,7 @@ optional = true
 
 [dev-dependencies]
 chrono = "0.4"
+config = { path = "../config" }
 pg = { path = "../pg", features = ["test-utils"] }
 puffgres-cli = { path = ".", features = ["test-utils"] }
 temp-env = "0.3.6"
