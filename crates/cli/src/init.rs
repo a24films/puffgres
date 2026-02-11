@@ -48,6 +48,7 @@ fn ensure_dockerignore(paths: &ProjectPaths) -> Result<(), CliError> {
     Ok(())
 }
 
+
 fn ensure_project_config(paths: &ProjectPaths) -> Result<(), CliError> {
     if paths.project_config.exists() {
         return Ok(());
