@@ -21,4 +21,10 @@ pub enum CliError {
 
     #[error("State database error: {0}")]
     State(#[from] state::StateError),
+
+    #[error("{0} already exists")]
+    AlreadyExists(String),
+
+    #[error("{0} directory not found. Run `puffgres init` first.")]
+    NotInitialized(String),
 }

@@ -1,6 +1,7 @@
 mod env;
 mod error;
 mod init;
+mod new;
 mod paths;
 mod project_config;
 mod status;
@@ -25,7 +26,10 @@ enum Command {
     /// Initialize a puffgres project
     Init,
     /// Create a new table config
-    NewConfig,
+    New {
+        /// Name for the config (e.g. "user", "film")
+        name: String,
+    },
     /// Apply pending config changes
     Apply,
     /// Start the replication pipeline
@@ -49,7 +53,7 @@ fn main() -> Result<(), CliError> {
 
     match cli.command {
         Command::Init => unreachable!(),
-        Command::NewConfig => todo!("new-config"),
+        Command::New { name } => new::run(&paths, &name),
         Command::Apply => todo!("apply"),
         Command::Run => todo!("run"),
         Command::Status => status::run(&paths),
