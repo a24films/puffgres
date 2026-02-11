@@ -1869,6 +1869,7 @@ dependencies = [
  "puffgres-core",
  "replication",
  "serde",
+ "sha2",
  "state",
  "tempfile",
  "thiserror 2.0.18",
