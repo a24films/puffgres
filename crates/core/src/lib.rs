@@ -1,11 +1,15 @@
 pub mod action;
 pub mod error;
 pub mod id;
+pub mod mapping;
+pub mod router;
 
 pub use action::Action;
 pub use error::CoreError;
 pub use id::DocumentId;
-pub use replication::{ColumnValue, Operation, RowEvent, TupleData};
+pub use mapping::Mapping;
+pub use replication::{ColumnValue, Operation, RelationCache, RelationInfo, RowEvent, TupleData};
+pub use router::Router;
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
