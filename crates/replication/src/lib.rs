@@ -1,12 +1,15 @@
+mod connection;
 pub mod decoder;
 pub mod error;
 pub mod event;
 pub mod relation;
+pub mod stream;
 
 pub use decoder::{Begin, Commit, Delete, Insert, Truncate, Update, WalMessage};
 pub use error::ReplicationError;
 pub use event::{ColumnValue, Operation, RowEvent, TupleData};
 pub use relation::{ColumnInfo, RelationCache, RelationInfo, ReplicaIdentity};
+pub use stream::{ReplicationStream, ReplicationStreamConfig, StreamingBatch};
 
 pub type Result<T> = std::result::Result<T, ReplicationError>;
 
