@@ -9,3 +9,10 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+toml = "1.0.0"
+
+[dev-dependencies]
+tempfile = "3.17.0"
