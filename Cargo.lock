@@ -1780,6 +1780,7 @@ dependencies = [
  "dotenvy",
  "pg",
  "serde",
+ "sha2",
  "state",
  "tempfile",
  "thiserror 2.0.18",

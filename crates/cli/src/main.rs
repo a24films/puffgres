@@ -1,3 +1,4 @@
+mod apply;
 mod env;
 mod error;
 mod init;
@@ -5,6 +6,8 @@ mod new;
 mod paths;
 mod project_config;
 mod status;
+#[cfg(test)]
+mod test_utils;
 
 use clap::{Parser, Subcommand};
 
@@ -54,7 +57,7 @@ fn main() -> Result<(), CliError> {
     match cli.command {
         Command::Init => unreachable!(),
         Command::New { name } => new::run(&paths, &name),
-        Command::Apply => todo!("apply"),
+        Command::Apply => apply::run(&paths),
         Command::Run => todo!("run"),
         Command::Status => status::run(&paths),
     }

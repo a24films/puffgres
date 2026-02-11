@@ -58,17 +58,7 @@ mod tests {
     use state::ConfigRecord;
     use std::fs;
 
-    fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = ProjectPaths::new(dir.path().to_path_buf());
-        fs::create_dir_all(&paths.configs).unwrap();
-        fs::create_dir_all(&paths.transforms).unwrap();
-
-        let db = StateDb::open(&paths.state_db).unwrap();
-        db.initialize().unwrap();
-
-        (dir, paths)
-    }
+    use crate::test_utils::setup_project;
 
     fn insert_applied_config(paths: &ProjectPaths, name: &str, version: i64) {
         let db = StateDb::open(&paths.state_db).unwrap();
@@ -112,7 +102,7 @@ mod tests {
         assert_eq!(config.transform.path, "transforms/film.ts");
     }
 
-#[test]
+    #[test]
     fn version_skips_past_db_max() {
         let (_dir, paths) = setup_project();
         insert_applied_config(&paths, "user", 1);
@@ -188,5 +178,4 @@ mod tests {
         assert!(paths.configs.join("user_0003.toml").exists());
         assert!(paths.configs.join("film_0001.toml").exists());
     }
-
 }

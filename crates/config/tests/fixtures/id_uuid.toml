@@ -1,0 +1,14 @@
+name = "test_0001"
+version = 1
+namespace = "test"
+
+[source]
+schema = "public"
+table = "test"
+
+[id]
+column = "id"
+type = "uuid"
+
+[transform]
+path = "transforms/test.ts"

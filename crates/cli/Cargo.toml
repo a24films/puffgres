@@ -8,15 +8,16 @@ name = "puffgres"
 path = "src/main.rs"
 
 [dependencies]
+chrono = "0.4.43"
 clap = { version = "4", features = ["derive"] }
+config = { path = "../config" }
 dotenvy = "0.15"
 pg = { path = "../pg" }
 serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10.9"
 state = { path = "../state" }
 thiserror = "2.0.18"
 toml = "1.0.0"
 
 [dev-dependencies]
-chrono = "0.4"
-config = { path = "../config" }
 tempfile = "3.17.0"
