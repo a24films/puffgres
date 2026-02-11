@@ -1,0 +1,10 @@
+[package]
+name = "puffgres-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+config = { path = "../config" }
+pg = { path = "../pg" }
+replication = { path = "../replication" }
+thiserror = "2.0.18"
