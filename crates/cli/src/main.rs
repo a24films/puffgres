@@ -1,22 +1,26 @@
-use std::path::PathBuf;
+mod env;
+mod error;
+mod paths;
+mod project_config;
 
 use clap::{Parser, Subcommand};
+
+pub use env::EnvConfig;
+pub use error::CliError;
+pub use paths::ProjectPaths;
+pub use project_config::ProjectConfig;
 
 #[derive(Parser)]
 #[command(name = "puffgres")]
 #[command(about = "Replicate Postgres to Turbopuffer")]
 struct Cli {
-    /// Path to .env file
-    #[arg(long, global = true)]
-    env: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Initialize puffgres state database
+    /// Initialize a puffgres project
     Init,
     /// Set up Postgres publication and replication slot
     Setup,
@@ -30,12 +34,13 @@ enum Command {
     Status,
 }
 
-fn main() {
+fn main() -> Result<(), CliError> {
     let cli = Cli::parse();
+    let paths = ProjectPaths::from_current_dir()?;
 
-    if let Some(env_path) = &cli.env {
-        eprintln!("Using env file: {}", env_path.display());
-    }
+    let project_config = ProjectConfig::load(&paths.project_config)?;
+    let env_paths = project_config.resolve_env_paths(&paths.root);
+    let _env_config = EnvConfig::load(&env_paths)?;
 
     match cli.command {
         Command::Init => todo!("init"),
