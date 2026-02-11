@@ -1,0 +1,14 @@
+name = "{{CONFIG_NAME}}"
+version = {{VERSION}}
+namespace = "{{NAME}}"
+
+[source]
+schema = "public"
+table = "{{NAME}}"
+
+[id]
+column = "id"
+type = "uint"
+
+[transform]
+path = "transforms/{{NAME}}.ts"
