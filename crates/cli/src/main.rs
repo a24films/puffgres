@@ -1,5 +1,6 @@
 mod env;
 mod error;
+mod init;
 mod paths;
 mod project_config;
 
@@ -22,8 +23,6 @@ struct Cli {
 enum Command {
     /// Initialize a puffgres project
     Init,
-    /// Set up Postgres publication and replication slot
-    Setup,
     /// Create a new table config
     NewConfig,
     /// Apply pending config changes
@@ -38,13 +37,17 @@ fn main() -> Result<(), CliError> {
     let cli = Cli::parse();
     let paths = ProjectPaths::from_current_dir()?;
 
+    match cli.command {
+        Command::Init => return init::run(&paths),
+        _ => {}
+    }
+
     let project_config = ProjectConfig::load(&paths.project_config)?;
     let env_paths = project_config.resolve_env_paths(&paths.root);
     let _env_config = EnvConfig::load(&env_paths)?;
 
     match cli.command {
-        Command::Init => todo!("init"),
-        Command::Setup => todo!("setup"),
+        Command::Init => unreachable!(),
         Command::NewConfig => todo!("new-config"),
         Command::Apply => todo!("apply"),
         Command::Run => todo!("run"),
