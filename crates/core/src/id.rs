@@ -13,6 +13,27 @@ pub enum DocumentId {
 }
 
 impl DocumentId {
+    /// Parse a text string into a DocumentId according to the configured IdType.
+    /// This is the core parsing logic — used by extract_id (raw WAL bytes) and
+    /// from_value (JSON) alike.
+    pub fn from_text(s: &str, id_type: &IdType) -> Result<Self, CoreError> {
+        match id_type {
+            IdType::Uint => s
+                .parse::<u64>()
+                .map(DocumentId::Uint)
+                .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as uint: {e}"))),
+            IdType::Int => s
+                .parse::<i64>()
+                .map(DocumentId::Int)
+                .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as int: {e}"))),
+            IdType::Uuid => s
+                .parse::<uuid::Uuid>()
+                .map(DocumentId::Uuid)
+                .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as uuid: {e}"))),
+            IdType::String => Ok(DocumentId::String(s.to_string())),
+        }
+    }
+
     /// Parse a JSON value into a DocumentId according to the configured IdType.
     pub fn from_value(value: &Value, id_type: &IdType) -> Result<Self, CoreError> {
         match id_type {
@@ -20,10 +41,7 @@ impl DocumentId {
                 Value::Number(n) => n.as_u64().map(DocumentId::Uint).ok_or_else(|| {
                     CoreError::Pipeline(format!("expected unsigned integer, got {value}"))
                 }),
-                Value::String(s) => s
-                    .parse::<u64>()
-                    .map(DocumentId::Uint)
-                    .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as uint: {e}"))),
+                Value::String(s) => Self::from_text(s, id_type),
                 _ => Err(CoreError::Pipeline(format!(
                     "expected uint-compatible value, got {value}"
                 ))),
@@ -32,19 +50,13 @@ impl DocumentId {
                 Value::Number(n) => n.as_i64().map(DocumentId::Int).ok_or_else(|| {
                     CoreError::Pipeline(format!("expected signed integer, got {value}"))
                 }),
-                Value::String(s) => s
-                    .parse::<i64>()
-                    .map(DocumentId::Int)
-                    .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as int: {e}"))),
+                Value::String(s) => Self::from_text(s, id_type),
                 _ => Err(CoreError::Pipeline(format!(
                     "expected int-compatible value, got {value}"
                 ))),
             },
             IdType::Uuid => match value {
-                Value::String(s) => s
-                    .parse::<uuid::Uuid>()
-                    .map(DocumentId::Uuid)
-                    .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as uuid: {e}"))),
+                Value::String(s) => Self::from_text(s, id_type),
                 _ => Err(CoreError::Pipeline(format!(
                     "expected uuid string, got {value}"
                 ))),
@@ -145,6 +157,44 @@ mod tests {
     fn string_rejects_object() {
         let result = DocumentId::from_value(&json!({"a": 1}), &IdType::String);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn text_uint() {
+        let id = DocumentId::from_text("42", &IdType::Uint).unwrap();
+        assert_eq!(id, DocumentId::Uint(42));
+    }
+
+    #[test]
+    fn text_int() {
+        let id = DocumentId::from_text("-7", &IdType::Int).unwrap();
+        assert_eq!(id, DocumentId::Int(-7));
+    }
+
+    #[test]
+    fn text_uuid() {
+        let id =
+            DocumentId::from_text("550e8400-e29b-41d4-a716-446655440000", &IdType::Uuid).unwrap();
+        assert_eq!(
+            id,
+            DocumentId::Uuid("550e8400-e29b-41d4-a716-446655440000".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn text_string() {
+        let id = DocumentId::from_text("hello", &IdType::String).unwrap();
+        assert_eq!(id, DocumentId::String("hello".to_string()));
+    }
+
+    #[test]
+    fn text_rejects_invalid_uint() {
+        assert!(DocumentId::from_text("abc", &IdType::Uint).is_err());
+    }
+
+    #[test]
+    fn text_rejects_invalid_uuid() {
+        assert!(DocumentId::from_text("not-a-uuid", &IdType::Uuid).is_err());
     }
 
     #[test]
