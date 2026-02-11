@@ -13,10 +13,14 @@ clap = { version = "4", features = ["derive"] }
 config = { path = "../config" }
 dotenvy = "0.15"
 pg = { path = "../pg" }
+puff = { path = "../puff" }
+puffgres-core = { path = "../core" }
+replication = { path = "../replication" }
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 state = { path = "../state" }
 thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
 toml = "1.0.0"
 
 [dev-dependencies]
