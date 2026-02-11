@@ -131,36 +131,19 @@ mod tests {
 
     #[test]
     fn parse_all_id_types() {
-        let test_cases = vec![
-            ("uint", IdType::Uint),
-            ("int", IdType::Int),
-            ("uuid", IdType::Uuid),
-            ("string", IdType::String),
+        let cases = vec![
+            ("id_uint", IdType::Uint),
+            ("id_int", IdType::Int),
+            ("id_uuid", IdType::Uuid),
+            ("id_string", IdType::String),
         ];
 
-        for (type_str, expected) in test_cases {
-            let toml_str = format!(
-                r#"
-name = "test_0001"
-version = 1
-namespace = "test"
-
-[source]
-schema = "public"
-table = "test"
-
-[id]
-column = "id"
-type = "{}"
-
-[transform]
-path = "transforms/test.ts"
-"#,
-                type_str
+        for (fixture_name, expected) in cases {
+            let config = load_fixture(fixture_name);
+            assert_eq!(
+                config.id.id_type, expected,
+                "failed for fixture {fixture_name}"
             );
-
-            let config: Config = toml::from_str(&toml_str).unwrap();
-            assert_eq!(config.id.id_type, expected);
         }
     }
 }

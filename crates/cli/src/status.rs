@@ -52,13 +52,7 @@ mod tests {
     use chrono::Utc;
     use state::{ConfigRecord, StreamingCheckpoint};
 
-    fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = ProjectPaths::new(dir.path().to_path_buf());
-        let db = StateDb::open(&paths.state_db).unwrap();
-        db.initialize().unwrap();
-        (dir, paths)
-    }
+    use crate::test_utils::setup_project;
 
     fn sample_config(name: &str, version: i64) -> ConfigRecord {
         ConfigRecord {
