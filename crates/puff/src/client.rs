@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use rs_puff::DistanceMetric;
 use rs_puff::params::WriteParams;
 use serde_json::Value;
 
@@ -28,6 +29,7 @@ impl TurbopufferClient {
     pub async fn send_batch(&self, namespace: &str, actions: &[Action]) -> Result<(), PuffError> {
         let mut upsert_rows: Vec<HashMap<String, Value>> = Vec::new();
         let mut deletes: Vec<Value> = Vec::new();
+        let mut batch_distance_metric: Option<DistanceMetric> = None;
 
         for action in actions {
             match action {
@@ -35,7 +37,12 @@ impl TurbopufferClient {
                     id,
                     document,
                     vector,
+                    distance_metric,
                 } => {
+                    if batch_distance_metric.is_none() {
+                        batch_distance_metric =
+                            distance_metric.as_deref().and_then(parse_distance_metric);
+                    }
                     let mut row = match document {
                         Value::Object(map) => map
                             .iter()
@@ -74,6 +81,7 @@ impl TurbopufferClient {
             } else {
                 Some(deletes)
             },
+            distance_metric: batch_distance_metric,
             ..Default::default()
         };
 
@@ -93,6 +101,14 @@ fn id_to_value(id: &DocumentId) -> Value {
         DocumentId::Int(n) => Value::Number((*n).into()),
         DocumentId::Uuid(u) => Value::String(u.to_string()),
         DocumentId::String(s) => Value::String(s.clone()),
+    }
+}
+
+fn parse_distance_metric(s: &str) -> Option<DistanceMetric> {
+    match s {
+        "cosine_distance" => Some(DistanceMetric::CosineDistance),
+        "euclidean_squared" => Some(DistanceMetric::EuclideanSquared),
+        _ => None,
     }
 }
 
@@ -165,6 +181,7 @@ mod tests {
                 id: DocumentId::Uint(1),
                 document: json!({"title": "test doc"}),
                 vector: Some(vec![0.1, 0.2, 0.3]),
+                distance_metric: Some("cosine_distance".to_string()),
             },
             Action::Delete {
                 id: DocumentId::Uint(2),
