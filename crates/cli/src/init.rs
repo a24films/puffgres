@@ -11,6 +11,7 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
     fs::create_dir_all(&paths.transforms)?;
     ensure_gitignore(paths)?;
     ensure_project_config(paths)?;
+    ensure_dockerfile(paths)?;
 
     let db = StateDb::open(&paths.state_db)?;
     db.initialize()?;
@@ -46,6 +47,18 @@ fn ensure_gitignore(paths: &ProjectPaths) -> Result<(), CliError> {
         file.write_all(b"\n")?;
     }
     file.write_all(format!("{entry}\n").as_bytes())?;
+
+    Ok(())
+}
+
+fn ensure_dockerfile(paths: &ProjectPaths) -> Result<(), CliError> {
+    let dockerfile_path = paths.root.join("Dockerfile");
+    if dockerfile_path.exists() {
+        return Ok(());
+    }
+
+    let template = include_str!("../templates/Dockerfile");
+    fs::write(&dockerfile_path, template)?;
 
     Ok(())
 }
@@ -111,6 +124,31 @@ mod tests {
 
         let gitignore = fs::read_to_string(paths.root.join(".gitignore")).unwrap();
         assert_eq!(gitignore, "node_modules\nstate.db\n");
+    }
+
+    #[test]
+    fn creates_dockerfile() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProjectPaths::new(dir.path().to_path_buf());
+
+        run(&paths).unwrap();
+
+        let dockerfile = fs::read_to_string(paths.root.join("Dockerfile")).unwrap();
+        assert!(dockerfile.contains("PUFFGRES_GITHUB_ACCESS_TOKEN"));
+        assert!(dockerfile.contains("PUFFGRES_BRANCH_NAME"));
+        assert!(dockerfile.contains("cargo install --path crates/cli"));
+    }
+
+    #[test]
+    fn does_not_overwrite_existing_dockerfile() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProjectPaths::new(dir.path().to_path_buf());
+        fs::write(paths.root.join("Dockerfile"), "custom").unwrap();
+
+        run(&paths).unwrap();
+
+        let dockerfile = fs::read_to_string(paths.root.join("Dockerfile")).unwrap();
+        assert_eq!(dockerfile, "custom");
     }
 
     #[test]
