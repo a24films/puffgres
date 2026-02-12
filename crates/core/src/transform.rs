@@ -33,6 +33,7 @@ mod tests {
                         id: id.clone(),
                         document: json!({}),
                         vector: None,
+                        distance_metric: None,
                     },
                 })
                 .collect())

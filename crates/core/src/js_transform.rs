@@ -33,6 +33,8 @@ enum JsAction {
         document: Value,
         #[serde(default)]
         vector: Option<Vec<f32>>,
+        #[serde(default)]
+        distance_metric: Option<String>,
     },
     Delete {
         id: Value,
@@ -112,12 +114,14 @@ impl JsTransformer {
                     id,
                     document,
                     vector,
+                    distance_metric,
                 } => {
                     let doc_id = DocumentId::from_value(&id, &self.id_type)?;
                     Ok(Action::Upsert {
                         id: doc_id,
                         document,
                         vector,
+                        distance_metric,
                     })
                 }
                 JsAction::Delete { id } => {
@@ -336,6 +340,7 @@ mod tests {
                 id,
                 document,
                 vector,
+                ..
             } => {
                 assert_eq!(*id, DocumentId::Uint(1));
                 assert_eq!(*document, json!({"name": "test"}));

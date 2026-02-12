@@ -18,6 +18,7 @@ pub enum Action {
         id: DocumentId,
         document: Value,
         vector: Option<Vec<f32>>,
+        distance_metric: Option<String>,
     },
     /// Delete a document by its id.
     Delete { id: DocumentId },
@@ -36,6 +37,7 @@ mod tests {
             id: DocumentId::Uint(1),
             document: json!({"name": "test"}),
             vector: Some(vec![0.1, 0.2, 0.3]),
+            distance_metric: Some("cosine_distance".to_string()),
         };
         assert!(matches!(action, Action::Upsert { .. }));
     }
@@ -46,6 +48,7 @@ mod tests {
             id: DocumentId::Uint(1),
             document: json!({"name": "test"}),
             vector: None,
+            distance_metric: None,
         };
         if let Action::Upsert { vector, .. } = &action {
             assert!(vector.is_none());

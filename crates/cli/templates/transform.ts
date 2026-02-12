@@ -6,9 +6,11 @@
 //   { operation: "insert" | "update" | "delete", id: number | string, columns: (string | null)[] }
 //
 // Each output action (one of):
-//   { type: "upsert", id: number | string, document: object, vector?: number[] }
+//   { type: "upsert", id: number | string, document: object, vector?: number[], distance_metric?: string }
 //   { type: "delete", id: number | string }
 //   { type: "skip" }
+//
+// distance_metric is required when vector is provided. Values: "cosine_distance" | "euclidean_squared"
 
 import { readFileSync } from "fs";
 
@@ -19,7 +21,7 @@ interface Event {
 }
 
 type Action =
-  | { type: "upsert"; id: number | string; document: Record<string, unknown>; vector?: number[] }
+  | { type: "upsert"; id: number | string; document: Record<string, unknown>; vector?: number[]; distance_metric?: string }
   | { type: "delete"; id: number | string }
   | { type: "skip" };
 
