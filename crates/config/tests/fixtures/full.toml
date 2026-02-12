@@ -1,0 +1,15 @@
+name = "film_0002"
+version = 2
+namespace = "film"
+columns = ["id", "title", "director", "year"]
+
+[source]
+schema = "public"
+table = "films"
+
+[id]
+column = "id"
+type = "uuid"
+
+[transform]
+path = "transforms/film.ts"

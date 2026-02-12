@@ -60,31 +60,19 @@ impl Config {
 mod tests {
     use super::*;
 
+    fn load_fixture(name: &str) -> Config {
+        let path = format!("tests/fixtures/{}.toml", name);
+        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
     #[test]
     fn parse_minimal_config() {
-        let toml_str = r#"
-name = "user_0001"
-version = 1
-namespace = "user"
-
-[source]
-schema = "public"
-table = "user"
-
-[id]
-column = "id"
-type = "uint"
-
-[transform]
-path = "transforms/user.ts"
-"#;
-
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config = load_fixture("valid");
         assert_eq!(config.name, "user_0001");
         assert_eq!(config.version, 1);
         assert_eq!(config.namespace, "user");
         assert_eq!(config.source.schema, "public");
-        assert_eq!(config.source.table, "user");
+        assert_eq!(config.source.table, "users");
         assert_eq!(config.id.column, "id");
         assert_eq!(config.id.id_type, IdType::Uint);
         assert!(config.columns.is_none());
@@ -93,25 +81,7 @@ path = "transforms/user.ts"
 
     #[test]
     fn parse_full_config() {
-        let toml_str = r#"
-name = "film_0002"
-version = 2
-namespace = "film"
-columns = ["id", "title", "director", "year"]
-
-[source]
-schema = "public"
-table = "films"
-
-[id]
-column = "id"
-type = "uuid"
-
-[transform]
-path = "transforms/film.ts"
-"#;
-
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config = load_fixture("full");
         assert_eq!(config.name, "film_0002");
         assert_eq!(config.version, 2);
         assert_eq!(config.namespace, "film");
@@ -132,47 +102,13 @@ path = "transforms/film.ts"
 
     #[test]
     fn full_namespace_format_correct() {
-        let config = Config {
-            name: "film_0002".to_string(),
-            version: 2,
-            namespace: "film".to_string(),
-            source: SourceConfig {
-                schema: "public".to_string(),
-                table: "films".to_string(),
-            },
-            id: IdConfig {
-                column: "id".to_string(),
-                id_type: IdType::Uint,
-            },
-            columns: None,
-            transform: TransformConfig {
-                path: "transforms/film.ts".to_string(),
-            },
-        };
-
+        let config = load_fixture("full");
         assert_eq!(config.full_namespace(), "film_v2");
     }
 
     #[test]
     fn content_hash_consistent() {
-        let config1 = Config {
-            name: "film_0001".to_string(),
-            version: 1,
-            namespace: "film".to_string(),
-            source: SourceConfig {
-                schema: "public".to_string(),
-                table: "films".to_string(),
-            },
-            id: IdConfig {
-                column: "id".to_string(),
-                id_type: IdType::Uint,
-            },
-            columns: None,
-            transform: TransformConfig {
-                path: "transforms/film.ts".to_string(),
-            },
-        };
-
+        let config1 = load_fixture("valid");
         let config2 = config1.clone();
 
         let hash1 = config1.content_hash().unwrap();
@@ -185,24 +121,7 @@ path = "transforms/film.ts"
 
     #[test]
     fn content_hash_changes_with_content() {
-        let config1 = Config {
-            name: "film_0001".to_string(),
-            version: 1,
-            namespace: "film".to_string(),
-            source: SourceConfig {
-                schema: "public".to_string(),
-                table: "films".to_string(),
-            },
-            id: IdConfig {
-                column: "id".to_string(),
-                id_type: IdType::Uint,
-            },
-            columns: None,
-            transform: TransformConfig {
-                path: "transforms/film.ts".to_string(),
-            },
-        };
-
+        let config1 = load_fixture("valid");
         let mut config2 = config1.clone();
         config2.version = 2;
 
