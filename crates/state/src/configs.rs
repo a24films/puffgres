@@ -10,7 +10,7 @@ const COL_APPLIED_AT: usize = 5;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigRecord {
     pub name: String,
-    pub version: i64,
+    pub version: u64,
     pub namespace: String,
     pub content_hash: String,
     pub transform_hash: Option<String>,
@@ -32,7 +32,7 @@ impl ConfigRecord {
 
         Ok(Self {
             name: row.get(0)?,
-            version: row.get(1)?,
+            version: row.get::<_, i64>(1)? as u64,
             namespace: row.get(2)?,
             content_hash: row.get(3)?,
             transform_hash: row.get(4)?,
@@ -66,7 +66,7 @@ impl StateDb {
             ),
             params![
                 config.name,
-                config.version,
+                config.version as i64,
                 config.namespace,
                 config.content_hash,
                 config.transform_hash,
@@ -113,7 +113,7 @@ mod tests {
         (dir, db)
     }
 
-    fn sample_config(name: &str, version: i64) -> ConfigRecord {
+    fn sample_config(name: &str, version: u64) -> ConfigRecord {
         ConfigRecord {
             name: name.to_string(),
             version,
