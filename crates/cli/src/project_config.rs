@@ -8,6 +8,10 @@ use crate::error::CliError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub environment_files: Vec<String>,
+    #[serde(default)]
+    pub batch_size: Option<u32>,
+    #[serde(default)]
+    pub max_retries: Option<u32>,
 }
 
 impl ProjectConfig {
@@ -17,6 +21,14 @@ impl ProjectConfig {
             path: path.display().to_string(),
             source: e,
         })
+    }
+
+    pub fn batch_size(&self) -> u32 {
+        self.batch_size.unwrap_or(500)
+    }
+
+    pub fn max_retries(&self) -> u32 {
+        self.max_retries.unwrap_or(5)
     }
 
     pub fn resolve_env_paths(&self, root: &Path) -> Vec<PathBuf> {
@@ -31,6 +43,8 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             environment_files: vec![".env".to_string()],
+            batch_size: None,
+            max_retries: None,
         }
     }
 }
@@ -50,6 +64,7 @@ mod tests {
     fn resolve_env_paths_relative_to_root() {
         let config = ProjectConfig {
             environment_files: vec![".env".into(), ".env.local".into()],
+            ..Default::default()
         };
         let root = Path::new("/home/user/project");
         let resolved = config.resolve_env_paths(root);
@@ -76,6 +91,41 @@ mod tests {
 
         let config = ProjectConfig::load(&path).unwrap();
         assert_eq!(config.environment_files, vec![".env"]);
+    }
+
+    #[test]
+    fn batch_size_default() {
+        let config = ProjectConfig::default();
+        assert_eq!(config.batch_size(), 500);
+    }
+
+    #[test]
+    fn batch_size_custom() {
+        let toml = r#"
+environment_files = [".env"]
+batch_size = 1000
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.batch_size(), 1000);
+    }
+
+    #[test]
+    fn max_retries_default() {
+        let config = ProjectConfig::default();
+        assert_eq!(config.max_retries(), 5);
+    }
+
+    #[test]
+    fn deserialize_all_fields() {
+        let toml = r#"
+environment_files = [".env"]
+batch_size = 250
+max_retries = 10
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.environment_files, vec![".env"]);
+        assert_eq!(config.batch_size(), 250);
+        assert_eq!(config.max_retries(), 10);
     }
 
     #[test]

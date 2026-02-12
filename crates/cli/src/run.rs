@@ -22,6 +22,35 @@ pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError>
     rt.block_on(run_async(paths, env_config))
 }
 
+fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
+    match prefix {
+        Some(p) if !p.is_empty() => format!("{}_{}", p, namespace),
+        _ => namespace.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefixed_namespace_with_prefix() {
+        let prefix = Some("production".to_string());
+        assert_eq!(prefixed_namespace(&prefix, "user_v1"), "production_user_v1");
+    }
+
+    #[test]
+    fn prefixed_namespace_without_prefix() {
+        assert_eq!(prefixed_namespace(&None, "user_v1"), "user_v1");
+    }
+
+    #[test]
+    fn prefixed_namespace_empty_prefix_treated_as_none() {
+        let prefix = Some("".to_string());
+        assert_eq!(prefixed_namespace(&prefix, "user_v1"), "user_v1");
+    }
+}
+
 async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let db = StateDb::open(&paths.state_db)?;
 
@@ -46,7 +75,13 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
 
     for config in &applied_configs {
         mappings.push(Mapping::from_config(config));
-        namespaces.insert(config.name.clone(), config.full_namespace());
+        namespaces.insert(
+            config.name.clone(),
+            prefixed_namespace(
+                &env_config.turbopuffer_namespace_prefix,
+                &config.full_namespace(),
+            ),
+        );
         tables.insert(format!("{}.{}", config.source.schema, config.source.table));
 
         let transform_path = paths.root.join(&config.transform.path);
