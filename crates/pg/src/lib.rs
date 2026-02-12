@@ -1,6 +1,8 @@
+pub mod column;
 pub mod connect;
 pub mod error;
 pub mod publication;
+pub mod sample;
 pub mod slot;
 
 pub use error::PgError;
