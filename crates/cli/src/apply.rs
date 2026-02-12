@@ -9,7 +9,7 @@ use state::{ConfigRecord, StateDb};
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
-use crate::validate::validate_tables;
+use crate::validate::validate_schema;
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -97,7 +97,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             .map(|(p, c, _)| (p.clone(), c.clone()))
             .collect();
 
-        let validated = validate_tables(env_config, &schema_configs)
+        let validated = validate_schema(env_config, &schema_configs)
             .await
             .map_err(|errors| {
                 for err in &errors {
