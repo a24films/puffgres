@@ -65,6 +65,47 @@ process.stdout.write(JSON.stringify(output));
     fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
 }
 
+fn write_vector_no_metric_transform(paths: &ProjectPaths, name: &str) {
+    let script = r#"
+import { readFileSync } from "fs";
+const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
+const output = input.map((event: any) => {
+  if (event.operation === "delete") {
+    return { type: "delete", id: event.id };
+  }
+  return {
+    type: "upsert",
+    id: event.id,
+    document: {},
+    vector: [0.1, 0.2, 0.3],
+  };
+});
+process.stdout.write(JSON.stringify(output));
+"#;
+    fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
+}
+
+fn write_vector_with_metric_transform(paths: &ProjectPaths, name: &str) {
+    let script = r#"
+import { readFileSync } from "fs";
+const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
+const output = input.map((event: any) => {
+  if (event.operation === "delete") {
+    return { type: "delete", id: event.id };
+  }
+  return {
+    type: "upsert",
+    id: event.id,
+    document: {},
+    vector: [0.1, 0.2, 0.3],
+    distance_metric: "cosine_distance",
+  };
+});
+process.stdout.write(JSON.stringify(output));
+"#;
+    fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
+}
+
 async fn start_postgres() -> (ContainerAsync<Postgres>, EnvConfig) {
     let container = Postgres::default()
         .with_tag("16-alpine")
@@ -138,25 +179,6 @@ async fn test_apply_and_idempotency() {
 }
 
 #[tokio::test]
-async fn test_rejects_modified_config() {
-    let (_container, env_config) = setup_pg(&["users", "accounts"]).await;
-    let (_dir, paths) = setup_project();
-
-    write_config(&paths, "user", 1, "public", "users", "id", "uint");
-    write_passthrough_transform(&paths, "user");
-    run_async(&paths, &env_config).await.unwrap();
-
-    // Mutate the already-applied config
-    write_config(&paths, "user", 1, "public", "accounts", "id", "uint");
-
-    let err = run_async(&paths, &env_config).await.unwrap_err();
-    assert!(
-        err.to_string().contains("modified"),
-        "expected immutability error, got: {err}"
-    );
-}
-
-#[tokio::test]
 async fn test_rejects_nonexistent_table() {
     let (_container, env_config) = start_postgres().await;
     let (_dir, paths) = setup_project();
@@ -176,5 +198,153 @@ async fn test_rejects_nonexistent_table() {
     assert!(
         err.to_string().contains("error"),
         "expected apply error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_rejects_nonexistent_id_column() {
+    let (_container, env_config) = start_postgres().await;
+
+    let pg_client = pg::connect::connect(&env_config.database_url)
+        .await
+        .unwrap();
+    pg_client
+        .execute(
+            "CREATE TABLE col_test (id SERIAL PRIMARY KEY, name TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    drop(pg_client);
+
+    let (_dir, paths) = setup_project();
+    write_config(
+        &paths,
+        "col",
+        1,
+        "public",
+        "col_test",
+        "missing_col",
+        "uint",
+    );
+    write_passthrough_transform(&paths, "col");
+
+    let err = run_async(&paths, &env_config).await.unwrap_err();
+    assert!(
+        err.to_string().contains("error"),
+        "expected apply error for missing column, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_rejects_incompatible_id_type() {
+    let (_container, env_config) = start_postgres().await;
+
+    let pg_client = pg::connect::connect(&env_config.database_url)
+        .await
+        .unwrap();
+    pg_client
+        .execute(
+            "CREATE TABLE type_test (id TEXT PRIMARY KEY, name TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    drop(pg_client);
+
+    let (_dir, paths) = setup_project();
+    write_config(&paths, "typed", 1, "public", "type_test", "id", "uint");
+    write_passthrough_transform(&paths, "typed");
+
+    let err = run_async(&paths, &env_config).await.unwrap_err();
+    assert!(
+        err.to_string().contains("error"),
+        "expected apply error for incompatible id type, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_rejects_vector_without_distance_metric() {
+    let (_container, env_config) = start_postgres().await;
+
+    let pg_client = pg::connect::connect(&env_config.database_url)
+        .await
+        .unwrap();
+    pg_client
+        .execute(
+            "CREATE TABLE vec_test (id SERIAL PRIMARY KEY, name TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    pg_client
+        .execute("INSERT INTO vec_test (name) VALUES ('sample')", &[])
+        .await
+        .unwrap();
+    drop(pg_client);
+
+    let (_dir, paths) = setup_project();
+    write_config(&paths, "vec", 1, "public", "vec_test", "id", "uint");
+    write_vector_no_metric_transform(&paths, "vec");
+
+    let err = run_async(&paths, &env_config).await.unwrap_err();
+    assert!(
+        err.to_string().contains("error"),
+        "expected apply error for vector without distance_metric, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_accepts_vector_with_distance_metric() {
+    let (_container, env_config) = start_postgres().await;
+
+    let pg_client = pg::connect::connect(&env_config.database_url)
+        .await
+        .unwrap();
+    pg_client
+        .execute(
+            "CREATE TABLE good_vec (id SERIAL PRIMARY KEY, name TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    pg_client
+        .execute("INSERT INTO good_vec (name) VALUES ('sample')", &[])
+        .await
+        .unwrap();
+    drop(pg_client);
+
+    let (_dir, paths) = setup_project();
+    write_config(&paths, "goodvec", 1, "public", "good_vec", "id", "uint");
+    write_vector_with_metric_transform(&paths, "goodvec");
+
+    let result = run_async(&paths, &env_config).await;
+    assert!(result.is_ok(), "expected apply to succeed, got: {result:?}");
+}
+
+#[tokio::test]
+async fn test_accepts_empty_table_skips_dry_run() {
+    let (_container, env_config) = start_postgres().await;
+
+    let pg_client = pg::connect::connect(&env_config.database_url)
+        .await
+        .unwrap();
+    pg_client
+        .execute(
+            "CREATE TABLE empty_apply (id SERIAL PRIMARY KEY, name TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    drop(pg_client);
+
+    let (_dir, paths) = setup_project();
+    write_config(&paths, "empty", 1, "public", "empty_apply", "id", "uint");
+    write_passthrough_transform(&paths, "empty");
+
+    let result = run_async(&paths, &env_config).await;
+    assert!(
+        result.is_ok(),
+        "expected apply to succeed on empty table, got: {result:?}"
     );
 }

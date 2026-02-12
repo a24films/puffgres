@@ -3,19 +3,64 @@ use std::path::PathBuf;
 use config::{Config, IdType};
 
 use crate::env::EnvConfig;
+use crate::error::CliError;
+use crate::paths::ProjectPaths;
 
-/// Validate configs against Postgres schema: check tables, columns, and id types.
-/// Returns the indices of configs that passed, or a list of error messages.
-pub async fn validate_schema(
-    env_config: &EnvConfig,
+use super::dry_transform::dry_run_transform;
+
+/// Validate configs without a database connection: structure and transform file existence.
+/// Returns indices of configs that passed, or an error with all validation failures.
+pub fn validate_static(
+    paths: &ProjectPaths,
     configs: &[(PathBuf, Config)],
 ) -> Result<Vec<usize>, Vec<String>> {
     let mut passed: Vec<usize> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
+    for (i, (path, config)) in configs.iter().enumerate() {
+        let display = path.display();
+
+        // 1. Validate structure
+        if let Err(validation_errors) = config.validate() {
+            for err in &validation_errors {
+                errors.push(format!("{display}: {} - {}", err.field, err.message));
+            }
+            continue;
+        }
+
+        // 2. Check transform file exists
+        let transform_path = paths.root.join(&config.transform.path);
+        if !transform_path.exists() {
+            errors.push(format!(
+                "{display}: transform file '{}' does not exist",
+                config.transform.path,
+            ));
+            continue;
+        }
+
+        passed.push(i);
+    }
+
+    if errors.is_empty() {
+        Ok(passed)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Validate configs against Postgres: schema checks + dry-run transforms.
+/// Returns the indices of configs that passed validation.
+pub async fn validate_live(
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    configs: &[(PathBuf, Config)],
+) -> Result<Vec<usize>, CliError> {
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
-        .map_err(|e| vec![format!("failed to connect to postgres: {e}")])?;
+        .map_err(|e| CliError::Apply(format!("failed to connect to postgres: {e}")))?;
+
+    let mut passed: Vec<usize> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
 
     for (i, (path, config)) in configs.iter().enumerate() {
         let display = path.display();
@@ -70,11 +115,39 @@ pub async fn validate_schema(
             }
         }
 
+        // 4. Dry-run transform with a sample row
+        let sample = match pg::sample::fetch_sample_row(
+            &pg_client,
+            &config.source.schema,
+            &config.source.table,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                errors.push(format!("{display}: failed to fetch sample row: {e}"));
+                continue;
+            }
+        };
+
+        if let Some((column_names, values)) = sample {
+            if let Err(e) = dry_run_transform(paths, config, &column_names, &values).await {
+                errors.push(format!("{display}: {e}"));
+                continue;
+            }
+        }
+
         passed.push(i);
     }
 
     if !errors.is_empty() {
-        return Err(errors);
+        for err in &errors {
+            eprintln!("Error: {}", err);
+        }
+        return Err(CliError::Apply(format!(
+            "{} config(s) had errors",
+            errors.len()
+        )));
     }
 
     Ok(passed)

@@ -9,7 +9,7 @@ use state::{ConfigRecord, StateDb};
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
-use crate::validate::validate_schema;
+use crate::validate::{validate_live, validate_static};
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -28,27 +28,22 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         return Ok(());
     }
 
+    // Static validation (no DB connection needed)
+    let static_passed = validate_static(paths, &configs).map_err(|errors| {
+        for err in &errors {
+            eprintln!("Error: {}", err);
+        }
+        CliError::Apply(format!("{} config(s) had errors", errors.len()))
+    })?;
+
+    // Immutability check — filter to only new configs
     let mut errors: Vec<String> = Vec::new();
     let mut skipped = 0;
-
-    // First pass: basic validation and immutability check
     let mut new_configs: Vec<(PathBuf, Config, String)> = Vec::new();
 
-    for (path, config) in &configs {
-        // 1. Validate structure
-        if let Err(validation_errors) = config.validate() {
-            for err in &validation_errors {
-                errors.push(format!(
-                    "{}: {} - {}",
-                    path.display(),
-                    err.field,
-                    err.message
-                ));
-            }
-            continue;
-        }
+    for &i in &static_passed {
+        let (path, config) = &configs[i];
 
-        // 2. Check immutability
         let content_hash = config.content_hash()?;
         if let Some(existing) = db.get_config(&config.name)? {
             if existing.content_hash == content_hash {
@@ -64,21 +59,9 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             }
         }
 
-        // 3. Check transform file exists
-        let transform_path = paths.root.join(&config.transform.path);
-        if !transform_path.exists() {
-            errors.push(format!(
-                "{}: transform file '{}' does not exist",
-                path.display(),
-                config.transform.path,
-            ));
-            continue;
-        }
-
         new_configs.push((path.clone(), config.clone(), content_hash));
     }
 
-    // Bail if any errors — nothing gets applied
     if !errors.is_empty() {
         for err in &errors {
             eprintln!("Error: {}", err);
@@ -89,22 +72,15 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         )));
     }
 
-    // Second pass: live validation against Postgres and apply
+    // Live validation against Postgres and apply
     let mut applied = 0;
     if !new_configs.is_empty() {
-        let schema_configs: Vec<(PathBuf, Config)> = new_configs
+        let live_configs: Vec<(PathBuf, Config)> = new_configs
             .iter()
             .map(|(p, c, _)| (p.clone(), c.clone()))
             .collect();
 
-        let validated = validate_schema(env_config, &schema_configs)
-            .await
-            .map_err(|errors| {
-                for err in &errors {
-                    eprintln!("Error: {}", err);
-                }
-                CliError::Apply(format!("{} config(s) had errors", errors.len()))
-            })?;
+        let validated = validate_live(paths, env_config, &live_configs).await?;
 
         for (i, (_path, config, content_hash)) in new_configs.iter().enumerate() {
             if !validated.contains(&i) {
