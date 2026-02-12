@@ -1,4 +1,6 @@
+use pg::column::validate_column;
 use pg::connect::{connect, validate_tables};
+use pg::sample::fetch_sample_row;
 use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 
@@ -153,4 +155,132 @@ async fn test_validate_tables_special_characters() {
 
     let result = validate_tables(&client, &[("public", "TableWithCaps")]).await;
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_validate_existing_column() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string)
+        .await
+        .expect("Failed to connect");
+
+    client
+        .execute(
+            "CREATE TABLE col_test (id SERIAL PRIMARY KEY, name TEXT, email VARCHAR(255))",
+            &[],
+        )
+        .await
+        .expect("Failed to create table");
+
+    let udt = validate_column(&client, "public", "col_test", "id").await;
+    assert!(udt.is_ok());
+    assert_eq!(udt.unwrap(), "int4");
+
+    let udt = validate_column(&client, "public", "col_test", "name").await;
+    assert!(udt.is_ok());
+    assert_eq!(udt.unwrap(), "text");
+}
+
+#[tokio::test]
+async fn test_rejects_nonexistent_column() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string)
+        .await
+        .expect("Failed to connect");
+
+    client
+        .execute("CREATE TABLE col_test2 (id SERIAL PRIMARY KEY)", &[])
+        .await
+        .expect("Failed to create table");
+
+    let result = validate_column(&client, "public", "col_test2", "missing").await;
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("missing"));
+}
+
+#[tokio::test]
+async fn test_fetch_sample_row() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string)
+        .await
+        .expect("Failed to connect");
+
+    client
+        .execute(
+            "CREATE TABLE sample_test (id SERIAL PRIMARY KEY, name TEXT, age INT)",
+            &[],
+        )
+        .await
+        .expect("Failed to create table");
+
+    client
+        .execute(
+            "INSERT INTO sample_test (name, age) VALUES ('alice', 30)",
+            &[],
+        )
+        .await
+        .expect("Failed to insert data");
+
+    let result = fetch_sample_row(&client, "public", "sample_test")
+        .await
+        .unwrap();
+    assert!(result.is_some());
+
+    let (cols, vals) = result.unwrap();
+    assert_eq!(cols, vec!["id", "name", "age"]);
+    assert_eq!(vals.len(), 3);
+    assert_eq!(vals[1], Some("alice".to_string()));
+    assert_eq!(vals[2], Some("30".to_string()));
+}
+
+#[tokio::test]
+async fn test_sample_row_empty_table() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string)
+        .await
+        .expect("Failed to connect");
+
+    client
+        .execute(
+            "CREATE TABLE empty_test (id SERIAL PRIMARY KEY, name TEXT)",
+            &[],
+        )
+        .await
+        .expect("Failed to create table");
+
+    let result = fetch_sample_row(&client, "public", "empty_test")
+        .await
+        .unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn test_sample_row_null_values() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string)
+        .await
+        .expect("Failed to connect");
+
+    client
+        .execute(
+            "CREATE TABLE null_test (id SERIAL PRIMARY KEY, name TEXT)",
+            &[],
+        )
+        .await
+        .expect("Failed to create table");
+
+    client
+        .execute("INSERT INTO null_test (name) VALUES (NULL)", &[])
+        .await
+        .expect("Failed to insert data");
+
+    let result = fetch_sample_row(&client, "public", "null_test")
+        .await
+        .unwrap();
+    assert!(result.is_some());
+
+    let (cols, vals) = result.unwrap();
+    assert_eq!(cols, vec!["id", "name"]);
+    assert_eq!(vals[1], None);
 }
