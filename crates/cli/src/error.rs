@@ -29,6 +29,9 @@ pub enum CliError {
     Apply(String),
 
     #[error("{0}")]
+    DryRun(String),
+
+    #[error("{0}")]
     Run(String),
 
     #[error("{0} already exists")]

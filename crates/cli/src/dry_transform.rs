@@ -11,7 +11,7 @@ pub async fn dry_run_transform(
     config: &Config,
     column_names: &[String],
     values: &[Option<String>],
-) -> Result<(), String> {
+) -> Result<Vec<puffgres_core::Action>, String> {
     let transform_path = paths.root.join(&config.transform.path);
     let transformer = JsTransformer::new(transform_path, config.id.id_type.clone());
 
@@ -78,5 +78,5 @@ pub async fn dry_run_transform(
         }
     }
 
-    Ok(())
+    Ok(actions)
 }
