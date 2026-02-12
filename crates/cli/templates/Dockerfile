@@ -15,6 +15,11 @@ RUN --mount=type=secret,id=github_token \
 # Runtime stage
 FROM node:22-bookworm-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN npm install -g tsx
 
 COPY --from=builder /usr/local/cargo/bin/puffgres /usr/local/bin/puffgres

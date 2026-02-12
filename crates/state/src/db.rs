@@ -40,12 +40,6 @@ impl StateDb {
         )?;
         Ok(())
     }
-
-    pub fn reset(&self) -> Result<(), StateError> {
-        self.conn
-            .execute_batch("DELETE FROM streaming_checkpoints; DELETE FROM configs;")?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -182,40 +176,6 @@ mod tests {
 
         assert_eq!(db.dlq_count(None).unwrap(), 0);
         assert!(db.get_backfill_progress("film").unwrap().is_none());
-        assert_eq!(db.list_configs().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn reset_clears_all_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let db = StateDb::open(&path).unwrap();
-        db.initialize().unwrap();
-
-        // Insert a config
-        let config = crate::ConfigRecord {
-            name: "film".to_string(),
-            version: 1,
-            namespace: "film_v1".to_string(),
-            content_hash: "abc".to_string(),
-            transform_hash: None,
-            applied_at: chrono::Utc::now(),
-        };
-        db.insert_config(&config).unwrap();
-        assert_eq!(db.list_configs().unwrap().len(), 1);
-
-        db.reset().unwrap();
-        assert_eq!(db.list_configs().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn reset_on_empty_tables() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let db = StateDb::open(&path).unwrap();
-        db.initialize().unwrap();
-
-        db.reset().unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 0);
     }
 

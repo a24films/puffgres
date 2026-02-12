@@ -37,7 +37,6 @@ pub enum CliError {
     #[error("{0}")]
     Reset(String),
 
-
     #[error("{0} already exists")]
     AlreadyExists(String),
 
