@@ -22,6 +22,13 @@ pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError>
     rt.block_on(run_async(paths, env_config))
 }
 
+fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
+    match prefix {
+        Some(p) => format!("{}_{}", p, namespace),
+        None => namespace.to_string(),
+    }
+}
+
 async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let db = StateDb::open(&paths.state_db)?;
 
@@ -46,7 +53,13 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
 
     for config in &applied_configs {
         mappings.push(Mapping::from_config(config));
-        namespaces.insert(config.name.clone(), config.full_namespace());
+        namespaces.insert(
+            config.name.clone(),
+            prefixed_namespace(
+                &env_config.turbopuffer_namespace_prefix,
+                &config.full_namespace(),
+            ),
+        );
         tables.insert(format!("{}.{}", config.source.schema, config.source.table));
 
         let transform_path = paths.root.join(&config.transform.path);
