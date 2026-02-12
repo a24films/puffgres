@@ -1,37 +1,7 @@
 use pg::column::validate_column;
 use pg::connect::{connect, validate_tables};
 use pg::sample::fetch_sample_row;
-use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
-use testcontainers_modules::postgres::Postgres;
-
-struct TestContext {
-    _container: ContainerAsync<Postgres>,
-    connection_string: String,
-}
-
-async fn setup_postgres() -> TestContext {
-    let container = Postgres::default()
-        .with_tag("17-alpine")
-        .start()
-        .await
-        .expect("Failed to start postgres container");
-
-    let host = container.get_host().await.expect("Failed to get host");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let connection_string = format!(
-        "host={} port={} user=postgres password=postgres dbname=postgres",
-        host, port
-    );
-
-    TestContext {
-        _container: container,
-        connection_string,
-    }
-}
+use pg::test_utils::setup_postgres;
 
 #[tokio::test]
 async fn test_connect_success() {
