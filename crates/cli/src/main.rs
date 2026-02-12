@@ -1,4 +1,5 @@
 mod apply;
+mod check;
 mod env;
 mod error;
 mod init;
@@ -35,6 +36,11 @@ enum Command {
         /// Name for the config (e.g. "user", "film")
         name: String,
     },
+    /// Validate configs against Postgres schema
+    Check {
+        /// Optional config name to check
+        name: Option<String>,
+    },
     /// Apply pending config changes
     Apply,
     /// Start the replication pipeline
@@ -59,6 +65,7 @@ fn main() -> Result<(), CliError> {
     match cli.command {
         Command::Init => unreachable!(),
         Command::New { name } => new::run(&paths, &name),
+        Command::Check { name } => check::run(&paths, &env_config, name.as_deref()),
         Command::Apply => apply::run(&paths, &env_config),
         Command::Run => run::run(&paths, &env_config),
         Command::Status => status::run(&paths),
