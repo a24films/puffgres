@@ -19,6 +19,11 @@ enum Command {
         /// Name for the config (e.g. "user", "film")
         name: String,
     },
+    /// Run transforms on sample data without writing state
+    DryRun {
+        /// Optional config name to dry-run
+        name: Option<String>,
+    },
     /// Apply pending config changes
     Apply,
     /// Start the replication pipeline
@@ -43,6 +48,9 @@ fn main() -> Result<(), CliError> {
     match cli.command {
         Command::Init => unreachable!(),
         Command::New { name } => puffgres_cli::new::run(&paths, &name),
+        Command::DryRun { name } => {
+            puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
+        }
         Command::Apply => puffgres_cli::apply::run(&paths, &env_config),
         Command::Run => puffgres_cli::run::run(&paths, &env_config),
         Command::Status => puffgres_cli::status::run(&paths),
