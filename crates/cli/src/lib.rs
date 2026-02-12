@@ -7,6 +7,7 @@ pub mod init;
 pub mod new;
 pub mod paths;
 pub mod project_config;
+pub mod reset;
 pub mod run;
 pub mod status;
 pub mod validate;

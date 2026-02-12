@@ -30,6 +30,8 @@ enum Command {
     Run,
     /// Show replication status
     Status,
+    /// Clear all state (configs and checkpoints)
+    Reset,
 }
 
 fn main() -> Result<(), CliError> {
@@ -38,6 +40,7 @@ fn main() -> Result<(), CliError> {
 
     match cli.command {
         Command::Init => return puffgres_cli::init::run(&paths),
+        Command::Reset => return puffgres_cli::reset::run(&paths),
         _ => {}
     }
 
@@ -46,7 +49,7 @@ fn main() -> Result<(), CliError> {
     let env_config = EnvConfig::load(&env_paths)?;
 
     match cli.command {
-        Command::Init => unreachable!(),
+        Command::Init | Command::Reset => unreachable!(),
         Command::New { name } => puffgres_cli::new::run(&paths, &name),
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
