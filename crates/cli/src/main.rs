@@ -1,21 +1,6 @@
-mod apply;
-mod env;
-mod error;
-mod init;
-mod new;
-mod paths;
-mod project_config;
-mod run;
-mod status;
-#[cfg(test)]
-mod test_utils;
-
 use clap::{Parser, Subcommand};
 
-pub use env::EnvConfig;
-pub use error::CliError;
-pub use paths::ProjectPaths;
-pub use project_config::ProjectConfig;
+use puffgres_cli::{CliError, EnvConfig, ProjectConfig, ProjectPaths};
 
 #[derive(Parser)]
 #[command(name = "puffgres")]
@@ -47,7 +32,7 @@ fn main() -> Result<(), CliError> {
     let paths = ProjectPaths::from_current_dir()?;
 
     match cli.command {
-        Command::Init => return init::run(&paths),
+        Command::Init => return puffgres_cli::init::run(&paths),
         _ => {}
     }
 
@@ -57,9 +42,9 @@ fn main() -> Result<(), CliError> {
 
     match cli.command {
         Command::Init => unreachable!(),
-        Command::New { name } => new::run(&paths, &name),
-        Command::Apply => apply::run(&paths),
-        Command::Run => run::run(&paths, &env_config),
-        Command::Status => status::run(&paths),
+        Command::New { name } => puffgres_cli::new::run(&paths, &name),
+        Command::Apply => puffgres_cli::apply::run(&paths, &env_config),
+        Command::Run => puffgres_cli::run::run(&paths, &env_config),
+        Command::Status => puffgres_cli::status::run(&paths),
     }
 }

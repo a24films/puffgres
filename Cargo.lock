@@ -1831,6 +1831,8 @@ dependencies = [
  "sha2",
  "state",
  "tempfile",
+ "testcontainers",
+ "testcontainers-modules",
  "thiserror 2.0.18",
  "tokio",
  "toml 1.0.0+spec-1.1.0",
