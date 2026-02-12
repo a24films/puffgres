@@ -1,17 +1,26 @@
 use std::fs;
+use std::path::PathBuf;
 
 use chrono::Utc;
-use config::ConfigLoader;
+use config::Config;
 use sha2::{Digest, Sha256};
 use state::{ConfigRecord, StateDb};
 
+use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
+use crate::validate::validate_tables;
 
-pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
+pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| CliError::Apply(format!("failed to create async runtime: {e}")))?;
+    rt.block_on(run_async(paths, env_config))
+}
+
+async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let db = StateDb::open(&paths.state_db)?;
 
-    let loader = ConfigLoader::new(&paths.configs);
+    let loader = config::ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;
 
     if configs.is_empty() {
@@ -20,12 +29,13 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
     }
 
     let mut errors: Vec<String> = Vec::new();
-    let mut to_apply: Vec<ConfigRecord> = Vec::new();
     let mut skipped = 0;
 
-    // Pass 1: validate all configs and prepare records
+    // First pass: basic validation and immutability check
+    let mut new_configs: Vec<(PathBuf, Config, String)> = Vec::new();
+
     for (path, config) in &configs {
-        // 1. Validate
+        // 1. Validate structure
         if let Err(validation_errors) = config.validate() {
             for err in &validation_errors {
                 errors.push(format!(
@@ -54,27 +64,18 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
             }
         }
 
-        // 3. Compute transform hash (resolve relative to project root)
+        // 3. Check transform file exists
         let transform_path = paths.root.join(&config.transform.path);
         if !transform_path.exists() {
             errors.push(format!(
-                "{}: transform file '{}' not found",
+                "{}: transform file '{}' does not exist",
                 path.display(),
                 config.transform.path,
             ));
             continue;
         }
-        let transform_content = fs::read(&transform_path)?;
-        let transform_hash = format!("{:x}", Sha256::digest(&transform_content));
 
-        to_apply.push(ConfigRecord {
-            name: config.name.clone(),
-            version: config.version,
-            namespace: config.full_namespace(),
-            content_hash,
-            transform_hash: Some(transform_hash),
-            applied_at: Utc::now(),
-        });
+        new_configs.push((path.clone(), config.clone(), content_hash));
     }
 
     // Bail if any errors — nothing gets applied
@@ -88,13 +89,51 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
         )));
     }
 
-    // Pass 2: apply all validated configs
-    for record in &to_apply {
-        db.insert_config(record)?;
-        eprintln!("Applied: {}", record.name);
+    // Second pass: live validation against Postgres and apply
+    let mut applied = 0;
+    if !new_configs.is_empty() {
+        let schema_configs: Vec<(PathBuf, Config)> = new_configs
+            .iter()
+            .map(|(p, c, _)| (p.clone(), c.clone()))
+            .collect();
+
+        let validated = validate_tables(env_config, &schema_configs)
+            .await
+            .map_err(|errors| {
+                for err in &errors {
+                    eprintln!("Error: {}", err);
+                }
+                CliError::Apply(format!("{} config(s) had errors", errors.len()))
+            })?;
+
+        for (i, (_path, config, content_hash)) in new_configs.iter().enumerate() {
+            if !validated.contains(&i) {
+                continue;
+            }
+
+            let transform_path = paths.root.join(&config.transform.path);
+            let transform_hash = {
+                let content = fs::read(&transform_path)?;
+                let hash = Sha256::digest(&content);
+                Some(format!("{:x}", hash))
+            };
+
+            let record = ConfigRecord {
+                name: config.name.clone(),
+                version: config.version,
+                namespace: config.full_namespace(),
+                content_hash: content_hash.clone(),
+                transform_hash,
+                applied_at: Utc::now(),
+            };
+
+            db.insert_config(&record)?;
+            applied += 1;
+            eprintln!("Applied: {}", config.name);
+        }
     }
 
-    eprintln!("{} applied, {} unchanged", to_apply.len(), skipped);
+    eprintln!("{} applied, {} unchanged", applied, skipped);
 
     Ok(())
 }
@@ -102,47 +141,85 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
-    use crate::test_utils::setup_project;
+    use crate::test_utils::{
+        setup_project, start_postgres, write_config, write_passthrough_transform,
+    };
 
-    fn write_config(paths: &ProjectPaths, name: &str, version: i64, table: &str) {
-        let config_name = format!("{name}_{version:04}");
-        let content = format!(
-            r#"name = "{config_name}"
-version = {version}
-namespace = "{name}"
-
-[source]
-schema = "public"
-table = "{table}"
-
-[id]
-column = "id"
-type = "uint"
-
-[transform]
-path = "transforms/{name}.ts"
-"#
-        );
-        fs::write(paths.configs.join(format!("{config_name}.toml")), content).unwrap();
+    fn dummy_env() -> EnvConfig {
+        EnvConfig {
+            database_url: "host=invalid".to_string(),
+            turbopuffer_api_key: "fake".to_string(),
+            turbopuffer_region: None,
+        }
     }
 
-    fn write_transform(paths: &ProjectPaths, name: &str) {
-        fs::write(
-            paths.transforms.join(format!("{name}.ts")),
-            format!("export function transform(row: any) {{ return row; }}"),
-        )
-        .unwrap();
+    // --- Tests that fail during structural validation (no Postgres needed) ---
+
+    #[test]
+    fn test_errors_on_invalid_config() {
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "bad", 0, "public", "bad", "id", "uint");
+
+        let err = run(&paths, &dummy_env()).unwrap_err();
+        assert!(err.to_string().contains("error"));
     }
 
     #[test]
-    fn applies_new_config() {
+    fn test_no_configs_succeeds() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "users");
-        write_transform(&paths, "user");
+        run(&paths, &dummy_env()).unwrap();
+    }
 
-        run(&paths).unwrap();
+    #[test]
+    fn test_errors_on_missing_transform() {
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        // Don't write transform file
+
+        let err = run(&paths, &dummy_env()).unwrap_err();
+        assert!(err.to_string().contains("error"));
+    }
+
+    #[test]
+    fn test_invalid_config_prevents_all_applies() {
+        let (_dir, paths) = setup_project();
+
+        // Valid config
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_passthrough_transform(&paths, "user");
+
+        // Invalid config (version 0)
+        write_config(&paths, "bad", 0, "public", "bad", "id", "uint");
+
+        let err = run(&paths, &dummy_env()).unwrap_err();
+        assert!(err.to_string().contains("error"));
+
+        // Valid config should NOT have been applied
+        let db = StateDb::open(&paths.state_db).unwrap();
+        let record = db.get_config("user_0001").unwrap();
+        assert!(record.is_none());
+    }
+
+    // --- Tests that need Postgres for successful apply ---
+
+    #[tokio::test]
+    async fn test_applies_new_config() {
+        let (_container, env_config) = start_postgres().await;
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE users (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        drop(pg_client);
+
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_passthrough_transform(&paths, "user");
+
+        run_async(&paths, &env_config).await.unwrap();
 
         let db = StateDb::open(&paths.state_db).unwrap();
         let record = db.get_config("user_0001").unwrap().unwrap();
@@ -152,83 +229,106 @@ path = "transforms/{name}.ts"
         assert!(record.transform_hash.is_some());
     }
 
-    #[test]
-    fn applies_multiple_configs() {
-        let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "users");
-        write_config(&paths, "film", 1, "films");
-        write_transform(&paths, "user");
-        write_transform(&paths, "film");
+    #[tokio::test]
+    async fn test_applies_multiple_configs() {
+        let (_container, env_config) = start_postgres().await;
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE users (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE films (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        drop(pg_client);
 
-        run(&paths).unwrap();
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_config(&paths, "film", 1, "public", "films", "id", "uint");
+        write_passthrough_transform(&paths, "user");
+        write_passthrough_transform(&paths, "film");
+
+        run_async(&paths, &env_config).await.unwrap();
 
         let db = StateDb::open(&paths.state_db).unwrap();
         let configs = db.list_configs().unwrap();
         assert_eq!(configs.len(), 2);
     }
 
-    #[test]
-    fn skips_already_applied_unchanged() {
-        let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "users");
-        write_transform(&paths, "user");
+    #[tokio::test]
+    async fn test_skips_already_applied_unchanged() {
+        let (_container, env_config) = start_postgres().await;
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE users (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        drop(pg_client);
 
-        run(&paths).unwrap();
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_passthrough_transform(&paths, "user");
+
+        run_async(&paths, &env_config).await.unwrap();
         // Second apply should skip (unchanged)
-        run(&paths).unwrap();
+        run_async(&paths, &env_config).await.unwrap();
 
         let db = StateDb::open(&paths.state_db).unwrap();
         let configs = db.list_configs().unwrap();
         assert_eq!(configs.len(), 1);
     }
 
-    #[test]
-    fn errors_on_modified_config() {
-        let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "users");
-        write_transform(&paths, "user");
+    #[tokio::test]
+    async fn test_errors_on_modified_config() {
+        let (_container, env_config) = start_postgres().await;
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE users (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE accounts (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        drop(pg_client);
 
-        run(&paths).unwrap();
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_passthrough_transform(&paths, "user");
+
+        run_async(&paths, &env_config).await.unwrap();
 
         // Modify the config file (change the table)
-        write_config(&paths, "user", 1, "accounts");
+        write_config(&paths, "user", 1, "public", "accounts", "id", "uint");
 
-        let err = run(&paths).unwrap_err();
+        let err = run_async(&paths, &env_config).await.unwrap_err();
         assert!(err.to_string().contains("error"));
     }
 
-    #[test]
-    fn errors_on_invalid_config() {
+    #[tokio::test]
+    async fn test_content_hash_is_stored() {
+        let (_container, env_config) = start_postgres().await;
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE users (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        drop(pg_client);
+
         let (_dir, paths) = setup_project();
-        write_config(&paths, "bad", 0, "bad");
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_passthrough_transform(&paths, "user");
 
-        let err = run(&paths).unwrap_err();
-        assert!(err.to_string().contains("error"));
-    }
-
-    #[test]
-    fn no_configs_succeeds() {
-        let (_dir, paths) = setup_project();
-        run(&paths).unwrap();
-    }
-
-    #[test]
-    fn errors_on_missing_transform() {
-        let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "users");
-        // Don't write transform file
-
-        let err = run(&paths).unwrap_err();
-        assert!(err.to_string().contains("error"));
-    }
-
-    #[test]
-    fn content_hash_is_stored() {
-        let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "users");
-        write_transform(&paths, "user");
-
-        run(&paths).unwrap();
+        run_async(&paths, &env_config).await.unwrap();
 
         let db = StateDb::open(&paths.state_db).unwrap();
         let record = db.get_config("user_0001").unwrap().unwrap();
@@ -236,36 +336,51 @@ path = "transforms/{name}.ts"
         assert_eq!(record.content_hash.len(), 64);
     }
 
-    #[test]
-    fn namespace_uses_full_namespace() {
-        let (_dir, paths) = setup_project();
-        write_config(&paths, "film", 2, "films");
-        write_transform(&paths, "film");
+    #[tokio::test]
+    async fn test_namespace_uses_full_namespace() {
+        let (_container, env_config) = start_postgres().await;
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute("CREATE TABLE films (id SERIAL PRIMARY KEY)", &[])
+            .await
+            .unwrap();
+        drop(pg_client);
 
-        run(&paths).unwrap();
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "film", 2, "public", "films", "id", "uint");
+        write_passthrough_transform(&paths, "film");
+
+        run_async(&paths, &env_config).await.unwrap();
 
         let db = StateDb::open(&paths.state_db).unwrap();
         let record = db.get_config("film_0002").unwrap().unwrap();
         assert_eq!(record.namespace, "film_v2");
     }
 
-    #[test]
-    fn invalid_config_prevents_all_applies() {
+    // --- New integration test for live table validation ---
+
+    #[tokio::test]
+    async fn test_rejects_nonexistent_table() {
+        let (_container, env_config) = start_postgres().await;
+
         let (_dir, paths) = setup_project();
+        write_config(
+            &paths,
+            "ghost",
+            1,
+            "public",
+            "nonexistent_table",
+            "id",
+            "uint",
+        );
+        write_passthrough_transform(&paths, "ghost");
 
-        // Valid config
-        write_config(&paths, "user", 1, "users");
-        write_transform(&paths, "user");
-
-        // Invalid config (version 0)
-        write_config(&paths, "bad", 0, "bad");
-
-        let err = run(&paths).unwrap_err();
-        assert!(err.to_string().contains("error"));
-
-        // Valid config should NOT have been applied
-        let db = StateDb::open(&paths.state_db).unwrap();
-        let record = db.get_config("user_0001").unwrap();
-        assert!(record.is_none());
+        let err = run_async(&paths, &env_config).await.unwrap_err();
+        assert!(
+            err.to_string().contains("error"),
+            "expected apply error, got: {err}"
+        );
     }
 }

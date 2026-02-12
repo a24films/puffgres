@@ -9,6 +9,7 @@ mod run;
 mod status;
 #[cfg(test)]
 mod test_utils;
+mod validate;
 
 use clap::{Parser, Subcommand};
 
@@ -58,7 +59,7 @@ fn main() -> Result<(), CliError> {
     match cli.command {
         Command::Init => unreachable!(),
         Command::New { name } => new::run(&paths, &name),
-        Command::Apply => apply::run(&paths),
+        Command::Apply => apply::run(&paths, &env_config),
         Command::Run => run::run(&paths, &env_config),
         Command::Status => status::run(&paths),
     }
