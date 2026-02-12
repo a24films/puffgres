@@ -9,7 +9,7 @@ use state::{ConfigRecord, StateDb};
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
-use crate::validate::validate_schema;
+use crate::validate::{validate_live, validate_static};
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -28,27 +28,24 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         return Ok(());
     }
 
+    // Static validation (no DB connection needed)
+    let static_passed = validate_static(&configs).map_err(|errors| {
+        for err in &errors {
+            eprintln!("Error: {}", err);
+        }
+        CliError::Apply(format!("{} config(s) had errors", errors.len()))
+    })?;
+
+    // Immutability check — filter to only new configs
     let mut errors: Vec<String> = Vec::new();
     let mut skipped = 0;
 
     // First pass: basic validation, immutability check, and transform hashing
     let mut new_configs: Vec<(PathBuf, Config, String, String)> = Vec::new();
 
-    for (path, config) in &configs {
-        // 1. Validate structure
-        if let Err(validation_errors) = config.validate() {
-            for err in &validation_errors {
-                errors.push(format!(
-                    "{}: {} - {}",
-                    path.display(),
-                    err.field,
-                    err.message
-                ));
-            }
-            continue;
-        }
+    for &i in &static_passed {
+        let (path, config) = &configs[i];
 
-        // 2. Check immutability
         let content_hash = config.content_hash()?;
         if let Some(existing) = db.get_config(&config.name)? {
             if existing.content_hash == content_hash {
@@ -82,7 +79,6 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         new_configs.push((path.clone(), config.clone(), content_hash, transform_hash));
     }
 
-    // Bail if any errors — nothing gets applied
     if !errors.is_empty() {
         for err in &errors {
             eprintln!("Error: {}", err);
@@ -93,22 +89,15 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         )));
     }
 
-    // Second pass: live validation against Postgres and apply
+    // Live validation against Postgres and apply
     let mut applied = 0;
     if !new_configs.is_empty() {
-        let schema_configs: Vec<(PathBuf, Config)> = new_configs
+        let live_configs: Vec<(PathBuf, Config)> = new_configs
             .iter()
             .map(|(p, c, _, _)| (p.clone(), c.clone()))
             .collect();
 
-        let validated = validate_schema(env_config, &schema_configs)
-            .await
-            .map_err(|errors| {
-                for err in &errors {
-                    eprintln!("Error: {}", err);
-                }
-                CliError::Apply(format!("{} config(s) had errors", errors.len()))
-            })?;
+        let validated = validate_live(paths, env_config, &live_configs).await?;
 
         for (i, (_path, config, content_hash, transform_hash)) in new_configs.iter().enumerate() {
             if !validated.contains(&i) {
@@ -139,7 +128,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
 mod tests {
     use super::*;
 
-    use crate::test_utils::{setup_project, write_config, write_passthrough_transform};
+    use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
 
     fn dummy_env() -> EnvConfig {
         EnvConfig {
@@ -184,7 +173,7 @@ mod tests {
         let (_dir, paths) = setup_project();
 
         write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_passthrough_transform(&paths, "user");
+        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
         write_config(&paths, "bad", 0, "public", "bad", "id", "uint");
 
         run(&paths, &dummy_env()).unwrap_err();
@@ -197,7 +186,7 @@ mod tests {
     fn test_skips_already_applied_unchanged() {
         let (_dir, paths) = setup_project();
         write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_passthrough_transform(&paths, "user");
+        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
 
         // Load to get the content hash, then pre-seed the state DB
         let loader = config::ConfigLoader::new(&paths.configs);
@@ -222,9 +211,9 @@ mod tests {
     fn test_skips_multiple_already_applied() {
         let (_dir, paths) = setup_project();
         write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_passthrough_transform(&paths, "user");
+        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
         write_config(&paths, "film", 2, "public", "films", "id", "uint");
-        write_passthrough_transform(&paths, "film");
+        write_transform(&paths, "film", PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let all = loader.load_all().unwrap();
@@ -249,7 +238,7 @@ mod tests {
     fn test_errors_on_modified_config() {
         let (_dir, paths) = setup_project();
         write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_passthrough_transform(&paths, "user");
+        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
@@ -278,7 +267,7 @@ mod tests {
     fn test_stored_record_fields() {
         let (_dir, paths) = setup_project();
         write_config(&paths, "film", 2, "public", "films", "id", "uint");
-        write_passthrough_transform(&paths, "film");
+        write_transform(&paths, "film", PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;

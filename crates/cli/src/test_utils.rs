@@ -82,8 +82,11 @@ path = "transforms/{name}.ts"
     fs::write(paths.configs.join(format!("{config_name}.toml")), content).unwrap();
 }
 
-pub fn write_passthrough_transform(paths: &ProjectPaths, name: &str) {
-    let script = r#"
+pub fn write_transform(paths: &ProjectPaths, name: &str, script: &str) {
+    fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
+}
+
+pub const PASSTHROUGH_TRANSFORM: &str = r#"
 import { readFileSync } from "fs";
 const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
 const output = input.map((event: any) => {
@@ -94,5 +97,38 @@ const output = input.map((event: any) => {
 });
 process.stdout.write(JSON.stringify(output));
 "#;
-    fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
-}
+
+pub const VECTOR_NO_METRIC_TRANSFORM: &str = r#"
+import { readFileSync } from "fs";
+const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
+const output = input.map((event: any) => {
+  if (event.operation === "delete") {
+    return { type: "delete", id: event.id };
+  }
+  return {
+    type: "upsert",
+    id: event.id,
+    document: {},
+    vector: [0.1, 0.2, 0.3],
+  };
+});
+process.stdout.write(JSON.stringify(output));
+"#;
+
+pub const VECTOR_WITH_METRIC_TRANSFORM: &str = r#"
+import { readFileSync } from "fs";
+const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
+const output = input.map((event: any) => {
+  if (event.operation === "delete") {
+    return { type: "delete", id: event.id };
+  }
+  return {
+    type: "upsert",
+    id: event.id,
+    document: {},
+    vector: [0.1, 0.2, 0.3],
+    distance_metric: "cosine_distance",
+  };
+});
+process.stdout.write(JSON.stringify(output));
+"#;
