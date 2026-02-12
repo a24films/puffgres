@@ -9,7 +9,7 @@ use state::{ConfigRecord, StateDb};
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
-use crate::validate::validate_tables;
+use crate::validate::validate_schema;
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -97,7 +97,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
             .map(|(p, c, _)| (p.clone(), c.clone()))
             .collect();
 
-        let validated = validate_tables(env_config, &schema_configs)
+        let validated = validate_schema(env_config, &schema_configs)
             .await
             .map_err(|errors| {
                 for err in &errors {
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(record.namespace, "film_v2");
     }
 
-    // --- New integration test for live table validation ---
+    // --- New integration tests for live validation ---
 
     #[tokio::test]
     async fn test_rejects_nonexistent_table() {
@@ -381,6 +381,68 @@ mod tests {
         assert!(
             err.to_string().contains("error"),
             "expected apply error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_nonexistent_id_column() {
+        let (_container, env_config) = start_postgres().await;
+
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute(
+                "CREATE TABLE col_test (id SERIAL PRIMARY KEY, name TEXT)",
+                &[],
+            )
+            .await
+            .unwrap();
+        drop(pg_client);
+
+        let (_dir, paths) = setup_project();
+        write_config(
+            &paths,
+            "col",
+            1,
+            "public",
+            "col_test",
+            "missing_col",
+            "uint",
+        );
+        write_passthrough_transform(&paths, "col");
+
+        let err = run_async(&paths, &env_config).await.unwrap_err();
+        assert!(
+            err.to_string().contains("error"),
+            "expected apply error for missing column, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_incompatible_id_type() {
+        let (_container, env_config) = start_postgres().await;
+
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .unwrap();
+        pg_client
+            .execute(
+                "CREATE TABLE type_test (id TEXT PRIMARY KEY, name TEXT)",
+                &[],
+            )
+            .await
+            .unwrap();
+        drop(pg_client);
+
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "typed", 1, "public", "type_test", "id", "uint");
+        write_passthrough_transform(&paths, "typed");
+
+        let err = run_async(&paths, &env_config).await.unwrap_err();
+        assert!(
+            err.to_string().contains("error"),
+            "expected apply error for incompatible id type, got: {err}"
         );
     }
 }
