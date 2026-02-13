@@ -1,13 +1,19 @@
 pub mod action;
+pub mod backfill;
 pub mod backoff;
 pub mod error;
 pub mod id;
 pub mod js_transform;
 pub mod mapping;
 pub mod router;
+pub mod row_convert;
 pub mod transform;
 
 pub use action::Action;
+pub use backfill::{
+    BackfillCheckpointer, BackfillConfig, BackfillOutcome, BackfillResult, BackfillSink,
+    run_backfill,
+};
 pub use backoff::{Backoff, BackoffConfig};
 pub use error::CoreError;
 pub use id::DocumentId;
@@ -15,6 +21,7 @@ pub use js_transform::JsTransformer;
 pub use mapping::Mapping;
 pub use replication::{ColumnValue, Operation, RelationCache, RelationInfo, RowEvent, TupleData};
 pub use router::Router;
+pub use row_convert::{pg_rows_to_events, values_to_event};
 pub use transform::Transformer;
 
 pub type Result<T> = std::result::Result<T, CoreError>;

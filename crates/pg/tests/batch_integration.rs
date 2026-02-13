@@ -73,7 +73,7 @@ async fn test_fetch_batch_from_beginning() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 5).await;
 
-    let result = fetch_batch(&client, &default_config(), None)
+    let result = fetch_batch(&client, &default_config(), None, "")
         .await
         .expect("Failed to fetch batch");
 
@@ -87,7 +87,7 @@ async fn test_fetch_batch_with_cursor() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 5).await;
 
-    let result = fetch_batch(&client, &default_config(), Some("0003"))
+    let result = fetch_batch(&client, &default_config(), Some("0003"), "")
         .await
         .expect("Failed to fetch batch");
 
@@ -100,7 +100,7 @@ async fn test_fetch_batch_with_cursor() {
 async fn test_fetch_batch_empty_table() {
     let (_ctx, client) = setup_test_table().await;
 
-    let result = fetch_batch(&client, &default_config(), None)
+    let result = fetch_batch(&client, &default_config(), None, "")
         .await
         .expect("Failed to fetch batch");
 
@@ -114,7 +114,7 @@ async fn test_fetch_batch_exact_batch_size() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 3).await;
 
-    let result = fetch_batch(&client, &default_config(), None)
+    let result = fetch_batch(&client, &default_config(), None, "")
         .await
         .expect("Failed to fetch batch");
 
@@ -131,7 +131,7 @@ async fn test_fetch_batch_paginate_all_rows() {
     let config = default_config();
 
     // First batch
-    let result = fetch_batch(&client, &config, None)
+    let result = fetch_batch(&client, &config, None, "")
         .await
         .expect("Failed to fetch batch 1");
     assert_eq!(result.rows.len(), 3);
@@ -139,7 +139,7 @@ async fn test_fetch_batch_paginate_all_rows() {
     let cursor = result.last_id.clone();
 
     // Second batch
-    let result = fetch_batch(&client, &config, cursor.as_deref())
+    let result = fetch_batch(&client, &config, cursor.as_deref(), "")
         .await
         .expect("Failed to fetch batch 2");
     assert_eq!(result.rows.len(), 3);
@@ -147,7 +147,7 @@ async fn test_fetch_batch_paginate_all_rows() {
     let cursor = result.last_id.clone();
 
     // Third batch (final)
-    let result = fetch_batch(&client, &config, cursor.as_deref())
+    let result = fetch_batch(&client, &config, cursor.as_deref(), "")
         .await
         .expect("Failed to fetch batch 3");
     assert_eq!(result.rows.len(), 1);
@@ -165,7 +165,7 @@ async fn test_fetch_batch_with_specific_columns() {
         ..default_config()
     };
 
-    let result = fetch_batch(&client, &config, None)
+    let result = fetch_batch(&client, &config, None, "")
         .await
         .expect("Failed to fetch batch");
 
@@ -185,7 +185,7 @@ async fn test_fetch_batch_zero_batch_size() {
         ..default_config()
     };
 
-    let err = fetch_batch(&client, &config, None)
+    let err = fetch_batch(&client, &config, None, "")
         .await
         .expect_err("should reject zero batch_size");
     assert!(
@@ -203,7 +203,7 @@ async fn test_fetch_batch_empty_columns() {
         ..default_config()
     };
 
-    let err = fetch_batch(&client, &config, None)
+    let err = fetch_batch(&client, &config, None, "")
         .await
         .expect_err("should reject empty columns");
     assert!(err.to_string().contains("columns list cannot be empty"));
@@ -219,7 +219,7 @@ async fn test_fetch_batch_columns_without_id() {
         ..default_config()
     };
 
-    let result = fetch_batch(&client, &config, None)
+    let result = fetch_batch(&client, &config, None, "")
         .await
         .expect("should succeed even when id column is not in columns list");
 
