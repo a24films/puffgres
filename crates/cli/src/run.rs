@@ -42,7 +42,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         .collect();
 
     if applied_configs.is_empty() {
-        eprintln!("No applied configs. Run `puffgres apply` first.");
+        println!("No applied configs. Run `puffgres apply` first.");
         return Ok(());
     }
 
@@ -98,8 +98,8 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         .await
         .map_err(|e| CliError::Run(format!("failed to ensure publication: {e}")))?;
 
-    eprintln!("Replication slot '{}' ready", SLOT_NAME);
-    eprintln!("Publication '{}' ready", PUBLICATION_NAME);
+    println!("Replication slot '{}' ready", SLOT_NAME);
+    println!("Publication '{}' ready", PUBLICATION_NAME);
 
     // TODO: When a mix of configs have/lack checkpoints, falling back to
     // confirmed_flush_lsn may skip events for configs whose checkpoint is
@@ -149,7 +149,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
     let lsn_display = start_lsn
         .map(|l| pg::PgLsn::from(l).to_string())
         .unwrap_or_else(|| "-".to_string());
-    eprintln!("Streaming from LSN {}", lsn_display);
+    println!("Streaming from LSN {}", lsn_display);
 
     let puff_client = TurbopufferClient::new(
         env_config.turbopuffer_api_key.clone(),
@@ -166,7 +166,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         events_processed.insert(config.name.clone(), count);
     }
 
-    eprintln!("Listening for changes...");
+    println!("Listening for changes...");
 
     // Note: delivery to Turbopuffer is at-least-once. If we crash between
     // send_batch and save_streaming_checkpoint, we'll re-send on restart.
@@ -175,7 +175,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         let batch = match stream.recv_batch().await {
             Ok(Some(batch)) => batch,
             Ok(None) => {
-                eprintln!("Replication stream ended");
+                println!("Replication stream ended");
                 break;
             }
             Err(e) => {
@@ -210,7 +210,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
             let count = events_processed.entry(config_name.to_string()).or_insert(0);
             *count += events.len() as u64;
 
-            eprintln!(
+            println!(
                 "  {} -> {} ({} events, {} total)",
                 config_name,
                 namespace,

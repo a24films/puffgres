@@ -24,14 +24,14 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
     let configs = loader.load_all()?;
 
     if configs.is_empty() {
-        eprintln!("No config files found in configs/");
+        println!("No config files found in configs/");
         return Ok(());
     }
 
     // Static validation (no DB connection needed)
     let static_passed = validate_static(paths, &configs).map_err(|errors| {
         for err in &errors {
-            eprintln!("Error: {}", err);
+            println!("Error: {}", err);
         }
         CliError::Apply(format!("{} config(s) had errors", errors.len()))
     })?;
@@ -64,7 +64,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
 
     if !errors.is_empty() {
         for err in &errors {
-            eprintln!("Error: {}", err);
+            println!("Error: {}", err);
         }
         return Err(CliError::Apply(format!(
             "{} config(s) had errors",
@@ -105,11 +105,11 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
 
             db.insert_config(&record)?;
             applied += 1;
-            eprintln!("Applied: {}", config.name);
+            println!("Applied: {}", config.name);
         }
     }
 
-    eprintln!("{} applied, {} unchanged", applied, skipped);
+    println!("{} applied, {} unchanged", applied, skipped);
 
     Ok(())
 }

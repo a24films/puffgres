@@ -142,7 +142,7 @@ pub async fn validate_live(
 
     if !errors.is_empty() {
         for err in &errors {
-            eprintln!("Error: {}", err);
+            println!("Error: {}", err);
         }
         return Err(CliError::Apply(format!(
             "{} config(s) had errors",

@@ -9,7 +9,7 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
     let configs = db.list_configs()?;
 
     if configs.is_empty() {
-        eprintln!("No configs applied yet. Run `puffgres apply` to apply configs.");
+        println!("No configs applied yet. Run `puffgres apply` to apply configs.");
         return Ok(());
     }
 
@@ -19,23 +19,23 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
         .map(|c| (c.config_name.as_str(), c))
         .collect();
 
-    eprintln!(
+    println!(
         "{:<20} {:<20} {:<8} {:<16} {}",
         "CONFIG", "NAMESPACE", "VERSION", "LSN", "EVENTS"
     );
-    eprintln!("{}", "-".repeat(76));
+    println!("{}", "-".repeat(76));
 
     for config in &configs {
         match checkpoint_map.get(config.name.as_str()) {
             Some(cp) => {
                 let lsn = PgLsn::from(cp.lsn);
-                eprintln!(
+                println!(
                     "{:<20} {:<20} {:<8} {:<16} {}",
                     config.name, config.namespace, config.version, lsn, cp.events_processed,
                 );
             }
             None => {
-                eprintln!(
+                println!(
                     "{:<20} {:<20} {:<8} {:<16} {}",
                     config.name, config.namespace, config.version, "-", "-",
                 );

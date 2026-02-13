@@ -26,7 +26,7 @@ pub async fn run_async(
     let configs = loader.load_all()?;
 
     if configs.is_empty() {
-        eprintln!("No config files found in configs/");
+        println!("No config files found in configs/");
         return Ok(());
     }
 
@@ -79,7 +79,7 @@ pub async fn run_async(
 
     if !errors.is_empty() {
         for err in &errors {
-            eprintln!("Error: {}", err);
+            println!("Error: {}", err);
         }
         return Err(CliError::DryRun(format!(
             "{} config(s) had errors",
@@ -117,9 +117,9 @@ pub async fn run_async(
             Some((column_names, values)) => {
                 match dry_run_transform(paths, config, &column_names, &values).await {
                     Ok(actions) => {
-                        eprintln!("{display}: transform returned {} action(s):", actions.len());
+                        println!("{display}: transform returned {} action(s):", actions.len());
                         for action in &actions {
-                            eprintln!("  {action:?}");
+                            println!("  {action:?}");
                         }
                         passed += 1;
                     }
@@ -130,7 +130,7 @@ pub async fn run_async(
                 }
             }
             None => {
-                eprintln!("{display}: table is empty, skipping dry-run");
+                println!("{display}: table is empty, skipping dry-run");
                 skipped += 1;
             }
         }
@@ -138,7 +138,7 @@ pub async fn run_async(
 
     if !dry_run_errors.is_empty() {
         for err in &dry_run_errors {
-            eprintln!("Error: {}", err);
+            println!("Error: {}", err);
         }
         return Err(CliError::DryRun(format!(
             "{} config(s) had errors",
@@ -146,6 +146,6 @@ pub async fn run_async(
         )));
     }
 
-    eprintln!("{passed} passed, {skipped} skipped (empty tables)");
+    println!("{passed} passed, {skipped} skipped (empty tables)");
     Ok(())
 }
