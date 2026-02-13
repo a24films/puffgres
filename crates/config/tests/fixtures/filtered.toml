@@ -1,0 +1,17 @@
+name = "internal_0001"
+version = 1
+namespace = "internal"
+
+[source]
+schema = "public"
+table = "events"
+
+[id]
+column = "id"
+type = "uint"
+
+[transform]
+path = "transforms/internal.ts"
+
+[filter]
+predicate = "is_internal = true"

@@ -13,6 +13,8 @@ pub struct Config {
     #[serde(default)]
     pub columns: Option<Vec<String>>,
     pub transform: TransformConfig,
+    #[serde(default)]
+    pub filter: Option<FilterConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,11 @@ pub enum IdType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformConfig {
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterConfig {
+    pub predicate: String,
 }
 
 impl Config {
@@ -129,6 +136,30 @@ mod tests {
         let hash2 = config2.content_hash().unwrap();
 
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn parse_config_with_filter() {
+        let config = load_fixture("filtered");
+        let filter = config.filter.expect("filter should be present");
+        assert_eq!(filter.predicate, "is_internal = true");
+    }
+
+    #[test]
+    fn parse_config_without_filter() {
+        let config = load_fixture("valid");
+        assert!(config.filter.is_none());
+    }
+
+    #[test]
+    fn filter_predicate_preserved() {
+        let without_filter = load_fixture("valid");
+        let with_filter = load_fixture("filtered");
+
+        let hash_without = without_filter.content_hash().unwrap();
+        let hash_with = with_filter.content_hash().unwrap();
+
+        assert_ne!(hash_without, hash_with);
     }
 
     #[test]
