@@ -41,11 +41,11 @@ pub fn run(paths: &ProjectPaths, name: &str) -> Result<(), CliError> {
     }
 
     fs::write(&config_path, render_config(name, version))?;
-    eprintln!("Created config:    {}", config_path.display());
+    println!("Created config:    {}", config_path.display());
 
     if !transform_path.exists() {
         fs::write(&transform_path, render_transform(name))?;
-        eprintln!("Created transform: {}", transform_path.display());
+        println!("Created transform: {}", transform_path.display());
     }
 
     Ok(())

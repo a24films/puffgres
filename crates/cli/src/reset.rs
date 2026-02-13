@@ -9,7 +9,7 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
     }
     let db = StateDb::open(&paths.state_db)?;
     db.reset()?;
-    eprintln!("Reset: cleared all configs and checkpoints");
+    println!("Reset: cleared all configs and checkpoints");
     Ok(())
 }
 
