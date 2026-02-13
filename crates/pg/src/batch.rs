@@ -1,0 +1,246 @@
+use tokio_postgres::Client;
+
+use crate::connect::quote_identifier;
+use crate::{PgError, Result};
+
+const CURSOR_ALIAS: &str = "_puffgres_cursor_id";
+
+pub struct BatchQueryConfig {
+    pub schema: String,
+    pub table: String,
+    pub id_column: String,
+    pub columns: Option<Vec<String>>,
+    pub batch_size: u32,
+}
+
+pub struct BatchResult {
+    pub rows: Vec<tokio_postgres::Row>,
+    pub last_id: Option<String>,
+    pub has_more: bool,
+}
+
+fn build_select_clause(config: &BatchQueryConfig) -> Result<String> {
+    let id_col = quote_identifier(&config.id_column);
+    let cursor_expr = format!("{}::text AS {}", id_col, quote_identifier(CURSOR_ALIAS));
+
+    match &config.columns {
+        Some(cols) if cols.is_empty() => Err(PgError::QueryError(
+            "columns list cannot be empty; omit the field to select all columns".to_string(),
+        )),
+        Some(cols) => {
+            let mut parts: Vec<String> = cols.iter().map(|c| quote_identifier(c)).collect();
+            if !cols.iter().any(|c| c == &config.id_column) {
+                parts.push(id_col);
+            }
+            parts.push(cursor_expr);
+            Ok(parts.join(", "))
+        }
+        None => Ok(format!("*, {}", cursor_expr)),
+    }
+}
+
+fn build_qualified_table(config: &BatchQueryConfig) -> String {
+    format!(
+        "{}.{}",
+        quote_identifier(&config.schema),
+        quote_identifier(&config.table),
+    )
+}
+
+pub async fn validate_id_column_uniqueness(
+    client: &Client,
+    config: &BatchQueryConfig,
+) -> Result<()> {
+    let query = r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid
+                                AND a.attnum = ANY(i.indkey)
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relname = $2
+              AND a.attname = $3
+              AND i.indisunique
+              AND array_length(i.indkey, 1) = 1
+        )
+    "#;
+
+    let row = client
+        .query_one(query, &[&config.schema, &config.table, &config.id_column])
+        .await
+        .map_err(|e| {
+            PgError::QueryError(format!(
+                "failed to check uniqueness of column '{}' on {}.{}: {}",
+                config.id_column, config.schema, config.table, e
+            ))
+        })?;
+
+    let has_unique: bool = row.get(0);
+    if !has_unique {
+        return Err(PgError::QueryError(format!(
+            "id column '{}' on {}.{} must have a unique index or primary key constraint; \
+             cursor-based pagination requires unique id values",
+            config.id_column, config.schema, config.table
+        )));
+    }
+
+    Ok(())
+}
+
+pub async fn count_rows(client: &Client, config: &BatchQueryConfig) -> Result<u64> {
+    let qualified_table = build_qualified_table(config);
+    let id_col = quote_identifier(&config.id_column);
+    let query = format!(
+        "SELECT count(*) FROM {} WHERE {} IS NOT NULL",
+        qualified_table, id_col,
+    );
+
+    let row = client.query_one(&query, &[]).await.map_err(|e| {
+        PgError::QueryError(format!(
+            "Failed to count rows in {}.{}: {}",
+            config.schema, config.table, e
+        ))
+    })?;
+
+    let count: i64 = row.get(0);
+    Ok(count as u64)
+}
+
+pub async fn fetch_batch(
+    client: &Client,
+    config: &BatchQueryConfig,
+    cursor_id: Option<&str>,
+) -> Result<BatchResult> {
+    if config.batch_size == 0 {
+        return Err(PgError::QueryError(
+            "batch_size must be greater than 0".to_string(),
+        ));
+    }
+
+    let qualified_table = build_qualified_table(config);
+    let id_col = quote_identifier(&config.id_column);
+    let columns_clause = build_select_clause(config)?;
+
+    let limit = config.batch_size + 1;
+    let limit_param = i64::from(limit);
+
+    let rows = if let Some(cursor) = cursor_id {
+        let query = format!(
+            "SELECT {} FROM {} WHERE {} IS NOT NULL AND {} > $1 ORDER BY {} ASC LIMIT $2",
+            columns_clause, qualified_table, id_col, id_col, id_col,
+        );
+        client.query(&query, &[&cursor, &limit_param]).await
+    } else {
+        let query = format!(
+            "SELECT {} FROM {} WHERE {} IS NOT NULL ORDER BY {} ASC LIMIT $1",
+            columns_clause, qualified_table, id_col, id_col,
+        );
+        client.query(&query, &[&limit_param]).await
+    }
+    .map_err(|e| {
+        PgError::QueryError(format!(
+            "Failed to fetch batch from {}.{}: {}",
+            config.schema, config.table, e
+        ))
+    })?;
+
+    let has_more = rows.len() > config.batch_size as usize;
+
+    let rows: Vec<tokio_postgres::Row> = if has_more {
+        rows.into_iter().take(config.batch_size as usize).collect()
+    } else {
+        rows
+    };
+
+    let last_id = rows.last().map(|row| row.get::<&str, String>(CURSOR_ALIAS));
+
+    Ok(BatchResult {
+        rows,
+        last_id,
+        has_more,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> BatchQueryConfig {
+        BatchQueryConfig {
+            schema: "public".to_string(),
+            table: "users".to_string(),
+            id_column: "id".to_string(),
+            columns: None,
+            batch_size: 100,
+        }
+    }
+
+    #[test]
+    fn build_qualified_table_simple() {
+        let config = test_config();
+        assert_eq!(build_qualified_table(&config), "\"public\".\"users\"");
+    }
+
+    #[test]
+    fn build_qualified_table_with_special_chars() {
+        let config = BatchQueryConfig {
+            schema: "my schema".to_string(),
+            table: "my\"table".to_string(),
+            ..test_config()
+        };
+        assert_eq!(
+            build_qualified_table(&config),
+            "\"my schema\".\"my\"\"table\""
+        );
+    }
+
+    #[test]
+    fn build_select_clause_star() {
+        let config = test_config();
+        assert_eq!(
+            build_select_clause(&config).unwrap(),
+            "*, \"id\"::text AS \"_puffgres_cursor_id\""
+        );
+    }
+
+    #[test]
+    fn build_select_clause_specific_columns() {
+        let config = BatchQueryConfig {
+            columns: Some(vec![
+                "id".to_string(),
+                "name".to_string(),
+                "email".to_string(),
+            ]),
+            ..test_config()
+        };
+        assert_eq!(
+            build_select_clause(&config).unwrap(),
+            "\"id\", \"name\", \"email\", \"id\"::text AS \"_puffgres_cursor_id\""
+        );
+    }
+
+    #[test]
+    fn build_select_clause_empty_columns_error() {
+        let config = BatchQueryConfig {
+            columns: Some(vec![]),
+            ..test_config()
+        };
+        let err = build_select_clause(&config).unwrap_err();
+        assert!(err.to_string().contains("columns list cannot be empty"));
+    }
+
+    #[test]
+    fn build_select_clause_adds_missing_id_column() {
+        let config = BatchQueryConfig {
+            columns: Some(vec!["name".to_string(), "email".to_string()]),
+            ..test_config()
+        };
+        let clause = build_select_clause(&config).unwrap();
+        assert!(clause.contains("\"id\""));
+        assert!(clause.contains("\"name\""));
+        assert!(clause.contains("\"email\""));
+        assert!(clause.contains("\"_puffgres_cursor_id\""));
+    }
+}
