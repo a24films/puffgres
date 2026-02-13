@@ -1,7 +1,5 @@
-use bytes::Bytes;
 use config::Config;
-use puffgres_core::{Action, DocumentId, JsTransformer, Transformer};
-use replication::{ColumnValue, Operation, RowEvent, TupleData};
+use puffgres_core::{Action, JsTransformer, Transformer, values_to_event};
 
 use crate::paths::ProjectPaths;
 
@@ -15,46 +13,9 @@ pub async fn dry_run_transform(
     let transform_path = paths.root.join(&config.transform.path);
     let transformer = JsTransformer::new(transform_path, config.id.id_type.clone());
 
-    // Find the id column index
-    let id_col_idx = column_names
-        .iter()
-        .position(|c| c == &config.id.column)
-        .ok_or_else(|| {
-            format!(
-                "id column '{}' not found in sample row columns",
-                config.id.column
-            )
-        })?;
-
-    // Parse the id value
-    let id_text = values[id_col_idx]
-        .as_deref()
-        .ok_or_else(|| format!("id column '{}' is NULL in sample row", config.id.column))?;
-
-    let doc_id = DocumentId::from_text(id_text, &config.id.id_type).map_err(|e| {
-        format!(
-            "cannot parse id column '{}' value '{}' as {:?}: {e}",
-            config.id.column, id_text, config.id.id_type
-        )
-    })?;
-
-    // Build a simulated insert event
-    let tuple = TupleData {
-        columns: values
-            .iter()
-            .map(|v| match v {
-                Some(s) => ColumnValue::Text(Bytes::from(s.clone())),
-                None => ColumnValue::Null,
-            })
-            .collect(),
-    };
-
-    let event = RowEvent {
-        relation_id: 0,
-        operation: Operation::Insert,
-        new_tuple: Some(tuple),
-        old_tuple: None,
-    };
+    let (event, doc_id) =
+        values_to_event(column_names, values, &config.id.column, &config.id.id_type)
+            .map_err(|e| format!("failed to build event from sample row: {e}"))?;
 
     // Run the transform
     let actions = transformer
