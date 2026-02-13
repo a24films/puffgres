@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn reset_rejects_uninitialized_project() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = ProjectPaths::new(dir.path().to_path_buf());
+        let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
 
         let err = run(&paths).unwrap_err();
         assert!(
