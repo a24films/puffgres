@@ -1,4 +1,5 @@
 pub mod action;
+pub mod backoff;
 pub mod error;
 pub mod id;
 pub mod js_transform;
@@ -7,6 +8,7 @@ pub mod router;
 pub mod transform;
 
 pub use action::Action;
+pub use backoff::{Backoff, BackoffConfig};
 pub use error::CoreError;
 pub use id::DocumentId;
 pub use js_transform::JsTransformer;
