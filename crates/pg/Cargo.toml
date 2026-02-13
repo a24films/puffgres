@@ -18,3 +18,4 @@ test-utils = ["dep:testcontainers", "dep:testcontainers-modules"]
 
 [dev-dependencies]
 pg = { path = ".", features = ["test-utils"] }
+replication = { path = "../replication" }

@@ -1,4 +1,5 @@
 use tokio_postgres::Client;
+use tokio_postgres::error::SqlState;
 
 use crate::{PgError, Result};
 
@@ -36,7 +37,7 @@ async fn get_slot_plugin(client: &Client, slot_name: &str) -> Result<Option<Stri
 }
 
 async fn create_slot(client: &Client, slot_name: &str) -> Result<()> {
-    client
+    match client
         .query_one(
             &format!(
                 "SELECT pg_create_logical_replication_slot($1, '{}')",
@@ -45,11 +46,26 @@ async fn create_slot(client: &Client, slot_name: &str) -> Result<()> {
             &[&slot_name],
         )
         .await
-        .map_err(|e| {
-            PgError::ReplicationError(format!("Failed to create slot '{}': {}", slot_name, e))
-        })?;
-
-    Ok(())
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.code() == Some(&SqlState::DUPLICATE_OBJECT) => {
+            match get_slot_plugin(client, slot_name).await?.as_deref() {
+                Some(PGOUTPUT) => Ok(()),
+                Some(other) => Err(PgError::ReplicationError(format!(
+                    "Slot '{}' exists but uses plugin '{}', expected '{}'",
+                    slot_name, other, PGOUTPUT
+                ))),
+                None => Err(PgError::ReplicationError(format!(
+                    "Slot '{}' exists but has no plugin",
+                    slot_name
+                ))),
+            }
+        }
+        Err(e) => Err(PgError::ReplicationError(format!(
+            "Failed to create slot '{}': {}",
+            slot_name, e
+        ))),
+    }
 }
 
 pub async fn ensure_slot(client: &Client, slot_name: &str) -> Result<()> {
@@ -73,6 +89,58 @@ pub async fn ensure_slot(client: &Client, slot_name: &str) -> Result<()> {
     }
 
     create_slot(client, slot_name).await
+}
+
+/// Kill any stale backend still holding the replication slot from a previous run.
+pub async fn terminate_active_slot_backend(client: &Client, slot_name: &str) -> Result<()> {
+    let row = client
+        .query_one(
+            "SELECT active_pid FROM pg_replication_slots WHERE slot_name = $1",
+            &[&slot_name],
+        )
+        .await
+        .map_err(|e| {
+            PgError::ReplicationError(format!(
+                "Failed to check active PID for slot '{}': {}",
+                slot_name, e
+            ))
+        })?;
+
+    let active_pid: Option<i32> = row.get(0);
+    if let Some(pid) = active_pid {
+        client
+            .execute("SELECT pg_terminate_backend($1)", &[&pid])
+            .await
+            .map_err(|e| {
+                PgError::ReplicationError(format!(
+                    "Failed to terminate backend PID {} for slot '{}': {}",
+                    pid, slot_name, e
+                ))
+            })?;
+        println!(
+            "Terminated stale backend PID {} on slot '{}'",
+            pid, slot_name
+        );
+    }
+
+    Ok(())
+}
+
+pub async fn get_active_pid(client: &Client, slot_name: &str) -> Result<Option<i32>> {
+    let row = client
+        .query_one(
+            "SELECT active_pid FROM pg_replication_slots WHERE slot_name = $1",
+            &[&slot_name],
+        )
+        .await
+        .map_err(|e| {
+            PgError::ReplicationError(format!(
+                "Failed to check active PID for slot '{}': {}",
+                slot_name, e
+            ))
+        })?;
+
+    Ok(row.get(0))
 }
 
 pub async fn get_confirmed_flush_lsn(client: &Client, slot_name: &str) -> Result<Option<u64>> {
