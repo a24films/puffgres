@@ -61,7 +61,7 @@ pub async fn validate_tables(client: &Client, tables: &[(&str, &str)]) -> Result
     Ok(())
 }
 
-fn quote_identifier(ident: &str) -> String {
+pub(crate) fn quote_identifier(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
