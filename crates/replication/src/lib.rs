@@ -1,8 +1,10 @@
 pub mod error;
 pub mod event;
+pub mod relation;
 
 pub use error::ReplicationError;
 pub use event::{ColumnValue, Operation, RowEvent, TupleData};
+pub use relation::{ColumnInfo, RelationCache, RelationInfo, ReplicaIdentity};
 
 pub type Result<T> = std::result::Result<T, ReplicationError>;
 
