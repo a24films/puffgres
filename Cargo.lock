@@ -1518,6 +1518,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "puffgres-core"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "pg",
+ "replication",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
