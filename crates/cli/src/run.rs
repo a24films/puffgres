@@ -7,12 +7,12 @@ use config::ConfigLoader;
 use pg::batch::BatchQueryConfig;
 use puff::TurbopufferClient;
 use puffgres_core::{
-    BackfillConfig, BackfillOutcome, Backoff, BackoffConfig, JsTransformer, Mapping, Router,
-    Transformer, run_backfill,
+    BackfillConfig, BackfillOutcome, Backoff, BackoffConfig, DocumentId, JsTransformer, Mapping,
+    Router, Transformer, run_backfill,
 };
-use replication::{ReplicationStream, ReplicationStreamConfig};
+use replication::{ReplicationStream, ReplicationStreamConfig, RowEvent};
 use sha2::{Digest, Sha256};
-use state::{BackfillProgress, BackfillStatus, StateDb, StreamingCheckpoint};
+use state::{BackfillProgress, BackfillStatus, DlqEntry, StateDb, StreamingCheckpoint};
 
 use crate::env::EnvConfig;
 use crate::error::CliError;
@@ -24,6 +24,9 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(10);
 // TODO: for ergonomics, these can go in the project config, in future PR
 const BACKFILL_BATCH_SIZE: u32 = 1000;
 const BACKFILL_MAX_RETRIES: u32 = 5;
+const DLQ_REPLAY_INTERVAL: u64 = 10; // replay DLQ every N batches
+const DLQ_REPLAY_BATCH_SIZE: usize = 50;
+const DLQ_MAX_RETRIES: u32 = 5;
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -393,9 +396,15 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
 
     println!("Listening for changes...");
 
+    db.ensure_dlq_table()?;
+
+    // Replay any retryable DLQ entries from previous runs
+    replay_dlq(&db, &transformers, &namespaces, &puff_client).await?;
+
     // Note: delivery to Turbopuffer is at-least-once. If we crash between
     // send_batch and save_streaming_checkpoint, we'll re-send on restart.
     // This is fine because Turbopuffer upserts are idempotent.
+    let mut batch_count: u64 = 0;
     loop {
         let batch = match stream.recv_batch().await {
             Ok(Some(batch)) => batch,
@@ -423,26 +432,46 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
                 .get(*config_name)
                 .expect("namespace missing for applied config");
 
-            let actions = transformer
-                .transform_batch(events.as_slice())
-                .await
-                .map_err(|e| CliError::Run(format!("transform error for {config_name}: {e}")))?;
+            let transform_result = transformer.transform_batch(events.as_slice()).await;
 
-            puff_client
-                .send_batch(namespace, &actions)
-                .await
-                .map_err(|e| CliError::Run(format!("turbopuffer error for {config_name}: {e}")))?;
+            match transform_result {
+                Err(e) => {
+                    eprintln!("  transform error for {config_name}: {e} — sending to DLQ");
+                    send_events_to_dlq(
+                        &db,
+                        config_name,
+                        batch.ack_lsn,
+                        events,
+                        &e.to_string(),
+                        false,
+                    )?;
+                }
+                Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
+                    Err(e) => {
+                        eprintln!("  turbopuffer error for {config_name}: {e} — sending to DLQ");
+                        send_events_to_dlq(
+                            &db,
+                            config_name,
+                            batch.ack_lsn,
+                            events,
+                            &e.to_string(),
+                            false,
+                        )?;
+                    }
+                    Ok(()) => {
+                        let count = events_processed.entry(config_name.to_string()).or_insert(0);
+                        *count += events.len() as u64;
 
-            let count = events_processed.entry(config_name.to_string()).or_insert(0);
-            *count += events.len() as u64;
-
-            println!(
-                "  {} -> {} ({} events, {} total)",
-                config_name,
-                namespace,
-                events.len(),
-                count,
-            );
+                        println!(
+                            "  {} -> {} ({} events, {} total)",
+                            config_name,
+                            namespace,
+                            events.len(),
+                            count,
+                        );
+                    }
+                },
+            }
         }
 
         for (config_name, _) in &config_events {
@@ -455,7 +484,146 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
             db.save_streaming_checkpoint(&checkpoint)?;
         }
 
+        // Ack unconditionally — failed events are in the DLQ for retry
         stream.ack();
+
+        batch_count += 1;
+        if batch_count % DLQ_REPLAY_INTERVAL == 0 {
+            replay_dlq(&db, &transformers, &namespaces, &puff_client).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Serialize routed events and insert them into the DLQ.
+/// `permanent` = true for transform errors (bad data won't fix itself on retry),
+/// false for sink errors (transient network/server failures).
+fn send_events_to_dlq(
+    db: &StateDb,
+    config_name: &str,
+    lsn: u64,
+    events: &[(&RowEvent, DocumentId)],
+    error: &str,
+    permanent: bool,
+) -> Result<(), CliError> {
+    for (event, doc_id) in events {
+        let event_json = serde_json::to_string(event)
+            .map_err(|e| CliError::Run(format!("failed to serialize event for DLQ: {e}")))?;
+        let doc_id_json = serde_json::to_string(doc_id)
+            .map_err(|e| CliError::Run(format!("failed to serialize doc_id for DLQ: {e}")))?;
+        let entry = if permanent {
+            DlqEntry::permanent(config_name, lsn, event_json, Some(doc_id_json), error)
+        } else {
+            DlqEntry::retryable(config_name, lsn, event_json, Some(doc_id_json), error)
+        };
+        db.insert_dlq_entry(&entry)?;
+    }
+    Ok(())
+}
+
+/// Fetch retryable DLQ entries and attempt to re-transform + re-send them.
+/// On success: delete the entry. On failure: increment retry count, mark permanent
+/// if max retries exhausted.
+async fn replay_dlq(
+    db: &StateDb,
+    transformers: &HashMap<String, Box<dyn Transformer>>,
+    namespaces: &HashMap<String, String>,
+    puff_client: &TurbopufferClient,
+) -> Result<(), CliError> {
+    let entries = db.list_retryable_entries(DLQ_REPLAY_BATCH_SIZE)?;
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("Replaying {} DLQ entries...", entries.len());
+
+    for entry in &entries {
+        let transformer = match transformers.get(&entry.config_name) {
+            Some(t) => t,
+            None => {
+                eprintln!(
+                    "  DLQ entry {}: config '{}' no longer exists, marking permanent",
+                    entry.id, entry.config_name
+                );
+                db.mark_permanent(entry.id, "config no longer exists")?;
+                continue;
+            }
+        };
+        let namespace = match namespaces.get(&entry.config_name) {
+            Some(ns) => ns,
+            None => {
+                db.mark_permanent(entry.id, "namespace no longer exists")?;
+                continue;
+            }
+        };
+
+        let event: RowEvent = match serde_json::from_str(&entry.event_json) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!(
+                    "  DLQ entry {}: failed to deserialize event, marking permanent: {e}",
+                    entry.id
+                );
+                db.mark_permanent(entry.id, &format!("deserialization failed: {e}"))?;
+                continue;
+            }
+        };
+
+        let doc_id = match &entry.doc_id {
+            Some(json) => match serde_json::from_str::<DocumentId>(json) {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!(
+                        "  DLQ entry {}: failed to deserialize doc_id, marking permanent: {e}",
+                        entry.id
+                    );
+                    db.mark_permanent(entry.id, &format!("doc_id deserialization failed: {e}"))?;
+                    continue;
+                }
+            },
+            // Legacy entries written before doc_id was stored.
+            None => {
+                eprintln!(
+                    "  DLQ entry {}: missing doc_id (legacy entry), marking permanent",
+                    entry.id
+                );
+                db.mark_permanent(entry.id, "missing doc_id (legacy entry)")?;
+                continue;
+            }
+        };
+        let transform_result = transformer.transform_batch(&[(&event, doc_id)]).await;
+
+        match transform_result {
+            Err(e) => {
+                if entry.retry_count + 1 >= DLQ_MAX_RETRIES {
+                    eprintln!(
+                        "  DLQ entry {}: max retries exhausted, marking permanent: {e}",
+                        entry.id
+                    );
+                    db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))?;
+                } else {
+                    db.increment_retry(entry.id)?;
+                }
+            }
+            Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
+                Err(e) => {
+                    if entry.retry_count + 1 >= DLQ_MAX_RETRIES {
+                        eprintln!(
+                            "  DLQ entry {}: max retries exhausted, marking permanent: {e}",
+                            entry.id
+                        );
+                        db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))?;
+                    } else {
+                        db.increment_retry(entry.id)?;
+                    }
+                }
+                Ok(()) => {
+                    db.delete_dlq_entry(entry.id)?;
+                    eprintln!("  DLQ entry {}: replayed successfully", entry.id);
+                }
+            },
+        }
     }
 
     Ok(())

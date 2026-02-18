@@ -1868,6 +1868,7 @@ dependencies = [
  "puffgres-core",
  "replication",
  "serde",
+ "serde_json",
  "sha2",
  "state",
  "temp-env",
@@ -2087,8 +2088,11 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "replication"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "pgwire-replication",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -3235,6 +3239,7 @@ checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
 dependencies = [
  "getrandom 0.4.1",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

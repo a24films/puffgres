@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 
 // In the original implementation, we would parse replication stream values in all cases.
 // This meant, for every wire operation, we'd do a bunch of work, primarily copying WAL
@@ -11,8 +12,26 @@ use bytes::Bytes;
 // (github.com/isdaniel/pg-walstream) handles this case. It's licensed under BSD-3, so
 // was totally fine to use the same pattern, and it's rewritten here.
 
+mod bytes_base64 {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use bytes::Bytes;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Bytes, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Bytes, D::Error> {
+        let encoded = String::deserialize(d)?;
+        STANDARD
+            .decode(&encoded)
+            .map(Bytes::from)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// A single column value from a WAL tuple.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ColumnValue {
     /// Column is SQL NULL.
     Null,
@@ -20,9 +39,9 @@ pub enum ColumnValue {
     /// old-tuples when the column is stored out-of-line and wasn't touched.
     Unchanged,
     /// Text-format value — the normal case for pgoutput logical replication.
-    Text(Bytes),
+    Text(#[serde(with = "bytes_base64")] Bytes),
     /// Binary-format value (requires `binary = true` on the publication, PG 14+).
-    Binary(Bytes),
+    Binary(#[serde(with = "bytes_base64")] Bytes),
 }
 
 impl ColumnValue {
@@ -44,13 +63,13 @@ impl ColumnValue {
 }
 
 /// A complete row of column values from a WAL message.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TupleData {
     pub columns: Vec<ColumnValue>,
 }
 
 /// The type of DML operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operation {
     Insert,
     Update,
@@ -58,7 +77,7 @@ pub enum Operation {
 }
 
 /// A decoded row-level change event.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowEvent {
     pub relation_id: u32,
     pub operation: Operation,
@@ -72,6 +91,55 @@ pub struct RowEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json;
+
+    #[test]
+    fn test_row_event_serializes_to_json() {
+        let event = RowEvent {
+            relation_id: 16384,
+            operation: Operation::Insert,
+            new_tuple: Some(TupleData {
+                columns: vec![
+                    ColumnValue::Text(Bytes::from_static(b"hello")),
+                    ColumnValue::Null,
+                ],
+            }),
+            old_tuple: None,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("\"relation_id\":16384"));
+        assert!(json.contains("\"Insert\""));
+    }
+
+    #[test]
+    fn test_row_event_roundtrips_through_json() {
+        let event = RowEvent {
+            relation_id: 42,
+            operation: Operation::Update,
+            new_tuple: Some(TupleData {
+                columns: vec![
+                    ColumnValue::Text(Bytes::from_static(b"new_val")),
+                    ColumnValue::Binary(Bytes::from_static(b"\x00\x01\x02")),
+                ],
+            }),
+            old_tuple: Some(TupleData {
+                columns: vec![ColumnValue::Text(Bytes::from_static(b"old_val"))],
+            }),
+        };
+
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deserialized: RowEvent = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(deserialized.relation_id, 42);
+        assert_eq!(deserialized.operation, Operation::Update);
+        assert!(deserialized.new_tuple.is_some());
+        assert!(deserialized.old_tuple.is_some());
+
+        let new_cols = &deserialized.new_tuple.unwrap().columns;
+        assert_eq!(new_cols.len(), 2);
+        assert_eq!(new_cols[0].as_bytes(), Some(b"new_val" as &[u8]));
+        assert_eq!(new_cols[1].as_bytes(), Some(b"\x00\x01\x02" as &[u8]));
+    }
 
     #[test]
     fn column_value_null() {
