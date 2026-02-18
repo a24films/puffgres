@@ -1,7 +1,11 @@
+pub mod decoder;
 pub mod error;
 pub mod event;
 pub mod relation;
 
+pub use decoder::{
+    BeginInfo, CommitInfo, DeleteInfo, InsertInfo, TruncateInfo, UpdateInfo, WalMessage,
+};
 pub use error::ReplicationError;
 pub use event::{ColumnValue, Operation, RowEvent, TupleData};
 pub use relation::{ColumnInfo, RelationCache, RelationInfo, ReplicaIdentity};
