@@ -9,8 +9,10 @@ config = { path = "../config" }
 derive_more = { version = "2.1.1", features = ["display"] }
 pg = { path = "../pg" }
 replication = { path = "../replication" }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["process", "io-util"] }
 uuid = { version = "1.20.0", features = ["v4"] }
 
 [dev-dependencies]
