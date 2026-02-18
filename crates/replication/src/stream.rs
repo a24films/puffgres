@@ -39,7 +39,8 @@ pub struct ReplicationStreamConfig {
 /// All row events from a single committed transaction.
 pub struct StreamingBatch {
     pub events: Vec<RowEvent>,
-    pub end_lsn: u64,
+    /// Commit LSN for this transaction — used for checkpointing and ack.
+    pub ack_lsn: u64,
 }
 
 struct TransactionState {
@@ -157,7 +158,7 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                         self.pending_lsn = Some(end_lsn);
                         return Ok(Some(StreamingBatch {
                             events: txn.events,
-                            end_lsn: end_lsn.0,
+                            ack_lsn: end_lsn.0,
                         }));
                     }
                 }
@@ -257,6 +258,7 @@ mod tests {
 
         let batch = stream.recv_batch().await.unwrap().unwrap();
         assert!(batch.events.is_empty());
+        assert_eq!(batch.ack_lsn, 200);
         assert!(stream.client.acked_lsns().is_empty());
     }
 
@@ -275,7 +277,8 @@ mod tests {
             })),
         ]);
 
-        let _batch = stream.recv_batch().await.unwrap().unwrap();
+        let batch = stream.recv_batch().await.unwrap().unwrap();
+        assert_eq!(batch.ack_lsn, 200);
         // simulate successful processing, then ack
         stream.ack();
         assert_eq!(stream.client.acked_lsns(), vec![200]);
@@ -299,5 +302,42 @@ mod tests {
         let _batch = stream.recv_batch().await.unwrap().unwrap();
         // simulate a processing failure — don't call ack
         assert!(stream.client.acked_lsns().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_batch_has_correct_ack_lsn() {
+        let mut stream = make_stream(vec![
+            Ok(Some(ReplicationEvent::Begin {
+                final_lsn: Lsn(0),
+                xid: 1,
+                commit_time_micros: 0,
+            })),
+            Ok(Some(ReplicationEvent::Commit {
+                lsn: Lsn(500),
+                end_lsn: Lsn(1000),
+                commit_time_micros: 0,
+            })),
+            // Second transaction with different LSN
+            Ok(Some(ReplicationEvent::Begin {
+                final_lsn: Lsn(0),
+                xid: 2,
+                commit_time_micros: 0,
+            })),
+            Ok(Some(ReplicationEvent::Commit {
+                lsn: Lsn(1500),
+                end_lsn: Lsn(2000),
+                commit_time_micros: 0,
+            })),
+        ]);
+
+        let batch1 = stream.recv_batch().await.unwrap().unwrap();
+        assert_eq!(batch1.ack_lsn, 1000);
+        stream.ack();
+
+        let batch2 = stream.recv_batch().await.unwrap().unwrap();
+        assert_eq!(batch2.ack_lsn, 2000);
+        stream.ack();
+
+        assert_eq!(stream.client.acked_lsns(), vec![1000, 2000]);
     }
 }
