@@ -1,11 +1,12 @@
 use config::IdType;
 use derive_more::Display;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::CoreError;
 
 /// A typed document identifier extracted from a row's primary key column.
-#[derive(Debug, Clone, PartialEq, Display)]
+#[derive(Debug, Clone, PartialEq, Display, Serialize, Deserialize)]
 pub enum DocumentId {
     Uint(u64),
     Int(i64),
