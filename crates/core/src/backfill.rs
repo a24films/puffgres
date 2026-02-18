@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use async_trait::async_trait;
 
 use crate::backoff::{Backoff, BackoffConfig};
@@ -16,6 +18,11 @@ macro_rules! retry_or_fail {
             Ok(val) => val,
             Err(e) => match $backoff.next_delay() {
                 Some(delay) => {
+                    tracing::warn!(
+                        error = %e,
+                        retry_delay_ms = delay.as_millis() as u64,
+                        "backfill batch error, retrying",
+                    );
                     tokio::time::sleep(delay).await;
                     continue;
                 }
@@ -122,7 +129,9 @@ pub async fn run_backfill(
     });
 
     // 5. Main loop
+    let mut batch_num: u64 = 0;
     loop {
+        let batch_start = Instant::now();
         let batch_result = retry_or_fail!(
             backoff,
             processed,
@@ -190,6 +199,18 @@ pub async fn run_backfill(
         backoff.reset();
         processed += batch_len;
         cursor = batch_result.last_id;
+        batch_num += 1;
+
+        tracing::info!(
+            config = %config.config_name,
+            batch = batch_num,
+            rows = batch_len,
+            total_rows = processed,
+            cursor = cursor.as_deref().unwrap_or("-"),
+            elapsed_ms = batch_start.elapsed().as_millis() as u64,
+            has_more = batch_result.has_more,
+            "backfill batch complete",
+        );
 
         if !batch_result.has_more {
             break;

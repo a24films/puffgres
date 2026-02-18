@@ -1,6 +1,8 @@
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, MeterProvider};
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::{LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing_subscriber::EnvFilter;
@@ -11,6 +13,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 pub struct Telemetry {
     _tracer_provider: SdkTracerProvider,
     _meter_provider: SdkMeterProvider,
+    _logger_provider: SdkLoggerProvider,
 }
 
 pub struct Metrics {
@@ -28,21 +31,46 @@ pub struct Metrics {
     pub replication_acks: Counter<u64>,
 }
 
-/// Sets up tracing + metrics export via OTLP. Keep the returned
-/// `Telemetry` alive for the lifetime of the process.
-pub fn init(otlp_endpoint: &str) -> Result<(Telemetry, Metrics), crate::CliError> {
+/// Sets up console-only tracing to stdout (no OTLP export).
+pub fn init_console() {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
-        .with_thread_ids(false);
+        .with_thread_ids(false)
+        .with_writer(std::io::stdout);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .init();
+}
+
+/// Sets up tracing to stdout + metrics/traces export via OTLP.
+/// Keep the returned `Telemetry` alive for the lifetime of the process.
+///
+/// `otlp_endpoint` is the base OTLP endpoint (e.g. `https://host/otlp`).
+/// Per-signal paths (`/v1/traces`, `/v1/metrics`) are appended here because
+/// `.with_endpoint()` uses the URL verbatim — the library only appends
+/// those paths when reading from the `OTEL_EXPORTER_OTLP_ENDPOINT` env var.
+///
+/// Headers are read automatically from `OTEL_EXPORTER_OTLP_HEADERS`.
+pub fn init(otlp_endpoint: &str) -> (Telemetry, Metrics) {
+    let base = otlp_endpoint.trim_end_matches('/');
+
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_writer(std::io::stdout);
 
     let span_exporter = SpanExporter::builder()
         .with_http()
-        .with_endpoint(otlp_endpoint)
+        .with_endpoint(&format!("{base}/v1/traces"))
         .with_protocol(Protocol::HttpBinary)
         .build()
-        .map_err(|e| crate::CliError::Run(format!("failed to create OTLP span exporter: {e}")))?;
+        .expect("failed to create OTLP span exporter");
 
     let tracer_provider = SdkTracerProvider::builder()
         .with_batch_exporter(span_exporter)
@@ -53,10 +81,10 @@ pub fn init(otlp_endpoint: &str) -> Result<(Telemetry, Metrics), crate::CliError
 
     let metric_exporter = MetricExporter::builder()
         .with_http()
-        .with_endpoint(otlp_endpoint)
+        .with_endpoint(&format!("{base}/v1/metrics"))
         .with_protocol(Protocol::HttpBinary)
         .build()
-        .map_err(|e| crate::CliError::Run(format!("failed to create OTLP metric exporter: {e}")))?;
+        .expect("failed to create OTLP metric exporter");
 
     let metric_reader = PeriodicReader::builder(metric_exporter).build();
     let meter_provider = SdkMeterProvider::builder()
@@ -66,34 +94,34 @@ pub fn init(otlp_endpoint: &str) -> Result<(Telemetry, Metrics), crate::CliError
     let meter = meter_provider.meter("puffgres");
     let metrics = build_metrics(&meter);
 
+    let log_exporter = LogExporter::builder()
+        .with_http()
+        .with_endpoint(&format!("{base}/v1/logs"))
+        .with_protocol(Protocol::HttpBinary)
+        .build()
+        .expect("failed to create OTLP log exporter");
+
+    let logger_provider = SdkLoggerProvider::builder()
+        .with_batch_exporter(log_exporter)
+        .build();
+
+    let otel_log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
+
     tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt_layer)
         .with(otel_trace_layer)
+        .with(otel_log_layer)
         .init();
 
-    Ok((
+    (
         Telemetry {
             _tracer_provider: tracer_provider,
             _meter_provider: meter_provider,
+            _logger_provider: logger_provider,
         },
         metrics,
-    ))
-}
-
-/// Sets up a plain fmt subscriber for CLI output when no OTLP endpoint
-/// is configured. Ensures tracing::info! etc. still appear on stderr.
-pub fn init_fmt_only() {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(true)
-                .with_thread_ids(false),
-        )
-        .init();
+    )
 }
 
 /// Install panic hook that emits tracing::error! so panics

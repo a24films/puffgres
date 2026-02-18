@@ -63,7 +63,7 @@ impl Router {
                             .push((event, id));
                     }
                     Err(e) => {
-                        eprintln!("Warning: failed to extract ID for {}: {e}", mapping.name);
+                        tracing::warn!(config = %mapping.name, error = %e, "failed to extract ID");
                     }
                 }
             }

@@ -16,6 +16,7 @@ use state::{BackfillProgress, BackfillStatus, DlqEntry, StateDb, StreamingCheckp
 
 use crate::env::EnvConfig;
 use crate::error::CliError;
+use crate::observability::Metrics;
 use crate::paths::ProjectPaths;
 use crate::project_config::ProjectConfig;
 
@@ -27,10 +28,11 @@ pub fn run(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     project_config: &ProjectConfig,
+    metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::Run(format!("failed to create async runtime: {e}")))?;
-    rt.block_on(run_async(paths, env_config, project_config))
+    rt.block_on(run_async(paths, env_config, project_config, metrics))
 }
 
 fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
@@ -132,10 +134,12 @@ mod tests {
     }
 }
 
+#[tracing::instrument(name = "run", skip_all)]
 async fn run_async(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     project_config: &ProjectConfig,
+    metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
     let db = StateDb::open(&paths.state_db)?;
 
@@ -273,6 +277,7 @@ async fn run_async(
     .map_err(|e| CliError::Run(format!("failed to create turbopuffer client: {e}")))?;
 
     if !needs_backfill.is_empty() {
+        let _backfill_span = tracing::info_span!("backfill").entered();
         let watermark = pg::slot::get_current_wal_lsn(&pg_client)
             .await
             .map_err(|e| CliError::Run(format!("failed to get current WAL LSN: {e}")))?;
@@ -329,6 +334,9 @@ async fn run_async(
                         rows = result.processed_rows,
                         "backfill complete",
                     );
+                    if let Some(m) = metrics {
+                        m.backfill_rows_processed.add(result.processed_rows, &[]);
+                    }
                     watermark_lsns.push(watermark);
                 }
                 BackfillOutcome::Failed { error, .. } => {
@@ -438,6 +446,7 @@ async fn run_async(
         &namespaces,
         &puff_client,
         project_config,
+        metrics,
     )
     .await?;
 
@@ -462,6 +471,13 @@ async fn run_async(
             continue;
         }
 
+        let _batch_span = tracing::info_span!(
+            "cdc_batch",
+            lsn = batch.ack_lsn,
+            events = batch.events.len()
+        )
+        .entered();
+        let batch_start = std::time::Instant::now();
         let config_events = router.route_batch(&batch.events, stream.relation_cache());
 
         for (config_name, events) in &config_events {
@@ -477,6 +493,9 @@ async fn run_async(
             match transform_result {
                 Err(e) => {
                     tracing::error!(config = %config_name, error = %e, "transform error, sending to DLQ");
+                    if let Some(m) = metrics {
+                        m.cdc_events_failed.add(events.len() as u64, &[]);
+                    }
                     send_events_to_dlq(
                         &db,
                         config_name,
@@ -486,31 +505,48 @@ async fn run_async(
                         false,
                     )?;
                 }
-                Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
-                    Err(e) => {
-                        tracing::error!(config = %config_name, error = %e, "turbopuffer error, sending to DLQ");
-                        send_events_to_dlq(
-                            &db,
-                            config_name,
-                            batch.ack_lsn,
-                            events,
-                            &e.to_string(),
-                            false,
-                        )?;
-                    }
-                    Ok(()) => {
-                        let count = events_processed.entry(config_name.to_string()).or_insert(0);
-                        *count += events.len() as u64;
+                Ok(actions) => {
+                    let send_start = std::time::Instant::now();
+                    match puff_client.send_batch(namespace, &actions).await {
+                        Err(e) => {
+                            tracing::error!(config = %config_name, error = %e, "turbopuffer error, sending to DLQ");
+                            if let Some(m) = metrics {
+                                m.cdc_events_failed.add(events.len() as u64, &[]);
+                                m.turbopuffer_requests.add(1, &[]);
+                                m.turbopuffer_latency
+                                    .record(send_start.elapsed().as_millis() as f64, &[]);
+                            }
+                            send_events_to_dlq(
+                                &db,
+                                config_name,
+                                batch.ack_lsn,
+                                events,
+                                &e.to_string(),
+                                false,
+                            )?;
+                        }
+                        Ok(()) => {
+                            let count =
+                                events_processed.entry(config_name.to_string()).or_insert(0);
+                            *count += events.len() as u64;
 
-                        tracing::info!(
-                            config = %config_name,
-                            namespace = %namespace,
-                            events = events.len(),
-                            total = *count,
-                            "batch sent",
-                        );
+                            if let Some(m) = metrics {
+                                m.cdc_events_processed.add(events.len() as u64, &[]);
+                                m.turbopuffer_requests.add(1, &[]);
+                                m.turbopuffer_latency
+                                    .record(send_start.elapsed().as_millis() as f64, &[]);
+                            }
+
+                            tracing::info!(
+                                config = %config_name,
+                                namespace = %namespace,
+                                events = events.len(),
+                                total = *count,
+                                "batch sent",
+                            );
+                        }
                     }
-                },
+                }
             }
         }
 
@@ -526,6 +562,11 @@ async fn run_async(
 
         // Ack unconditionally — failed events are in the DLQ for retry
         stream.ack();
+        if let Some(m) = metrics {
+            m.replication_acks.add(1, &[]);
+            m.cdc_batch_duration
+                .record(batch_start.elapsed().as_millis() as f64, &[]);
+        }
 
         batch_count += 1;
         if batch_count % project_config.dlq_replay_interval() == 0 {
@@ -535,6 +576,7 @@ async fn run_async(
                 &namespaces,
                 &puff_client,
                 project_config,
+                metrics,
             )
             .await?;
         }
@@ -572,12 +614,14 @@ fn send_events_to_dlq(
 /// Fetch retryable DLQ entries and attempt to re-transform + re-send them.
 /// On success: delete the entry. On failure: increment retry count, mark permanent
 /// if max retries exhausted.
+#[tracing::instrument(name = "replay_dlq", skip_all)]
 async fn replay_dlq(
     db: &StateDb,
     transformers: &HashMap<String, Box<dyn Transformer>>,
     namespaces: &HashMap<String, String>,
     puff_client: &TurbopufferClient,
     project_config: &ProjectConfig,
+    metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
     let entries = db.list_retryable_entries(project_config.dlq_replay_batch_size())?;
     if entries.is_empty() {
@@ -644,6 +688,9 @@ async fn replay_dlq(
                 } else {
                     db.increment_retry(entry.id)?;
                 }
+                if let Some(m) = metrics {
+                    m.dlq_replay_failed.add(1, &[]);
+                }
             }
             Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
                 Err(e) => {
@@ -653,10 +700,16 @@ async fn replay_dlq(
                     } else {
                         db.increment_retry(entry.id)?;
                     }
+                    if let Some(m) = metrics {
+                        m.dlq_replay_failed.add(1, &[]);
+                    }
                 }
                 Ok(()) => {
                     db.delete_dlq_entry(entry.id)?;
                     tracing::info!(dlq_id = entry.id, "DLQ entry replayed successfully");
+                    if let Some(m) = metrics {
+                        m.dlq_replayed.add(1, &[]);
+                    }
                 }
             },
         }

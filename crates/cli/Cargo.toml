@@ -30,6 +30,7 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
+opentelemetry-appender-tracing.workspace = true
 
 [features]
 test-utils = ["dep:tempfile"]

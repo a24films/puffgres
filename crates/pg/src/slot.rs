@@ -117,10 +117,7 @@ pub async fn terminate_active_slot_backend(client: &Client, slot_name: &str) -> 
                     pid, slot_name, e
                 ))
             })?;
-        println!(
-            "Terminated stale backend PID {} on slot '{}'",
-            pid, slot_name
-        );
+        tracing::info!(pid = pid, slot = slot_name, "terminated stale backend");
     }
 
     Ok(())

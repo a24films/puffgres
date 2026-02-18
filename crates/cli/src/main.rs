@@ -34,7 +34,14 @@ enum Command {
     Reset,
 }
 
-fn main() -> Result<(), CliError> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), CliError> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -51,11 +58,12 @@ fn main() -> Result<(), CliError> {
     let env_paths = project_config.resolve_env_paths(&paths.root);
     let env_config = EnvConfig::load(&env_paths)?;
 
-    let _telemetry = if let Some(endpoint) = &env_config.otel_endpoint {
-        Some(puffgres_cli::observability::init(endpoint)?)
+    let (_telemetry, metrics) = if let Some(endpoint) = &env_config.otel_endpoint {
+        let (telemetry, metrics) = puffgres_cli::observability::init(endpoint);
+        (Some(telemetry), Some(metrics))
     } else {
-        puffgres_cli::observability::init_fmt_only();
-        None
+        puffgres_cli::observability::init_console();
+        (None, None)
     };
 
     match cli.command {
@@ -65,7 +73,9 @@ fn main() -> Result<(), CliError> {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
         }
         Command::Apply => puffgres_cli::apply::run(&paths, &env_config),
-        Command::Run => puffgres_cli::run::run(&paths, &env_config, &project_config),
+        Command::Run => {
+            puffgres_cli::run::run(&paths, &env_config, &project_config, metrics.as_ref())
+        }
         Command::Status => puffgres_cli::status::run(&paths),
     }
 }
