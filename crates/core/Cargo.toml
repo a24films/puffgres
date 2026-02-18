@@ -12,6 +12,7 @@ pg = { path = "../pg" }
 rand = "0.10.0"
 replication = { path = "../replication" }
 serde = { version = "1.0.228", features = ["derive"] }
+state = { path = "../state" }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["process", "io-util"] }

@@ -4,11 +4,15 @@ use std::time::Duration;
 
 use chrono::Utc;
 use config::ConfigLoader;
+use pg::batch::BatchQueryConfig;
 use puff::TurbopufferClient;
-use puffgres_core::{Backoff, BackoffConfig, JsTransformer, Mapping, Router, Transformer};
+use puffgres_core::{
+    BackfillConfig, BackfillOutcome, Backoff, BackoffConfig, JsTransformer, Mapping, Router,
+    Transformer, run_backfill,
+};
 use replication::{ReplicationStream, ReplicationStreamConfig};
 use sha2::{Digest, Sha256};
-use state::{StateDb, StreamingCheckpoint};
+use state::{BackfillProgress, BackfillStatus, StateDb, StreamingCheckpoint};
 
 use crate::env::EnvConfig;
 use crate::error::CliError;
@@ -17,6 +21,9 @@ use crate::paths::ProjectPaths;
 const SLOT_NAME: &str = "puffgres";
 const PUBLICATION_NAME: &str = "puffgres";
 const STATUS_INTERVAL: Duration = Duration::from_secs(10);
+// TODO: for ergonomics, these can go in the project config, in future PR
+const BACKFILL_BATCH_SIZE: u32 = 1000;
+const BACKFILL_MAX_RETRIES: u32 = 5;
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -215,35 +222,108 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
     println!("Replication slot '{}' ready", SLOT_NAME);
     println!("Publication '{}' ready", PUBLICATION_NAME);
 
-    // TODO: When a mix of configs have/lack checkpoints, falling back to
-    // confirmed_flush_lsn may skip events for configs whose checkpoint is
-    // behind the flush LSN. Backfill will need to handle this gap.
-    let start_lsn = {
-        let mut min_lsn: Option<u64> = None;
-        let mut all_have_checkpoints = true;
+    // Check backfill status for each config
+    let mut needs_backfill: Vec<&config::Config> = Vec::new();
+    let mut watermark_lsns: Vec<u64> = Vec::new();
 
-        for config in &applied_configs {
-            match db.get_streaming_checkpoint(&config.name)? {
-                Some(cp) => {
-                    min_lsn = Some(match min_lsn {
-                        Some(current) => current.min(cp.lsn),
-                        None => cp.lsn,
-                    });
+    for config in &applied_configs {
+        match db.get_backfill_progress(&config.name)? {
+            Some(bp) if bp.status == BackfillStatus::Completed => {
+                if let Some(wlsn) = bp.watermark_lsn {
+                    watermark_lsns.push(wlsn);
                 }
-                None => {
-                    all_have_checkpoints = false;
-                    break;
+            }
+            _ => needs_backfill.push(config),
+        }
+    }
+
+    // Run backfills if needed
+    let puff_client = TurbopufferClient::new(
+        env_config.turbopuffer_api_key.clone(),
+        env_config.turbopuffer_region.clone(),
+    )
+    .map_err(|e| CliError::Run(format!("failed to create turbopuffer client: {e}")))?;
+
+    if !needs_backfill.is_empty() {
+        let watermark = pg::slot::get_current_wal_lsn(&pg_client)
+            .await
+            .map_err(|e| CliError::Run(format!("failed to get current WAL LSN: {e}")))?;
+        eprintln!(
+            "Starting backfill (watermark LSN: {})",
+            pg::PgLsn::from(watermark)
+        );
+
+        for config in &needs_backfill {
+            let namespace = namespaces
+                .get(&config.name)
+                .expect("namespace missing for applied config");
+            let transformer = transformers
+                .get(&config.name)
+                .expect("transformer missing for applied config");
+
+            let backfill_config = BackfillConfig {
+                batch_size: BACKFILL_BATCH_SIZE,
+                max_retries: BACKFILL_MAX_RETRIES,
+                config_name: config.name.clone(),
+                namespace: namespace.clone(),
+                query_config: BatchQueryConfig {
+                    schema: config.source.schema.clone(),
+                    table: config.source.table.clone(),
+                    id_column: config.id.column.clone(),
+                    columns: config.columns.clone(),
+                    batch_size: BACKFILL_BATCH_SIZE,
+                },
+                id_type: config.id.id_type.clone(),
+            };
+
+            let result = run_backfill(
+                &backfill_config,
+                &pg_client,
+                &puff_client,
+                &db,
+                transformer.as_ref(),
+            )
+            .await;
+
+            match result.status {
+                BackfillOutcome::Completed => {
+                    // Mark completed in state db with watermark
+                    db.save_backfill_progress(&BackfillProgress {
+                        config_name: config.name.clone(),
+                        last_id: None,
+                        total_rows: None,
+                        processed_rows: result.processed_rows,
+                        status: BackfillStatus::Completed,
+                        started_at: None,
+                        completed_at: Some(Utc::now()),
+                        error_message: None,
+                        watermark_lsn: Some(watermark),
+                    })?;
+                    eprintln!(
+                        "  {} backfill complete ({} rows)",
+                        config.name, result.processed_rows
+                    );
+                    watermark_lsns.push(watermark);
+                }
+                BackfillOutcome::Failed { error, .. } => {
+                    return Err(CliError::Run(format!(
+                        "backfill failed for {}: {}",
+                        config.name, error
+                    )));
                 }
             }
         }
+    }
 
-        if all_have_checkpoints {
-            min_lsn
-        } else {
-            pg::slot::get_confirmed_flush_lsn(&pg_client, SLOT_NAME)
-                .await
-                .map_err(|e| CliError::Run(format!("failed to get flush LSN: {e}")))?
+    // start_lsn: minimum of all watermark LSNs and streaming checkpoints
+    let start_lsn = {
+        let mut candidates: Vec<u64> = watermark_lsns;
+        for config in &applied_configs {
+            if let Some(cp) = db.get_streaming_checkpoint(&config.name)? {
+                candidates.push(cp.lsn);
+            }
         }
+        candidates.into_iter().min()
     };
 
     // Here we stop holding the existing slot, and poll w/ exponential backoff for the new one.
@@ -301,12 +381,6 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         .map(|l| pg::PgLsn::from(l).to_string())
         .unwrap_or_else(|| "-".to_string());
     println!("Streaming from LSN {}", lsn_display);
-
-    let puff_client = TurbopufferClient::new(
-        env_config.turbopuffer_api_key.clone(),
-        env_config.turbopuffer_region.clone(),
-    )
-    .map_err(|e| CliError::Run(format!("failed to create turbopuffer client: {e}")))?;
 
     let mut events_processed: HashMap<String, u64> = HashMap::new();
     for config in &applied_configs {
