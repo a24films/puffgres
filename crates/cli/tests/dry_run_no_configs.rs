@@ -11,6 +11,8 @@ async fn test_named_dry_run_fails_with_no_configs() {
         database_url: String::new(),
         turbopuffer_api_key: String::new(),
         turbopuffer_region: None,
+        turbopuffer_namespace_prefix: None,
+        otel_endpoint: None,
     };
 
     let err = run_async(&paths, &env_config, Some("nonexistent_0001"))

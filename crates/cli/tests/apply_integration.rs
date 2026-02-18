@@ -14,6 +14,7 @@ async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
         turbopuffer_api_key: "fake-key".to_string(),
         turbopuffer_region: None,
         turbopuffer_namespace_prefix: None,
+        otel_endpoint: None,
     };
     (ctx, env_config)
 }

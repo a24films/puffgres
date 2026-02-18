@@ -70,6 +70,7 @@ mod tests {
             turbopuffer_api_key: "fake".to_string(),
             turbopuffer_region: None,
             turbopuffer_namespace_prefix: None,
+            otel_endpoint: None,
         }
     }
 
@@ -148,7 +149,7 @@ async fn run_async(
         .collect();
 
     if applied_configs.is_empty() {
-        println!("No applied configs. Run `puffgres apply` first.");
+        tracing::warn!("no applied configs — run `puffgres apply` first");
         return Ok(());
     }
 
@@ -225,8 +226,8 @@ async fn run_async(
         .await
         .map_err(|e| CliError::Run(format!("failed to ensure publication: {e}")))?;
 
-    println!("Replication slot '{}' ready", SLOT_NAME);
-    println!("Publication '{}' ready", PUBLICATION_NAME);
+    tracing::info!(slot = SLOT_NAME, "replication slot ready");
+    tracing::info!(publication = PUBLICATION_NAME, "publication ready");
 
     // Check backfill status for each config
     let mut needs_backfill: Vec<&config::Config> = Vec::new();
@@ -241,15 +242,11 @@ async fn run_async(
             }
             Some(bp) if bp.status == BackfillStatus::Failed => {
                 // Auto-resume: reset Failed -> InProgress, preserving last_id cursor
-                // TODO: pipe these into otel
-                eprintln!(
-                    r#"{{"event":"backfill_auto_resume","config":"{}","processed_rows":{},"last_id":{}}}"#,
-                    config.name,
-                    bp.processed_rows,
-                    bp.last_id
-                        .as_deref()
-                        .map(|id| format!("\"{}\"", id))
-                        .unwrap_or_else(|| "null".to_string()),
+                tracing::info!(
+                    config = %config.name,
+                    processed_rows = bp.processed_rows,
+                    last_id = bp.last_id.as_deref().unwrap_or("-"),
+                    "auto-resuming failed backfill",
                 );
                 db.save_backfill_progress(&BackfillProgress {
                     config_name: config.name.clone(),
@@ -279,10 +276,7 @@ async fn run_async(
         let watermark = pg::slot::get_current_wal_lsn(&pg_client)
             .await
             .map_err(|e| CliError::Run(format!("failed to get current WAL LSN: {e}")))?;
-        eprintln!(
-            "Starting backfill (watermark LSN: {})",
-            pg::PgLsn::from(watermark)
-        );
+        tracing::info!(watermark_lsn = %pg::PgLsn::from(watermark), "starting backfill");
 
         for config in &needs_backfill {
             let namespace = namespaces
@@ -330,9 +324,10 @@ async fn run_async(
                         error_message: None,
                         watermark_lsn: Some(watermark),
                     })?;
-                    eprintln!(
-                        "  {} backfill complete ({} rows)",
-                        config.name, result.processed_rows
+                    tracing::info!(
+                        config = %config.name,
+                        rows = result.processed_rows,
+                        "backfill complete",
                     );
                     watermark_lsns.push(watermark);
                 }
@@ -411,7 +406,7 @@ async fn run_async(
     let lsn_display = start_lsn
         .map(|l| pg::PgLsn::from(l).to_string())
         .unwrap_or_else(|| "-".to_string());
-    println!("Streaming from LSN {}", lsn_display);
+    tracing::info!(lsn = %lsn_display, "streaming from LSN");
 
     let mut events_processed: HashMap<String, u64> = HashMap::new();
     for config in &applied_configs {
@@ -422,18 +417,17 @@ async fn run_async(
         events_processed.insert(config.name.clone(), count);
     }
 
-    println!("Listening for changes...");
+    tracing::info!("listening for changes");
 
     db.ensure_dlq_table()?;
 
     // Auto-clean stale permanent DLQ entries
     let cleaned = db.clear_old_permanent_entries(project_config.dlq_permanent_max_age_hours())?;
     if cleaned > 0 {
-        // TODO: pipe these into otel
-        eprintln!(
-            r#"{{"event":"dlq_permanent_cleanup","entries_removed":{},"max_age_hours":{}}}"#,
-            cleaned,
-            project_config.dlq_permanent_max_age_hours(),
+        tracing::info!(
+            entries_removed = cleaned,
+            max_age_hours = project_config.dlq_permanent_max_age_hours(),
+            "cleaned stale permanent DLQ entries",
         );
     }
 
@@ -455,7 +449,7 @@ async fn run_async(
         let batch = match stream.recv_batch().await {
             Ok(Some(batch)) => batch,
             Ok(None) => {
-                println!("Replication stream ended");
+                tracing::info!("replication stream ended");
                 break;
             }
             Err(e) => {
@@ -482,7 +476,7 @@ async fn run_async(
 
             match transform_result {
                 Err(e) => {
-                    eprintln!("  transform error for {config_name}: {e} — sending to DLQ");
+                    tracing::error!(config = %config_name, error = %e, "transform error, sending to DLQ");
                     send_events_to_dlq(
                         &db,
                         config_name,
@@ -494,7 +488,7 @@ async fn run_async(
                 }
                 Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
                     Err(e) => {
-                        eprintln!("  turbopuffer error for {config_name}: {e} — sending to DLQ");
+                        tracing::error!(config = %config_name, error = %e, "turbopuffer error, sending to DLQ");
                         send_events_to_dlq(
                             &db,
                             config_name,
@@ -508,12 +502,12 @@ async fn run_async(
                         let count = events_processed.entry(config_name.to_string()).or_insert(0);
                         *count += events.len() as u64;
 
-                        println!(
-                            "  {} -> {} ({} events, {} total)",
-                            config_name,
-                            namespace,
-                            events.len(),
-                            count,
+                        tracing::info!(
+                            config = %config_name,
+                            namespace = %namespace,
+                            events = events.len(),
+                            total = *count,
+                            "batch sent",
                         );
                     }
                 },
@@ -590,20 +584,13 @@ async fn replay_dlq(
         return Ok(());
     }
 
-    // TODO: pipe these into otel
-    eprintln!(
-        r#"{{"event":"dlq_replay_start","entries":{}}}"#,
-        entries.len(),
-    );
+    tracing::info!(entries = entries.len(), "replaying DLQ entries");
 
     for entry in &entries {
         let transformer = match transformers.get(&entry.config_name) {
             Some(t) => t,
             None => {
-                eprintln!(
-                    "  DLQ entry {}: config '{}' no longer exists, marking permanent",
-                    entry.id, entry.config_name
-                );
+                tracing::warn!(dlq_id = entry.id, config = %entry.config_name, "config no longer exists, marking permanent");
                 db.mark_permanent(entry.id, "config no longer exists")?;
                 continue;
             }
@@ -619,10 +606,7 @@ async fn replay_dlq(
         let event: RowEvent = match serde_json::from_str(&entry.event_json) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!(
-                    "  DLQ entry {}: failed to deserialize event, marking permanent: {e}",
-                    entry.id
-                );
+                tracing::warn!(dlq_id = entry.id, error = %e, "failed to deserialize DLQ event, marking permanent");
                 db.mark_permanent(entry.id, &format!("deserialization failed: {e}"))?;
                 continue;
             }
@@ -655,10 +639,7 @@ async fn replay_dlq(
         match transform_result {
             Err(e) => {
                 if entry.retry_count + 1 >= project_config.dlq_max_retries() {
-                    eprintln!(
-                        "  DLQ entry {}: max retries exhausted, marking permanent: {e}",
-                        entry.id
-                    );
+                    tracing::warn!(dlq_id = entry.id, error = %e, "DLQ max retries exhausted, marking permanent");
                     db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))?;
                 } else {
                     db.increment_retry(entry.id)?;
@@ -667,10 +648,7 @@ async fn replay_dlq(
             Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
                 Err(e) => {
                     if entry.retry_count + 1 >= project_config.dlq_max_retries() {
-                        eprintln!(
-                            "  DLQ entry {}: max retries exhausted, marking permanent: {e}",
-                            entry.id
-                        );
+                        tracing::warn!(dlq_id = entry.id, error = %e, "DLQ max retries exhausted, marking permanent");
                         db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))?;
                     } else {
                         db.increment_retry(entry.id)?;
@@ -678,7 +656,7 @@ async fn replay_dlq(
                 }
                 Ok(()) => {
                     db.delete_dlq_entry(entry.id)?;
-                    eprintln!("  DLQ entry {}: replayed successfully", entry.id);
+                    tracing::info!(dlq_id = entry.id, "DLQ entry replayed successfully");
                 }
             },
         }

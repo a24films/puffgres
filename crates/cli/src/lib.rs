@@ -5,6 +5,7 @@ pub mod env;
 pub mod error;
 pub mod init;
 pub mod new;
+pub mod observability;
 pub mod paths;
 pub mod project_config;
 pub mod reset;

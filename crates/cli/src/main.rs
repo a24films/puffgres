@@ -51,6 +51,13 @@ fn main() -> Result<(), CliError> {
     let env_paths = project_config.resolve_env_paths(&paths.root);
     let env_config = EnvConfig::load(&env_paths)?;
 
+    let _telemetry = if let Some(endpoint) = &env_config.otel_endpoint {
+        Some(puffgres_cli::observability::init(endpoint)?)
+    } else {
+        puffgres_cli::observability::init_fmt_only();
+        None
+    };
+
     match cli.command {
         Command::Init | Command::Reset => unreachable!(),
         Command::New { name } => puffgres_cli::new::run(&paths, &name),

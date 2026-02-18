@@ -107,6 +107,7 @@ async fn start_postgres() -> (ContainerAsync<Postgres>, EnvConfig) {
         turbopuffer_api_key: "fake-key".to_string(),
         turbopuffer_region: None,
         turbopuffer_namespace_prefix: None,
+        otel_endpoint: None,
     };
 
     (container, env_config)

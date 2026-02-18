@@ -51,7 +51,7 @@ impl ConfigLoader {
                 Ok(config) => configs.push((path, config)),
                 Err(e) => {
                     // Continue loading other configs even if one fails
-                    eprintln!("Warning: Failed to load config from {:?}: {}", path, e);
+                    tracing::warn!(path = ?path, error = %e, "failed to load config");
                 }
             }
         }
