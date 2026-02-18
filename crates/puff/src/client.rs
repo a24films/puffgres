@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use rs_puff::DistanceMetric;
 use rs_puff::params::WriteParams;
 use serde_json::Value;
 
-use puffgres_core::{Action, DocumentId};
+use puffgres_core::{Action, BackfillSink, CoreError, DocumentId};
 
 use crate::PuffError;
 
@@ -92,6 +93,15 @@ impl TurbopufferClient {
     pub async fn delete_namespace(&self, namespace: &str) -> Result<(), PuffError> {
         self.inner.namespace(namespace).delete_all().await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl BackfillSink for TurbopufferClient {
+    async fn write(&self, namespace: &str, actions: &[Action]) -> Result<(), CoreError> {
+        self.send_batch(namespace, actions)
+            .await
+            .map_err(|e| CoreError::Pipeline(e.to_string()))
     }
 }
 

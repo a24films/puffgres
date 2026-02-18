@@ -1,8 +1,10 @@
 use std::time::Duration;
 
 use pg::connect::connect;
-use pg::slot::{ensure_slot, get_confirmed_flush_lsn, terminate_active_slot_backend};
-use pg::test_utils::setup_postgres_logical;
+use pg::slot::{
+    ensure_slot, get_confirmed_flush_lsn, get_current_wal_lsn, terminate_active_slot_backend,
+};
+use pg::test_utils::{setup_postgres, setup_postgres_logical};
 use replication::{ReplicationStream, ReplicationStreamConfig};
 
 async fn query_slot(client: &tokio_postgres::Client, slot_name: &str) -> Option<(String, String)> {
@@ -189,6 +191,15 @@ async fn terminate_active_slot_backend_noop_when_no_active_backend() {
     terminate_active_slot_backend(&client, "idle_slot")
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn get_current_wal_lsn_returns_nonzero() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+
+    let lsn = get_current_wal_lsn(&client).await.unwrap();
+    assert!(lsn > 0);
 }
 
 #[tokio::test]
