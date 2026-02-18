@@ -27,6 +27,7 @@ const BACKFILL_MAX_RETRIES: u32 = 5;
 const DLQ_REPLAY_INTERVAL: u64 = 10; // replay DLQ every N batches
 const DLQ_REPLAY_BATCH_SIZE: usize = 50;
 const DLQ_MAX_RETRIES: u32 = 5;
+const DLQ_PERMANENT_MAX_AGE_HOURS: u64 = 72; // auto-clean permanent entries older than 3 days
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -236,6 +237,31 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
                     watermark_lsns.push(wlsn);
                 }
             }
+            Some(bp) if bp.status == BackfillStatus::Failed => {
+                // Auto-resume: reset Failed -> InProgress, preserving last_id cursor
+                // TODO: pipe these into otel
+                eprintln!(
+                    r#"{{"event":"backfill_auto_resume","config":"{}","processed_rows":{},"last_id":{}}}"#,
+                    config.name,
+                    bp.processed_rows,
+                    bp.last_id
+                        .as_deref()
+                        .map(|id| format!("\"{}\"", id))
+                        .unwrap_or_else(|| "null".to_string()),
+                );
+                db.save_backfill_progress(&BackfillProgress {
+                    config_name: config.name.clone(),
+                    last_id: bp.last_id,
+                    total_rows: bp.total_rows,
+                    processed_rows: bp.processed_rows,
+                    status: BackfillStatus::InProgress,
+                    started_at: bp.started_at,
+                    completed_at: None,
+                    error_message: None,
+                    watermark_lsn: bp.watermark_lsn,
+                })?;
+                needs_backfill.push(config);
+            }
             _ => needs_backfill.push(config),
         }
     }
@@ -398,6 +424,16 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
 
     db.ensure_dlq_table()?;
 
+    // Auto-clean stale permanent DLQ entries
+    let cleaned = db.clear_old_permanent_entries(DLQ_PERMANENT_MAX_AGE_HOURS)?;
+    if cleaned > 0 {
+        // TODO: pipe these into otel
+        eprintln!(
+            r#"{{"event":"dlq_permanent_cleanup","entries_removed":{},"max_age_hours":{}}}"#,
+            cleaned, DLQ_PERMANENT_MAX_AGE_HOURS,
+        );
+    }
+
     // Replay any retryable DLQ entries from previous runs
     replay_dlq(&db, &transformers, &namespaces, &puff_client).await?;
 
@@ -536,7 +572,11 @@ async fn replay_dlq(
         return Ok(());
     }
 
-    eprintln!("Replaying {} DLQ entries...", entries.len());
+    // TODO: pipe these into otel
+    eprintln!(
+        r#"{{"event":"dlq_replay_start","entries":{}}}"#,
+        entries.len(),
+    );
 
     for entry in &entries {
         let transformer = match transformers.get(&entry.config_name) {

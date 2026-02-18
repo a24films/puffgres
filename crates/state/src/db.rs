@@ -155,6 +155,7 @@ mod tests {
             retry_count: 0,
             created_at: chrono::Utc::now(),
             last_retry_at: None,
+            permanent_at: None,
         };
         db.insert_dlq_entry(&dlq_entry).unwrap();
         assert_eq!(db.dlq_count(None).unwrap(), 1);
