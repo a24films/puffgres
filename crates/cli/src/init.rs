@@ -30,6 +30,9 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     ensure_project_config(cwd, &paths)?;
     ensure_dockerfile(&paths)?;
     ensure_dockerignore(&paths)?;
+    ensure_package_json(&paths)?;
+    ensure_vitest_config(&paths)?;
+    ensure_utils(&paths)?;
 
     let db = StateDb::open(&paths.state_db)?;
     db.initialize()?;
@@ -141,6 +144,55 @@ fn ensure_dockerignore(paths: &ProjectPaths) -> Result<(), CliError> {
 
     content.push_str(".env\n.env.*\nnode_modules\nDockerfile\n.dockerignore\n.git\n");
     fs::write(&paths.dockerignore, content)?;
+
+    Ok(())
+}
+
+fn ensure_package_json(paths: &ProjectPaths) -> Result<(), CliError> {
+    let path = paths.root.join("package.json");
+    if path.exists() {
+        return Ok(());
+    }
+
+    let template = include_str!("../templates/package.json");
+    fs::write(&path, template)?;
+
+    Ok(())
+}
+
+fn ensure_vitest_config(paths: &ProjectPaths) -> Result<(), CliError> {
+    let path = paths.root.join("vitest.config.ts");
+    if path.exists() {
+        return Ok(());
+    }
+
+    let template = include_str!("../templates/vitest.config.ts");
+    fs::write(&path, template)?;
+
+    Ok(())
+}
+
+fn ensure_utils(paths: &ProjectPaths) -> Result<(), CliError> {
+    let utils_dir = paths.root.join("utils");
+    fs::create_dir_all(&utils_dir)?;
+
+    let files = &[
+        (
+            "truncate-to-tokens.ts",
+            include_str!("../templates/utils/truncate-to-tokens.ts"),
+        ),
+        (
+            "embed-with-together.ts",
+            include_str!("../templates/utils/embed-with-together.ts"),
+        ),
+    ];
+
+    for (name, content) in files {
+        let path = utils_dir.join(name);
+        if !path.exists() {
+            fs::write(&path, content)?;
+        }
+    }
 
     Ok(())
 }
@@ -348,5 +400,100 @@ mod tests {
 
         let config = ProjectConfig::load(&dir.path().join("puffgres.toml")).unwrap();
         assert_eq!(config.environment_files, vec![".env"]);
+    }
+
+    #[test]
+    fn creates_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run_in(dir.path()).unwrap();
+
+        let package_json =
+            fs::read_to_string(dir.path().join("puffgres").join("package.json")).unwrap();
+        assert!(package_json.contains("together-ai"));
+        assert!(package_json.contains("@huggingface/transformers"));
+        assert!(package_json.contains("vitest"));
+    }
+
+    #[test]
+    fn does_not_overwrite_existing_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("puffgres");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("package.json"), "custom").unwrap();
+
+        run_in(dir.path()).unwrap();
+
+        let package_json = fs::read_to_string(sub.join("package.json")).unwrap();
+        assert_eq!(package_json, "custom");
+    }
+
+    #[test]
+    fn creates_vitest_config() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run_in(dir.path()).unwrap();
+
+        let vitest =
+            fs::read_to_string(dir.path().join("puffgres").join("vitest.config.ts")).unwrap();
+        assert!(vitest.contains("vitest"));
+        assert!(vitest.contains("tests/**/*.test.ts"));
+    }
+
+    #[test]
+    fn does_not_overwrite_existing_vitest_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("puffgres");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("vitest.config.ts"), "custom").unwrap();
+
+        run_in(dir.path()).unwrap();
+
+        let vitest = fs::read_to_string(sub.join("vitest.config.ts")).unwrap();
+        assert_eq!(vitest, "custom");
+    }
+
+    #[test]
+    fn creates_utils_directory() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run_in(dir.path()).unwrap();
+
+        let sub = dir.path().join("puffgres");
+        assert!(sub.join("utils").is_dir());
+        assert!(sub.join("utils/truncate-to-tokens.ts").exists());
+        assert!(sub.join("utils/embed-with-together.ts").exists());
+    }
+
+    #[test]
+    fn utils_contain_expected_content() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run_in(dir.path()).unwrap();
+
+        let sub = dir.path().join("puffgres");
+        let truncate = fs::read_to_string(sub.join("utils/truncate-to-tokens.ts")).unwrap();
+        assert!(truncate.contains("@huggingface/transformers"));
+        assert!(truncate.contains("truncateToTokens"));
+
+        let embed = fs::read_to_string(sub.join("utils/embed-with-together.ts")).unwrap();
+        assert!(embed.contains("together-ai"));
+        assert!(embed.contains("getTogetherClient"));
+    }
+
+    #[test]
+    fn does_not_overwrite_existing_utils() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("puffgres");
+        let utils = sub.join("utils");
+        fs::create_dir_all(&utils).unwrap();
+        fs::write(utils.join("truncate-to-tokens.ts"), "custom").unwrap();
+
+        run_in(dir.path()).unwrap();
+
+        let content = fs::read_to_string(utils.join("truncate-to-tokens.ts")).unwrap();
+        assert_eq!(content, "custom");
+        // But the other file should still be created
+        assert!(utils.join("embed-with-together.ts").exists());
     }
 }

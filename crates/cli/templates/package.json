@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@huggingface/transformers": "^3.3.3",
+    "together-ai": "^0.33.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "vitest": "^3.0.0"
+  }
+}
