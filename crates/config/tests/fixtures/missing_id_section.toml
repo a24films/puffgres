@@ -1,0 +1,10 @@
+name = "test_0001"
+version = 1
+namespace = "test"
+
+[source]
+schema = "public"
+table = "test"
+
+[transform]
+path = "transforms/test.ts"

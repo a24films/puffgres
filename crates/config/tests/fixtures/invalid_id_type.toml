@@ -1,0 +1,14 @@
+name = "bad_0001"
+version = 1
+namespace = "bad"
+
+[source]
+schema = "public"
+table = "bad"
+
+[id]
+column = "id"
+type = "text"
+
+[transform]
+path = "transforms/bad.ts"

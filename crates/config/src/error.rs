@@ -1,4 +1,5 @@
 use std::io;
+use std::path::PathBuf;
 
 use thiserror::Error;
 
@@ -21,6 +22,12 @@ pub enum ConfigError {
 
     #[error("Config not found: {0}")]
     NotFound(String),
+
+    #[error("{path}: {source}")]
+    FileError {
+        path: PathBuf,
+        source: Box<ConfigError>,
+    },
 }
 
 #[cfg(test)]

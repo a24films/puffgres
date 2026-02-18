@@ -47,13 +47,11 @@ impl ConfigLoader {
 
         for entry in entries {
             let path = entry.path();
-            match Config::from_file(&path) {
-                Ok(config) => configs.push((path, config)),
-                Err(e) => {
-                    // Continue loading other configs even if one fails
-                    tracing::warn!(path = ?path, error = %e, "failed to load config");
-                }
-            }
+            let config = Config::from_file(&path).map_err(|e| ConfigError::FileError {
+                path: path.clone(),
+                source: Box::new(e),
+            })?;
+            configs.push((path, config));
         }
 
         Ok(configs)
@@ -127,6 +125,32 @@ mod tests {
             let result = Config::from_file(Path::new("/nonexistent/config.toml"));
             assert!(result.is_err());
         }
+
+        #[test]
+        fn invalid_id_type_errors() {
+            let result = Config::from_toml(&fixture("invalid_id_type"));
+            assert!(
+                result.is_err(),
+                "invalid id.type = \"text\" must error, not silently pass"
+            );
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("unknown variant `text`"),
+                "error should mention the invalid variant, got: {err}"
+            );
+        }
+
+        #[test]
+        fn missing_id_type_errors() {
+            let result = Config::from_toml(&fixture("missing_id_type"));
+            assert!(result.is_err(), "missing id.type must error");
+        }
+
+        #[test]
+        fn missing_id_section_errors() {
+            let result = Config::from_toml(&fixture("missing_id_section"));
+            assert!(result.is_err(), "missing [id] section must error");
+        }
     }
 
     mod load_all {
@@ -158,6 +182,81 @@ mod tests {
             assert_eq!(configs.len(), 2);
             assert_eq!(configs[0].1.name, "film_0001");
             assert_eq!(configs[1].1.name, "user_0001");
+        }
+
+        #[test]
+        fn invalid_config_in_dir_errors_not_skipped() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "valid.toml", &fixture("valid"));
+            write_file(dir.path(), "invalid.toml", &fixture("invalid_id_type"));
+
+            let loader = ConfigLoader::new(dir.path());
+            let result = loader.load_all();
+
+            assert!(
+                result.is_err(),
+                "load_all must error when a config has an invalid id.type, not silently skip it"
+            );
+        }
+
+        #[test]
+        fn malformed_toml_in_dir_errors_not_skipped() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "valid.toml", &fixture("valid"));
+            write_file(dir.path(), "broken.toml", &fixture("malformed"));
+
+            let loader = ConfigLoader::new(dir.path());
+            let result = loader.load_all();
+
+            assert!(
+                result.is_err(),
+                "load_all must error on malformed TOML, not silently skip it"
+            );
+        }
+
+        #[test]
+        fn preserves_io_error_variant() {
+            let dir = create_test_config_dir();
+            // A directory with a .toml extension triggers an IoError from read_to_string
+            fs::create_dir(dir.path().join("bad.toml")).unwrap();
+
+            let loader = ConfigLoader::new(dir.path());
+            let err = loader.load_all().unwrap_err();
+            match &err {
+                crate::ConfigError::FileError { path, source } => {
+                    assert!(
+                        path.ends_with("bad.toml"),
+                        "expected path ending in bad.toml, got: {path:?}"
+                    );
+                    assert!(
+                        matches!(**source, crate::ConfigError::IoError(_)),
+                        "expected inner IoError variant, got: {source:?}"
+                    );
+                }
+                _ => panic!("expected FileError variant, got: {err:?}"),
+            }
+        }
+
+        #[test]
+        fn preserves_toml_error_variant() {
+            let dir = create_test_config_dir();
+            write_file(dir.path(), "broken.toml", "not valid toml {[}");
+
+            let loader = ConfigLoader::new(dir.path());
+            let err = loader.load_all().unwrap_err();
+            match &err {
+                crate::ConfigError::FileError { path, source } => {
+                    assert!(
+                        path.ends_with("broken.toml"),
+                        "expected path ending in broken.toml, got: {path:?}"
+                    );
+                    assert!(
+                        matches!(**source, crate::ConfigError::TomlError(_)),
+                        "expected inner TomlError variant, got: {source:?}"
+                    );
+                }
+                _ => panic!("expected FileError variant, got: {err:?}"),
+            }
         }
     }
 
