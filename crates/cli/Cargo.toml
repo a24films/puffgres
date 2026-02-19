@@ -10,10 +10,12 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
+pg = { path = "../pg" }
 serde = { version = "1.0.228", features = ["derive"] }
 state = { path = "../state" }
 thiserror = "2.0.18"
 toml = "1.0.0"
 
 [dev-dependencies]
+chrono = "0.4"
 tempfile = "3.17.0"

@@ -3,6 +3,7 @@ mod error;
 mod init;
 mod paths;
 mod project_config;
+mod status;
 
 use clap::{Parser, Subcommand};
 
@@ -51,6 +52,6 @@ fn main() -> Result<(), CliError> {
         Command::NewConfig => todo!("new-config"),
         Command::Apply => todo!("apply"),
         Command::Run => todo!("run"),
-        Command::Status => todo!("status"),
+        Command::Status => status::run(&paths),
     }
 }
