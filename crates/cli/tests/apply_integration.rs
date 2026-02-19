@@ -15,6 +15,7 @@ async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
         turbopuffer_region: None,
         turbopuffer_namespace_prefix: None,
         otel_endpoint: None,
+        otel_headers: None,
     };
     (ctx, env_config)
 }

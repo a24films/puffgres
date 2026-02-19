@@ -73,6 +73,7 @@ mod tests {
             turbopuffer_region: None,
             turbopuffer_namespace_prefix: None,
             otel_endpoint: None,
+            otel_headers: None,
         }
     }
 
@@ -100,7 +101,7 @@ mod tests {
         // Delete the transform file so it can't be read
         fs::remove_file(paths.root.join(&cfg.transform.path)).unwrap();
 
-        let err = run(&paths, &dummy_env(), &ProjectConfig::default()).unwrap_err();
+        let err = run(&paths, &dummy_env(), &ProjectConfig::default(), None).unwrap_err();
         assert!(
             err.to_string().contains("cannot read transform"),
             "expected unreadable transform error, got: {err}"
@@ -126,7 +127,7 @@ mod tests {
         })
         .unwrap();
 
-        let err = run(&paths, &dummy_env(), &ProjectConfig::default()).unwrap_err();
+        let err = run(&paths, &dummy_env(), &ProjectConfig::default(), None).unwrap_err();
         assert!(
             err.to_string().contains("was modified"),
             "expected modified transform error, got: {err}"

@@ -10,6 +10,7 @@ pub struct EnvConfig {
     pub turbopuffer_region: Option<String>,
     pub turbopuffer_namespace_prefix: Option<String>,
     pub otel_endpoint: Option<String>,
+    pub otel_headers: Option<String>,
 }
 
 /// Load all key-value pairs from a list of `.env` file paths.
@@ -70,6 +71,7 @@ impl EnvConfig {
         let turbopuffer_region = resolve("TURBOPUFFER_REGION");
         let turbopuffer_namespace_prefix = resolve("TURBOPUFFER_NAMESPACE_PREFIX");
         let otel_endpoint = resolve("OTEL_EXPORTER_OTLP_ENDPOINT");
+        let otel_headers = resolve("OTEL_EXPORTER_OTLP_HEADERS");
 
         Ok(Self {
             database_url,
@@ -77,6 +79,7 @@ impl EnvConfig {
             turbopuffer_region,
             turbopuffer_namespace_prefix,
             otel_endpoint,
+            otel_headers,
         })
     }
 }
@@ -89,12 +92,13 @@ mod tests {
 
     /// All env vars that EnvConfig::load reads. Each test clears these via
     /// temp_env so that real env vars don't leak between tests.
-    const ENV_KEYS: [&str; 5] = [
+    const ENV_KEYS: [&str; 6] = [
         "DATABASE_URL",
         "TURBOPUFFER_API_KEY",
         "TURBOPUFFER_REGION",
         "TURBOPUFFER_NAMESPACE_PREFIX",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
     ];
 
     /// Returns (key, None) pairs for every env var EnvConfig reads,

@@ -35,38 +35,59 @@ enum Command {
 }
 
 fn main() {
-    if let Err(e) = run() {
+    let (result, telemetry) = run();
+    if let Some(t) = telemetry {
+        t.shutdown();
+    }
+    if let Err(e) = result {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), CliError> {
+fn run() -> (
+    Result<(), CliError>,
+    Option<puffgres_cli::observability::Telemetry>,
+) {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init => return puffgres_cli::init::run(),
+        Command::Init => return (puffgres_cli::init::run(), None),
         Command::Reset => {
-            let paths = ProjectPaths::from_current_dir()?;
-            return puffgres_cli::reset::run(&paths);
+            let paths = match ProjectPaths::from_current_dir() {
+                Ok(p) => p,
+                Err(e) => return (Err(e), None),
+            };
+            return (puffgres_cli::reset::run(&paths), None);
         }
         _ => {}
     }
 
-    let paths = ProjectPaths::from_current_dir()?;
-    let project_config = ProjectConfig::load(&paths.project_config)?;
+    let paths = match ProjectPaths::from_current_dir() {
+        Ok(p) => p,
+        Err(e) => return (Err(e), None),
+    };
+    let project_config = match ProjectConfig::load(&paths.project_config) {
+        Ok(c) => c,
+        Err(e) => return (Err(e), None),
+    };
     let env_paths = project_config.resolve_env_paths(&paths.root);
-    let env_config = EnvConfig::load(&env_paths)?;
+    let env_config = match EnvConfig::load(&env_paths) {
+        Ok(c) => c,
+        Err(e) => return (Err(e), None),
+    };
 
-    let (_telemetry, metrics) = if let Some(endpoint) = &env_config.otel_endpoint {
-        let (telemetry, metrics) = puffgres_cli::observability::init(endpoint);
-        (Some(telemetry), Some(metrics))
+    let (telemetry, metrics) = if let Some(endpoint) = &env_config.otel_endpoint {
+        match puffgres_cli::observability::init(endpoint, env_config.otel_headers.as_deref()) {
+            Ok((telemetry, metrics)) => (Some(telemetry), Some(metrics)),
+            Err(e) => return (Err(e), None),
+        }
     } else {
-        puffgres_cli::observability::init_console();
+        puffgres_cli::observability::init_fmt_only();
         (None, None)
     };
 
-    match cli.command {
+    let result = match cli.command {
         Command::Init | Command::Reset => unreachable!(),
         Command::New { name } => puffgres_cli::new::run(&paths, &name),
         Command::DryRun { name } => {
@@ -77,5 +98,7 @@ fn run() -> Result<(), CliError> {
             puffgres_cli::run::run(&paths, &env_config, &project_config, metrics.as_ref())
         }
         Command::Status => puffgres_cli::status::run(&paths),
-    }
+    };
+
+    (result, telemetry)
 }
