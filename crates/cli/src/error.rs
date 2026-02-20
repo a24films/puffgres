@@ -22,6 +22,12 @@ pub enum CliError {
     #[error("State database error: {0}")]
     State(#[from] state::StateError),
 
+    #[error("Config error: {0}")]
+    Config(#[from] config::ConfigError),
+
+    #[error("{0}")]
+    Apply(String),
+
     #[error("{0} already exists")]
     AlreadyExists(String),
 
