@@ -39,7 +39,7 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
         }
 
         // 2. Check immutability
-        let content_hash = config.content_hash();
+        let content_hash = config.content_hash()?;
         if let Some(existing) = db.get_config(&config.name)? {
             if existing.content_hash == content_hash {
                 skipped += 1;

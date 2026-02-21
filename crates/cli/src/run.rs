@@ -209,7 +209,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         for (config_name, _) in &config_events {
             let checkpoint = StreamingCheckpoint {
                 config_name: config_name.to_string(),
-                lsn: batch.ack_lsn,
+                lsn: 0, // TODO(stu-13.1): populate from batch.ack_lsn once ack semantics land
                 events_processed: *events_processed.get(*config_name).unwrap_or(&0),
                 updated_at: Utc::now(),
             };

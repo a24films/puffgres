@@ -1,19 +1,59 @@
-use tokio_postgres::{Client, NoTls};
+use std::sync::Arc;
+
+use rustls::ClientConfig;
+use tokio_postgres::Client;
+use tokio_postgres_rustls_improved::MakeRustlsConnect;
 
 use crate::{PgError, Result};
 
 pub async fn connect(connection_string: &str) -> Result<Client> {
-    let (client, connection) = tokio_postgres::connect(connection_string, NoTls)
-        .await
-        .map_err(|e| PgError::ConnectionError(format!("Failed to connect: {}", e)))?;
+    if requires_tls(connection_string) {
+        let config =
+            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .map_err(|e| PgError::ConnectionError(format!("TLS config error: {}", e)))?
+                .with_root_certificates(root_certs())
+                .with_no_client_auth();
 
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+        let connector = MakeRustlsConnect::new(config);
 
-    Ok(client)
+        let (client, connection) = tokio_postgres::connect(connection_string, connector)
+            .await
+            .map_err(|e| PgError::ConnectionError(format!("Failed to connect: {}", e)))?;
+
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("connection error: {}", e);
+            }
+        });
+
+        Ok(client)
+    } else {
+        let (client, connection) =
+            tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
+                .await
+                .map_err(|e| PgError::ConnectionError(format!("Failed to connect: {}", e)))?;
+
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("connection error: {}", e);
+            }
+        });
+
+        Ok(client)
+    }
+}
+
+fn root_certs() -> rustls::RootCertStore {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    roots
+}
+
+fn requires_tls(connection_string: &str) -> bool {
+    connection_string.contains("sslmode=require")
+        || connection_string.contains("sslmode=verify-ca")
+        || connection_string.contains("sslmode=verify-full")
 }
 
 pub async fn validate_tables(client: &Client, tables: &[(&str, &str)]) -> Result<()> {
