@@ -8,6 +8,7 @@ pub struct EnvConfig {
     pub database_url: String,
     pub turbopuffer_api_key: String,
     pub turbopuffer_region: Option<String>,
+    pub turbopuffer_namespace_prefix: Option<String>,
 }
 
 impl EnvConfig {
@@ -49,11 +50,13 @@ impl EnvConfig {
         let turbopuffer_api_key = resolve("TURBOPUFFER_API_KEY")
             .ok_or_else(|| CliError::MissingEnvVar("TURBOPUFFER_API_KEY".into()))?;
         let turbopuffer_region = resolve("TURBOPUFFER_REGION");
+        let turbopuffer_namespace_prefix = resolve("TURBOPUFFER_NAMESPACE_PREFIX");
 
         Ok(Self {
             database_url,
             turbopuffer_api_key,
             turbopuffer_region,
+            turbopuffer_namespace_prefix,
         })
     }
 }
@@ -62,11 +65,22 @@ impl EnvConfig {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    // Env var mutations are process-wide, so these tests must not run in parallel.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// All env vars that EnvConfig::load reads. Each test clears these via
+    /// temp_env so that real env vars don't leak between tests.
+    const ENV_KEYS: [&str; 4] = [
+        "DATABASE_URL",
+        "TURBOPUFFER_API_KEY",
+        "TURBOPUFFER_REGION",
+        "TURBOPUFFER_NAMESPACE_PREFIX",
+    ];
+
+    /// Returns (key, None) pairs for every env var EnvConfig reads,
+    /// suitable for passing to `temp_env::with_vars`.
+    fn cleared() -> Vec<(&'static str, Option<&'static str>)> {
+        ENV_KEYS.iter().map(|k| (*k, None)).collect()
+    }
 
     fn write_env(dir: &Path, name: &str, content: &str) -> std::path::PathBuf {
         let path = dir.join(name);
@@ -74,17 +88,8 @@ mod tests {
         path
     }
 
-    unsafe fn clear_env() {
-        unsafe {
-            std::env::remove_var("DATABASE_URL");
-            std::env::remove_var("TURBOPUFFER_API_KEY");
-            std::env::remove_var("TURBOPUFFER_REGION");
-        }
-    }
-
     #[test]
     fn load_single_env_file() {
-        let _lock = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
         let p = write_env(
             dir.path(),
@@ -92,17 +97,16 @@ mod tests {
             "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=tp-key-123\n",
         );
 
-        unsafe { clear_env() };
-
-        let cfg = EnvConfig::load(&[&p]).unwrap();
-        assert_eq!(cfg.database_url, "postgres://localhost/test");
-        assert_eq!(cfg.turbopuffer_api_key, "tp-key-123");
-        assert!(cfg.turbopuffer_region.is_none());
+        temp_env::with_vars(cleared(), || {
+            let cfg = EnvConfig::load(&[&p]).unwrap();
+            assert_eq!(cfg.database_url, "postgres://localhost/test");
+            assert_eq!(cfg.turbopuffer_api_key, "tp-key-123");
+            assert!(cfg.turbopuffer_region.is_none());
+        });
     }
 
     #[test]
     fn later_file_overrides_earlier() {
-        let _lock = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
         let base = write_env(
             dir.path(),
@@ -115,17 +119,16 @@ mod tests {
             "DATABASE_URL=postgres://local\nTURBOPUFFER_API_KEY=local-key\n",
         );
 
-        unsafe { clear_env() };
-
-        let cfg = EnvConfig::load(&[&base, &local]).unwrap();
-        assert_eq!(cfg.database_url, "postgres://local");
-        assert_eq!(cfg.turbopuffer_api_key, "local-key");
-        assert_eq!(cfg.turbopuffer_region.as_deref(), Some("us-east-1"));
+        temp_env::with_vars(cleared(), || {
+            let cfg = EnvConfig::load(&[&base, &local]).unwrap();
+            assert_eq!(cfg.database_url, "postgres://local");
+            assert_eq!(cfg.turbopuffer_api_key, "local-key");
+            assert_eq!(cfg.turbopuffer_region.as_deref(), Some("us-east-1"));
+        });
     }
 
     #[test]
     fn env_var_overrides_file() {
-        let _lock = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
         let p = write_env(
             dir.path(),
@@ -133,34 +136,34 @@ mod tests {
             "DATABASE_URL=postgres://file\nTURBOPUFFER_API_KEY=file-key\n",
         );
 
-        unsafe {
-            std::env::set_var("DATABASE_URL", "postgres://env");
-            std::env::set_var("TURBOPUFFER_API_KEY", "env-key");
-            std::env::remove_var("TURBOPUFFER_REGION");
-        }
-
-        let cfg = EnvConfig::load(&[&p]).unwrap();
-        assert_eq!(cfg.database_url, "postgres://env");
-        assert_eq!(cfg.turbopuffer_api_key, "env-key");
-
-        unsafe { clear_env() };
+        temp_env::with_vars(
+            [
+                ("DATABASE_URL", Some("postgres://env")),
+                ("TURBOPUFFER_API_KEY", Some("env-key")),
+                ("TURBOPUFFER_REGION", None),
+                ("TURBOPUFFER_NAMESPACE_PREFIX", None),
+            ],
+            || {
+                let cfg = EnvConfig::load(&[&p]).unwrap();
+                assert_eq!(cfg.database_url, "postgres://env");
+                assert_eq!(cfg.turbopuffer_api_key, "env-key");
+            },
+        );
     }
 
     #[test]
     fn missing_required_var_errors() {
-        let _lock = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
         let p = write_env(dir.path(), ".env", "TURBOPUFFER_API_KEY=key\n");
 
-        unsafe { clear_env() };
-
-        let err = EnvConfig::load(&[&p]).unwrap_err();
-        assert!(err.to_string().contains("DATABASE_URL"));
+        temp_env::with_vars(cleared(), || {
+            let err = EnvConfig::load(&[&p]).unwrap_err();
+            assert!(err.to_string().contains("DATABASE_URL"));
+        });
     }
 
     #[test]
     fn missing_file_is_skipped() {
-        let _lock = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
         let missing = dir.path().join(".env.missing");
         let present = write_env(
@@ -169,25 +172,59 @@ mod tests {
             "DATABASE_URL=postgres://ok\nTURBOPUFFER_API_KEY=key\n",
         );
 
-        unsafe { clear_env() };
+        temp_env::with_vars(cleared(), || {
+            let cfg = EnvConfig::load(&[&missing, &present]).unwrap();
+            assert_eq!(cfg.database_url, "postgres://ok");
+        });
+    }
 
-        let cfg = EnvConfig::load(&[&missing, &present]).unwrap();
-        assert_eq!(cfg.database_url, "postgres://ok");
+    #[test]
+    fn turbopuffer_namespace_prefix_loaded() {
+        let dir = TempDir::new().unwrap();
+        let p = write_env(
+            dir.path(),
+            ".env",
+            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\nTURBOPUFFER_NAMESPACE_PREFIX=PRODUCTION\n",
+        );
+
+        temp_env::with_vars(cleared(), || {
+            let cfg = EnvConfig::load(&[&p]).unwrap();
+            assert_eq!(
+                cfg.turbopuffer_namespace_prefix.as_deref(),
+                Some("PRODUCTION")
+            );
+        });
+    }
+
+    #[test]
+    fn turbopuffer_namespace_prefix_optional() {
+        let dir = TempDir::new().unwrap();
+        let p = write_env(
+            dir.path(),
+            ".env",
+            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\n",
+        );
+
+        temp_env::with_vars(cleared(), || {
+            let cfg = EnvConfig::load(&[&p]).unwrap();
+            assert!(cfg.turbopuffer_namespace_prefix.is_none());
+        });
     }
 
     #[test]
     fn no_files_falls_back_to_env_vars() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("DATABASE_URL", "postgres://env-only");
-            std::env::set_var("TURBOPUFFER_API_KEY", "env-only-key");
-            std::env::remove_var("TURBOPUFFER_REGION");
-        }
-
-        let cfg = EnvConfig::load(&[] as &[&Path]).unwrap();
-        assert_eq!(cfg.database_url, "postgres://env-only");
-        assert_eq!(cfg.turbopuffer_api_key, "env-only-key");
-
-        unsafe { clear_env() };
+        temp_env::with_vars(
+            [
+                ("DATABASE_URL", Some("postgres://env-only")),
+                ("TURBOPUFFER_API_KEY", Some("env-only-key")),
+                ("TURBOPUFFER_REGION", None),
+                ("TURBOPUFFER_NAMESPACE_PREFIX", None),
+            ],
+            || {
+                let cfg = EnvConfig::load(&[] as &[&Path]).unwrap();
+                assert_eq!(cfg.database_url, "postgres://env-only");
+                assert_eq!(cfg.turbopuffer_api_key, "env-only-key");
+            },
+        );
     }
 }

@@ -135,6 +135,7 @@ mod tests {
             database_url: "host=invalid".to_string(),
             turbopuffer_api_key: "fake".to_string(),
             turbopuffer_region: None,
+            turbopuffer_namespace_prefix: None,
         }
     }
 
