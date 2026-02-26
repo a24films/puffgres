@@ -34,12 +34,12 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     let db = StateDb::open(&paths.state_db)?;
     db.initialize()?;
 
-    eprintln!("Initialized puffgres project at {}", paths.root.display());
-    eprintln!();
-    eprintln!("Make sure the following environment variables are set:");
-    eprintln!("  DATABASE_URL          (required)");
-    eprintln!("  TURBOPUFFER_API_KEY   (required)");
-    eprintln!("  TURBOPUFFER_REGION    (optional)");
+    println!("Initialized puffgres project at {}", paths.root.display());
+    println!();
+    println!("Make sure the following environment variables are set:");
+    println!("  DATABASE_URL          (required)");
+    println!("  TURBOPUFFER_API_KEY   (required)");
+    println!("  TURBOPUFFER_REGION    (optional)");
 
     Ok(())
 }
