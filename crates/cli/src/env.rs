@@ -11,33 +11,50 @@ pub struct EnvConfig {
     pub turbopuffer_namespace_prefix: Option<String>,
 }
 
+/// Load all key-value pairs from a list of `.env` file paths.
+///
+/// Files are loaded in order — later files override earlier ones.
+/// Missing files are skipped silently.
+pub fn load_env_files(paths: &[impl AsRef<Path>]) -> Result<HashMap<String, String>, CliError> {
+    let mut vars: HashMap<String, String> = HashMap::new();
+
+    for path in paths {
+        let path = path.as_ref();
+        match dotenvy::from_path_iter(path) {
+            Ok(iter) => {
+                for item in iter.flatten() {
+                    vars.insert(item.0, item.1);
+                }
+            }
+            Err(e) if e.not_found() => {
+                // Skip missing files silently
+            }
+            Err(e) => {
+                return Err(CliError::EnvFile {
+                    path: path.display().to_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                });
+            }
+        }
+    }
+
+    Ok(vars)
+}
+
+/// Resolve a single environment variable: process env takes precedence, then file vars.
+pub fn resolve_env_var(key: &str, file_vars: &HashMap<String, String>) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .or_else(|| file_vars.get(key).cloned())
+}
+
 impl EnvConfig {
     /// Load environment config from multiple `.env` file paths.
     ///
     /// Files are loaded in order — later files override earlier ones.
     /// Actual environment variables take highest precedence over all files.
     pub fn load(paths: &[impl AsRef<Path>]) -> Result<Self, CliError> {
-        let mut vars: HashMap<String, String> = HashMap::new();
-
-        for path in paths {
-            let path = path.as_ref();
-            match dotenvy::from_path_iter(path) {
-                Ok(iter) => {
-                    for item in iter.flatten() {
-                        vars.insert(item.0, item.1);
-                    }
-                }
-                Err(e) if e.not_found() => {
-                    // Skip missing files silently
-                }
-                Err(e) => {
-                    return Err(CliError::EnvFile {
-                        path: path.display().to_string(),
-                        source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                    });
-                }
-            }
-        }
+        let mut vars = load_env_files(paths)?;
 
         let mut resolve = |key: &str| -> Option<String> {
             std::env::var(key)

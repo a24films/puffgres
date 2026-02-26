@@ -42,4 +42,7 @@ pub enum CliError {
 
     #[error("{0} not found. Run `puffgres init` first.")]
     NotInitialized(String),
+
+    #[error("Invalid PUFFGRES_STATE_PATH: {0}")]
+    InvalidStatePath(String),
 }

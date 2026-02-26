@@ -22,7 +22,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
         sub
     };
 
-    let paths = ProjectPaths::new(root);
+    let paths = ProjectPaths::new(root)?;
 
     fs::create_dir_all(&paths.configs)?;
     fs::create_dir_all(&paths.transforms)?;
@@ -36,22 +36,61 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
 
     println!("Initialized puffgres project at {}", paths.root.display());
     println!();
-    println!("Make sure the following environment variables are set:");
-    println!("  DATABASE_URL          (required)");
-    println!("  TURBOPUFFER_API_KEY   (required)");
-    println!("  TURBOPUFFER_REGION    (optional)");
+
+    // -- environment_files hint ----------------------------------------
+    println!(
+        "Configure env file paths in {}:",
+        paths.project_config.display()
+    );
+    println!();
+    println!("  environment_files = [\".env\", \".env.local\"]");
+    println!();
+    println!("  Files are loaded in order — later files override earlier ones.");
+    println!("  Shell environment variables take highest precedence over all files.");
+    println!();
+
+    // -- per-variable status -------------------------------------------
+    println!("Environment variables:");
+    println!();
+
+    let env_vars: &[(&str, bool)] = &[
+        ("DATABASE_URL", true),
+        ("TURBOPUFFER_API_KEY", true),
+        ("TURBOPUFFER_REGION", false),
+        ("TURBOPUFFER_NAMESPACE_PREFIX", false),
+        ("PUFFGRES_STATE_PATH", false),
+    ];
+
+    for &(name, required) in env_vars {
+        let req_label = if required { "required" } else { "optional" };
+        let status = if std::env::var(name).is_ok() {
+            "set"
+        } else {
+            "not set"
+        };
+        println!("  {name:<32} ({req_label}, {status})");
+    }
 
     Ok(())
 }
 
 fn ensure_gitignore(cwd: &std::path::Path, paths: &ProjectPaths) -> Result<(), CliError> {
-    // Write to the parent directory's .gitignore, referencing state.db from
-    // within the puffgres subdirectory. In Docker / re-init mode (root == cwd)
-    // there is no parent to write to, so write directly into root.
-    let (gitignore_path, entry) = if paths.root != cwd {
-        (cwd.join(".gitignore"), "puffgres/state.db")
+    // Place .gitignore in the parent directory for fresh-init (root != cwd),
+    // or in the project root for Docker / re-init mode (root == cwd).
+    let gitignore_path = if paths.root != cwd {
+        cwd.join(".gitignore")
     } else {
-        (paths.root.join(".gitignore"), "state.db")
+        paths.root.join(".gitignore")
+    };
+
+    let gitignore_dir = gitignore_path.parent().unwrap_or(cwd);
+
+    // Derive the entry from the resolved state_db path. If state_db is
+    // outside the gitignore directory (e.g. an absolute external path),
+    // there's nothing to ignore.
+    let entry = match paths.state_db.strip_prefix(gitignore_dir) {
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => return Ok(()),
     };
 
     let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
@@ -91,8 +130,16 @@ fn ensure_dockerignore(paths: &ProjectPaths) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let template = include_str!("../templates/dockerignore");
-    fs::write(&paths.dockerignore, template)?;
+    let mut content = String::new();
+
+    // Generate state DB ignore patterns from the resolved path.
+    if let Ok(relative) = paths.state_db.strip_prefix(&paths.root) {
+        let base = relative.display().to_string();
+        content.push_str(&format!("{base}\n{base}-journal\n{base}-wal\n{base}-shm\n"));
+    }
+
+    content.push_str(".env\n.env.*\nnode_modules\nDockerfile\n.dockerignore\n.git\n");
+    fs::write(&paths.dockerignore, content)?;
 
     Ok(())
 }

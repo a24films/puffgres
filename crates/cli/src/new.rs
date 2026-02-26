@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn fails_if_configs_dir_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = ProjectPaths::new(dir.path().to_path_buf());
+        let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
         fs::create_dir_all(&paths.transforms).unwrap();
 
         let err = run(&paths, "actor").unwrap_err();
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn fails_if_transforms_dir_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = ProjectPaths::new(dir.path().to_path_buf());
+        let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
         fs::create_dir_all(&paths.configs).unwrap();
 
         let err = run(&paths, "actor").unwrap_err();

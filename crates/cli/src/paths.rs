@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use crate::env::{load_env_files, resolve_env_var};
 use crate::error::CliError;
+use crate::project_config::ProjectConfig;
 
 #[derive(Debug, Clone)]
 pub struct ProjectPaths {
@@ -14,14 +16,45 @@ pub struct ProjectPaths {
 }
 
 impl ProjectPaths {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf) -> Result<Self, CliError> {
+        let state_override = Self::resolve_state_override(&root);
+        Self::new_with_state_override(root, state_override)
+    }
+
+    /// Resolve PUFFGRES_STATE_PATH by checking process env first,
+    /// then env files referenced in puffgres.toml.
+    fn resolve_state_override(root: &Path) -> Option<String> {
+        let config_path = root.join("puffgres.toml");
+        let config = ProjectConfig::load(&config_path).ok()?;
+        let env_paths = config.resolve_env_paths(root);
+        let file_vars = load_env_files(&env_paths).ok()?;
+        resolve_env_var("PUFFGRES_STATE_PATH", &file_vars)
+    }
+
+    fn new_with_state_override(
+        root: PathBuf,
+        state_override: Option<String>,
+    ) -> Result<Self, CliError> {
+        let state_db = match state_override {
+            Some(s) if s.trim().is_empty() => {
+                return Err(CliError::InvalidStatePath(
+                    "PUFFGRES_STATE_PATH is set but empty".into(),
+                ));
+            }
+            Some(s) => {
+                let p = PathBuf::from(&s);
+                if p.is_relative() { root.join(p) } else { p }
+            }
+            None => root.join("state.db"),
+        };
+
         let configs = root.join("configs");
         let transforms = root.join("transforms");
-        let state_db = root.join("state.db");
         let project_config = root.join("puffgres.toml");
         let dockerfile = root.join("Dockerfile");
         let dockerignore = root.join(".dockerignore");
-        Self {
+
+        Ok(Self {
             root,
             configs,
             transforms,
@@ -29,12 +62,12 @@ impl ProjectPaths {
             project_config,
             dockerfile,
             dockerignore,
-        }
+        })
     }
 
     pub fn from_current_dir() -> Result<Self, CliError> {
         let cwd = std::env::current_dir()?;
-        Ok(Self::new(Self::detect_root(cwd)))
+        Self::new(Self::detect_root(cwd))
     }
 
     /// Detect the project root from a given directory.
@@ -52,7 +85,7 @@ impl ProjectPaths {
         }
     }
 
-    pub fn from_path(path: &Path) -> Self {
+    pub fn from_path(path: &Path) -> Result<Self, CliError> {
         Self::new(path.to_path_buf())
     }
 }
@@ -64,7 +97,7 @@ mod tests {
     #[test]
     fn paths_derived_from_root() {
         let root = PathBuf::from("/tmp/myproject");
-        let paths = ProjectPaths::new(root.clone());
+        let paths = ProjectPaths::new_with_state_override(root.clone(), None).unwrap();
 
         assert_eq!(paths.root, root);
         assert_eq!(paths.configs, root.join("configs"));
@@ -83,9 +116,10 @@ mod tests {
 
     #[test]
     fn from_path_works() {
-        let paths = ProjectPaths::from_path(Path::new("/some/dir"));
-        assert_eq!(paths.root, PathBuf::from("/some/dir"));
-        assert_eq!(paths.configs, PathBuf::from("/some/dir/configs"));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProjectPaths::from_path(dir.path()).unwrap();
+        assert_eq!(paths.root, dir.path());
+        assert_eq!(paths.configs, dir.path().join("configs"));
     }
 
     #[test]
@@ -114,5 +148,69 @@ mod tests {
 
         let root = ProjectPaths::detect_root(dir.path().to_path_buf());
         assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn state_db_respects_env_override() {
+        let root = PathBuf::from("/tmp/myproject");
+
+        let paths =
+            ProjectPaths::new_with_state_override(root, Some("/mnt/data/state.db".to_string()))
+                .unwrap();
+
+        assert_eq!(paths.state_db, PathBuf::from("/mnt/data/state.db"));
+    }
+
+    #[test]
+    fn state_db_defaults_without_override() {
+        let root = PathBuf::from("/tmp/myproject");
+
+        let paths = ProjectPaths::new_with_state_override(root.clone(), None).unwrap();
+
+        assert_eq!(paths.state_db, root.join("state.db"));
+    }
+
+    #[test]
+    fn state_db_rejects_empty_override() {
+        let root = PathBuf::from("/tmp/myproject");
+
+        let err = ProjectPaths::new_with_state_override(root, Some("".to_string())).unwrap_err();
+        assert!(err.to_string().contains("empty"));
+
+        // Whitespace-only is also rejected
+        let root = PathBuf::from("/tmp/myproject");
+        let err = ProjectPaths::new_with_state_override(root, Some("  ".to_string())).unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn state_db_resolves_relative_override_against_root() {
+        let root = PathBuf::from("/tmp/myproject");
+
+        let paths = ProjectPaths::new_with_state_override(
+            root.clone(),
+            Some("custom/state.db".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(paths.state_db, root.join("custom/state.db"));
+    }
+
+    #[test]
+    fn resolve_state_override_reads_env_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(root.join("puffgres.toml"), "environment_files = [\".env\"]").unwrap();
+        std::fs::write(
+            root.join(".env"),
+            "PUFFGRES_STATE_PATH=/mnt/data/state.db\n",
+        )
+        .unwrap();
+
+        temp_env::with_vars([("PUFFGRES_STATE_PATH", None::<&str>)], || {
+            let val = ProjectPaths::resolve_state_override(root);
+            assert_eq!(val.as_deref(), Some("/mnt/data/state.db"));
+        });
     }
 }
