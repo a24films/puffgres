@@ -34,9 +34,12 @@ pub enum CliError {
     #[error("{0}")]
     Run(String),
 
+    #[error("{0}")]
+    Reset(String),
+
     #[error("{0} already exists")]
     AlreadyExists(String),
 
-    #[error("{0} directory not found. Run `puffgres init` first.")]
+    #[error("{0} not found. Run `puffgres init` first.")]
     NotInitialized(String),
 }
