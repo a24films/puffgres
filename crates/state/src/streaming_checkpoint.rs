@@ -4,6 +4,9 @@ use rusqlite::{Row, params};
 use crate::{StateDb, StateError};
 
 const CHECKPOINT_SELECT_COLS: &str = "config_name, lsn, events_processed, updated_at";
+const COL_CONFIG_NAME: usize = 0;
+const COL_LSN: usize = 1;
+const COL_EVENTS_PROCESSED: usize = 2;
 const COL_UPDATED_AT: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,9 +31,9 @@ impl StreamingCheckpoint {
             })?;
 
         Ok(Self {
-            config_name: row.get(0)?,
-            lsn: row.get::<_, i64>(1)? as u64,
-            events_processed: row.get::<_, i64>(2)? as u64,
+            config_name: row.get(COL_CONFIG_NAME)?,
+            lsn: row.get::<_, i64>(COL_LSN)? as u64,
+            events_processed: row.get::<_, i64>(COL_EVENTS_PROCESSED)? as u64,
             updated_at,
         })
     }
