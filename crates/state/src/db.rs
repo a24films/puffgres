@@ -30,12 +30,14 @@ impl StateDb {
         self.ensure_configs_table()?;
         self.ensure_streaming_checkpoints_table()?;
         self.ensure_dlq_table()?;
+        self.ensure_backfill_table()?;
         Ok(())
     }
 
     pub fn reset(&self) -> Result<(), StateError> {
-        self.conn
-            .execute_batch("DELETE FROM streaming_checkpoints; DELETE FROM configs;")?;
+        self.conn.execute_batch(
+            "DELETE FROM dlq; DELETE FROM backfill_progress; DELETE FROM streaming_checkpoints; DELETE FROM configs;",
+        )?;
         Ok(())
     }
 }
@@ -87,6 +89,7 @@ mod tests {
         assert!(tables.contains(&"configs".to_string()));
         assert!(tables.contains(&"streaming_checkpoints".to_string()));
         assert!(tables.contains(&"dlq".to_string()));
+        assert!(tables.contains(&"backfill_progress".to_string()));
     }
 
     #[test]
@@ -120,6 +123,59 @@ mod tests {
         db.initialize().unwrap();
 
         db.reset().unwrap();
+        assert_eq!(db.list_configs().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn reset_clears_dlq_and_backfill() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let db = StateDb::open(&path).unwrap();
+        db.initialize().unwrap();
+
+        // Insert a config, then a DLQ entry and backfill progress
+        let config = crate::ConfigRecord {
+            name: "film".to_string(),
+            version: 1,
+            namespace: "film_v1".to_string(),
+            content_hash: "abc".to_string(),
+            transform_hash: None,
+            applied_at: chrono::Utc::now(),
+        };
+        db.insert_config(&config).unwrap();
+
+        let dlq_entry = crate::DlqEntry {
+            id: 0,
+            config_name: "film".to_string(),
+            lsn: 100,
+            event_json: r#"{"test": true}"#.to_string(),
+            error_message: "boom".to_string(),
+            error_kind: crate::ErrorKind::Retryable,
+            retry_count: 0,
+            created_at: chrono::Utc::now(),
+            last_retry_at: None,
+        };
+        db.insert_dlq_entry(&dlq_entry).unwrap();
+        assert_eq!(db.dlq_count(None).unwrap(), 1);
+
+        let backfill = crate::BackfillProgress {
+            config_name: "film".to_string(),
+            last_id: None,
+            total_rows: None,
+            processed_rows: 0,
+            status: crate::BackfillStatus::Pending,
+            started_at: None,
+            completed_at: None,
+            error_message: None,
+            watermark_lsn: None,
+        };
+        db.save_backfill_progress(&backfill).unwrap();
+        assert!(db.get_backfill_progress("film").unwrap().is_some());
+
+        db.reset().unwrap();
+
+        assert_eq!(db.dlq_count(None).unwrap(), 0);
+        assert!(db.get_backfill_progress("film").unwrap().is_none());
         assert_eq!(db.list_configs().unwrap().len(), 0);
     }
 

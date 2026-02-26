@@ -3,7 +3,7 @@ use rusqlite::{Row, params};
 
 use crate::{StateDb, StateError};
 
-const BACKFILL_SELECT_COLS: &str = "config_name, last_id, total_rows, processed_rows, status, started_at, completed_at, error_message";
+const BACKFILL_SELECT_COLS: &str = "config_name, last_id, total_rows, processed_rows, status, started_at, completed_at, error_message, watermark_lsn";
 const COL_CONFIG_NAME: usize = 0;
 const COL_LAST_ID: usize = 1;
 const COL_TOTAL_ROWS: usize = 2;
@@ -12,6 +12,7 @@ const COL_STATUS: usize = 4;
 const COL_STARTED_AT: usize = 5;
 const COL_COMPLETED_AT: usize = 6;
 const COL_ERROR_MESSAGE: usize = 7;
+const COL_WATERMARK_LSN: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackfillStatus {
@@ -55,6 +56,7 @@ pub struct BackfillProgress {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub error_message: Option<String>,
+    pub watermark_lsn: Option<u64>,
 }
 
 impl BackfillProgress {
@@ -82,6 +84,9 @@ impl BackfillProgress {
             started_at,
             completed_at,
             error_message: row.get(COL_ERROR_MESSAGE)?,
+            watermark_lsn: row
+                .get::<_, Option<i64>>(COL_WATERMARK_LSN)?
+                .map(|v| v as u64),
         })
     }
 }
@@ -99,6 +104,7 @@ impl StateDb {
                 started_at TEXT,
                 completed_at TEXT,
                 error_message TEXT,
+                watermark_lsn INTEGER,
                 FOREIGN KEY (config_name) REFERENCES configs(name) ON DELETE CASCADE
             );
             "#,
@@ -109,7 +115,7 @@ impl StateDb {
     pub fn save_backfill_progress(&self, progress: &BackfillProgress) -> Result<(), StateError> {
         self.conn().execute(
             &format!(
-                "INSERT INTO backfill_progress ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO backfill_progress ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(config_name) DO UPDATE SET
                  last_id = excluded.last_id,
                  total_rows = excluded.total_rows,
@@ -117,7 +123,8 @@ impl StateDb {
                  status = excluded.status,
                  started_at = excluded.started_at,
                  completed_at = excluded.completed_at,
-                 error_message = excluded.error_message",
+                 error_message = excluded.error_message,
+                 watermark_lsn = excluded.watermark_lsn",
                 BACKFILL_SELECT_COLS
             ),
             params![
@@ -129,6 +136,7 @@ impl StateDb {
                 progress.started_at.as_ref().map(|dt| dt.to_rfc3339()),
                 progress.completed_at.as_ref().map(|dt| dt.to_rfc3339()),
                 progress.error_message,
+                progress.watermark_lsn.map(|v| v as i64),
             ],
         )?;
         Ok(())
@@ -186,6 +194,7 @@ mod tests {
             started_at: Some(Utc::now()),
             completed_at: None,
             error_message: None,
+            watermark_lsn: None,
         }
     }
 
@@ -260,5 +269,32 @@ mod tests {
 
         let result = db.save_backfill_progress(&progress);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn watermark_lsn_saved_and_retrieved() {
+        let (_dir, db) = setup_backfill_db();
+        let config = sample_config("film");
+        db.insert_config(&config).unwrap();
+
+        let mut progress = sample_backfill_progress("film");
+        progress.watermark_lsn = Some(42_000);
+        db.save_backfill_progress(&progress).unwrap();
+
+        let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
+        assert_eq!(retrieved.watermark_lsn, Some(42_000));
+    }
+
+    #[test]
+    fn watermark_lsn_defaults_to_none() {
+        let (_dir, db) = setup_backfill_db();
+        let config = sample_config("film");
+        db.insert_config(&config).unwrap();
+
+        let progress = sample_backfill_progress("film");
+        db.save_backfill_progress(&progress).unwrap();
+
+        let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
+        assert_eq!(retrieved.watermark_lsn, None);
     }
 }
