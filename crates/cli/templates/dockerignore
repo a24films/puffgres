@@ -1,0 +1,10 @@
+state.db
+state.db-journal
+state.db-wal
+state.db-shm
+.env
+.env.*
+node_modules
+Dockerfile
+.dockerignore
+.git
