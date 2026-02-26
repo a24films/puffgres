@@ -10,7 +10,11 @@ rustls = { version = "0.23", features = ["ring"] }
 webpki-roots = "1.0"
 thiserror = "2.0.18"
 tokio = { version = "1.43", features = ["full"] }
+testcontainers = { version = "0.26.3", optional = true }
+testcontainers-modules = { version = "0.14.0", features = ["postgres"], optional = true }
+
+[features]
+test-utils = ["dep:testcontainers", "dep:testcontainers-modules"]
 
 [dev-dependencies]
-testcontainers = "0.26.0"
-testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
+pg = { path = ".", features = ["test-utils"] }

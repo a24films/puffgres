@@ -2,42 +2,7 @@ use pg::connect::connect;
 use pg::publication::{
     add_tables_to_publication, drop_publication, ensure_publication, get_publication_tables,
 };
-use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
-use testcontainers_modules::postgres::Postgres;
-
-struct TestContext {
-    _container: ContainerAsync<Postgres>,
-    connection_string: String,
-}
-
-async fn setup_postgres() -> TestContext {
-    let container = Postgres::default()
-        .with_tag("17-alpine")
-        .with_cmd(vec![
-            "postgres".to_string(),
-            "-c".to_string(),
-            "wal_level=logical".to_string(),
-        ])
-        .start()
-        .await
-        .expect("Failed to start postgres container");
-
-    let host = container.get_host().await.expect("Failed to get host");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let connection_string = format!(
-        "host={} port={} user=postgres password=postgres dbname=postgres",
-        host, port
-    );
-
-    TestContext {
-        _container: container,
-        connection_string,
-    }
-}
+use pg::test_utils::setup_postgres_logical;
 
 async fn create_test_tables(client: &tokio_postgres::Client) {
     client
@@ -58,7 +23,7 @@ async fn create_test_tables(client: &tokio_postgres::Client) {
 
 #[tokio::test]
 async fn ensure_publication_creates_and_is_idempotent() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 
@@ -76,7 +41,7 @@ async fn ensure_publication_creates_and_is_idempotent() {
 
 #[tokio::test]
 async fn ensure_publication_multiple_tables() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 
@@ -95,7 +60,7 @@ async fn ensure_publication_multiple_tables() {
 
 #[tokio::test]
 async fn drop_publication_removes_it() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 
@@ -112,7 +77,7 @@ async fn drop_publication_removes_it() {
 
 #[tokio::test]
 async fn get_publication_tables_empty_for_nonexistent() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
 
     let tables = get_publication_tables(&client, "nonexistent")
@@ -123,7 +88,7 @@ async fn get_publication_tables_empty_for_nonexistent() {
 
 #[tokio::test]
 async fn publication_for_table_exists_in_pg_catalog() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 
@@ -163,7 +128,7 @@ async fn publication_for_table_exists_in_pg_catalog() {
 
 #[tokio::test]
 async fn add_tables_to_publication_appends_new_table() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 
@@ -186,7 +151,7 @@ async fn add_tables_to_publication_appends_new_table() {
 
 #[tokio::test]
 async fn add_tables_to_publication_empty_is_noop() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 
@@ -205,7 +170,7 @@ async fn add_tables_to_publication_empty_is_noop() {
 
 #[tokio::test]
 async fn ensure_publication_adds_missing_tables_to_existing() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 
@@ -236,7 +201,7 @@ async fn ensure_publication_adds_missing_tables_to_existing() {
 
 #[tokio::test]
 async fn ensure_publication_unqualified_table_defaults_to_public() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     create_test_tables(&client).await;
 

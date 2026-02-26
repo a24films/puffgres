@@ -1,43 +1,6 @@
 use pg::connect::connect;
 use pg::slot::{ensure_slot, get_confirmed_flush_lsn};
-use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
-use testcontainers_modules::postgres::Postgres;
-
-struct TestContext {
-    _container: ContainerAsync<Postgres>,
-    connection_string: String,
-}
-
-async fn setup_postgres() -> TestContext {
-    let container = Postgres::default()
-        .with_tag("17-alpine")
-        .with_cmd(vec![
-            "postgres".to_string(),
-            "-c".to_string(),
-            "wal_level=logical".to_string(),
-            "-c".to_string(),
-            "max_replication_slots=4".to_string(),
-        ])
-        .start()
-        .await
-        .expect("Failed to start postgres container");
-
-    let host = container.get_host().await.expect("Failed to get host");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("Failed to get port");
-
-    let connection_string = format!(
-        "host={} port={} user=postgres password=postgres dbname=postgres",
-        host, port
-    );
-
-    TestContext {
-        _container: container,
-        connection_string,
-    }
-}
+use pg::test_utils::setup_postgres_logical;
 
 async fn query_slot(client: &tokio_postgres::Client, slot_name: &str) -> Option<(String, String)> {
     let rows = client
@@ -53,7 +16,7 @@ async fn query_slot(client: &tokio_postgres::Client, slot_name: &str) -> Option<
 
 #[tokio::test]
 async fn ensure_slot_creates_with_pgoutput() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
 
     assert!(query_slot(&client, "test_slot").await.is_none());
@@ -69,7 +32,7 @@ async fn ensure_slot_creates_with_pgoutput() {
 
 #[tokio::test]
 async fn ensure_slot_idempotent() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
 
     ensure_slot(&client, "test_slot").await.unwrap();
@@ -89,7 +52,7 @@ async fn ensure_slot_idempotent() {
 
 #[tokio::test]
 async fn ensure_slot_rejects_wrong_plugin() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
 
     client
@@ -109,7 +72,7 @@ async fn ensure_slot_rejects_wrong_plugin() {
 
 #[tokio::test]
 async fn get_confirmed_flush_lsn_returns_value_for_existing_slot() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
 
     ensure_slot(&client, "test_slot").await.unwrap();
@@ -121,7 +84,7 @@ async fn get_confirmed_flush_lsn_returns_value_for_existing_slot() {
 
 #[tokio::test]
 async fn get_confirmed_flush_lsn_returns_none_for_missing_slot() {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string).await.unwrap();
 
     let lsn = get_confirmed_flush_lsn(&client, "nonexistent")

@@ -5,6 +5,9 @@ pub mod publication;
 pub mod sample;
 pub mod slot;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
+
 pub use error::PgError;
 pub use tokio_postgres::types::PgLsn;
 
