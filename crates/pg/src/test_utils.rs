@@ -4,6 +4,7 @@ use testcontainers_modules::postgres::Postgres;
 pub struct TestContext {
     pub _container: ContainerAsync<Postgres>,
     pub connection_string: String,
+    pub connection_url: String,
 }
 
 pub async fn setup_postgres() -> TestContext {
@@ -44,9 +45,11 @@ async fn test_context(container: ContainerAsync<Postgres>) -> TestContext {
         "host={} port={} user=postgres password=postgres dbname=postgres",
         host, port
     );
+    let connection_url = format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
 
     TestContext {
         _container: container,
         connection_string,
+        connection_url,
     }
 }

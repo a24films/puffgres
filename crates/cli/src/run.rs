@@ -5,7 +5,7 @@ use std::time::Duration;
 use chrono::Utc;
 use config::ConfigLoader;
 use puff::TurbopufferClient;
-use puffgres_core::{JsTransformer, Mapping, Router, Transformer};
+use puffgres_core::{Backoff, BackoffConfig, JsTransformer, Mapping, Router, Transformer};
 use replication::{ReplicationStream, ReplicationStreamConfig};
 use sha2::{Digest, Sha256};
 use state::{StateDb, StreamingCheckpoint};
@@ -245,6 +245,43 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
                 .map_err(|e| CliError::Run(format!("failed to get flush LSN: {e}")))?
         }
     };
+
+    // Here we stop holding the existing slot, and poll w/ exponential backoff for the new one.
+    // Need to do this after publication setup / LSN resolution so we don't create
+    // (and fail to clean one of these up) if those fail.
+    pg::slot::terminate_active_slot_backend(&pg_client, SLOT_NAME)
+        .await
+        .map_err(|e| CliError::Run(format!("failed to terminate stale slot backend: {e}")))?;
+
+    let mut backoff = Backoff::new(BackoffConfig {
+        initial_delay_ms: 100,
+        max_delay_ms: 5_000,
+        max_retries: 10,
+        multiplier: 2.0,
+        jitter: true,
+    });
+    while pg::slot::get_active_pid(&pg_client, SLOT_NAME)
+        .await
+        .map_err(|e| CliError::Run(format!("failed to check slot active PID: {e}")))?
+        .is_some()
+    {
+        match backoff.next_delay() {
+            Some(delay) => {
+                tokio::time::sleep(delay).await;
+                pg::slot::terminate_active_slot_backend(&pg_client, SLOT_NAME)
+                    .await
+                    .map_err(|e| {
+                        CliError::Run(format!("failed to terminate stale slot backend: {e}"))
+                    })?;
+            }
+            None => {
+                return Err(CliError::Run(format!(
+                    "timed out waiting for replication slot '{}' to be released",
+                    SLOT_NAME
+                )));
+            }
+        }
+    }
 
     drop(pg_client);
 
