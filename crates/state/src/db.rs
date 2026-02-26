@@ -29,6 +29,7 @@ impl StateDb {
     pub fn initialize(&self) -> Result<(), StateError> {
         self.ensure_configs_table()?;
         self.ensure_streaming_checkpoints_table()?;
+        self.ensure_dlq_table()?;
         Ok(())
     }
 
@@ -85,6 +86,7 @@ mod tests {
 
         assert!(tables.contains(&"configs".to_string()));
         assert!(tables.contains(&"streaming_checkpoints".to_string()));
+        assert!(tables.contains(&"dlq".to_string()));
     }
 
     #[test]
