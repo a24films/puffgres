@@ -45,6 +45,43 @@ path = "transforms/{name}.ts"
     fs::write(paths.configs.join(format!("{config_name}.toml")), content).unwrap();
 }
 
+pub fn write_config_with_columns(
+    paths: &ProjectPaths,
+    name: &str,
+    version: i64,
+    schema: &str,
+    table: &str,
+    id_column: &str,
+    id_type: &str,
+    columns: &[&str],
+) {
+    let config_name = format!("{name}_{version:04}");
+    let columns_toml = columns
+        .iter()
+        .map(|c| format!("\"{c}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let content = format!(
+        r#"name = "{config_name}"
+version = {version}
+namespace = "{name}"
+columns = [{columns_toml}]
+
+[source]
+schema = "{schema}"
+table = "{table}"
+
+[id]
+column = "{id_column}"
+type = "{id_type}"
+
+[transform]
+path = "transforms/{name}.ts"
+"#
+    );
+    fs::write(paths.configs.join(format!("{config_name}.toml")), content).unwrap();
+}
+
 pub fn write_passthrough_transform(paths: &ProjectPaths, name: &str) {
     let script = r#"
 import { readFileSync } from "fs";
