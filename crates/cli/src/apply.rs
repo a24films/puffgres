@@ -49,6 +49,32 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         let content_hash = config.content_hash()?;
         if let Some(existing) = db.get_config(&config.name)? {
             if existing.content_hash == content_hash {
+                // Also verify transform file hasn't been modified
+                if let Some(ref stored_hash) = existing.transform_hash {
+                    let transform_path = paths.root.join(&config.transform.path);
+                    let transform_content = match fs::read(&transform_path) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            errors.push(format!(
+                                "{}: cannot read transform file '{}' for applied config '{}': {e}",
+                                path.display(),
+                                config.transform.path,
+                                config.name,
+                            ));
+                            continue;
+                        }
+                    };
+                    let current_hash = format!("{:x}", Sha256::digest(&transform_content));
+                    if *stored_hash != current_hash {
+                        errors.push(format!(
+                            "{}: transform file '{}' was modified after config '{}' was applied",
+                            path.display(),
+                            config.transform.path,
+                            config.name,
+                        ));
+                        continue;
+                    }
+                }
                 skipped += 1;
                 continue;
             } else {
@@ -192,13 +218,15 @@ mod tests {
         // Load to get the content hash, then pre-seed the state DB
         let loader = config::ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
+        let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
         let db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             version: cfg.version,
             namespace: cfg.full_namespace(),
             content_hash: cfg.content_hash().unwrap(),
-            transform_hash: Some("abc".into()),
+            transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
         })
         .unwrap();
@@ -220,12 +248,14 @@ mod tests {
         let all = loader.load_all().unwrap();
         let db = StateDb::open(&paths.state_db).unwrap();
         for (_, cfg) in &all {
+            let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+            let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
             db.insert_config(&ConfigRecord {
                 name: cfg.name.clone(),
                 version: cfg.version,
                 namespace: cfg.full_namespace(),
                 content_hash: cfg.content_hash().unwrap(),
-                transform_hash: Some("abc".into()),
+                transform_hash: Some(transform_hash),
                 applied_at: Utc::now(),
             })
             .unwrap();
@@ -261,6 +291,37 @@ mod tests {
         assert!(
             err.to_string().contains("had errors"),
             "expected immutability error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_errors_on_unreadable_transform_for_applied_config() {
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+
+        let loader = config::ConfigLoader::new(&paths.configs);
+        let cfg = &loader.load_all().unwrap()[0].1;
+        let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
+        let db = StateDb::open(&paths.state_db).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+            version: cfg.version,
+            namespace: cfg.full_namespace(),
+            content_hash: cfg.content_hash().unwrap(),
+            transform_hash: Some(transform_hash),
+            applied_at: Utc::now(),
+        })
+        .unwrap();
+
+        // Delete the transform file so it can't be read
+        std::fs::remove_file(paths.root.join(&cfg.transform.path)).unwrap();
+
+        let err = run(&paths, &dummy_env()).unwrap_err();
+        assert!(
+            err.to_string().contains("had errors"),
+            "expected unreadable transform error, got: {err}"
         );
     }
 

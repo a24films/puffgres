@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::fs;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -6,6 +7,7 @@ use config::ConfigLoader;
 use puff::TurbopufferClient;
 use puffgres_core::{JsTransformer, Mapping, Router, Transformer};
 use replication::{ReplicationStream, ReplicationStreamConfig};
+use sha2::{Digest, Sha256};
 use state::{StateDb, StreamingCheckpoint};
 
 use crate::env::EnvConfig;
@@ -49,6 +51,75 @@ mod tests {
         let prefix = Some("".to_string());
         assert_eq!(prefixed_namespace(&prefix, "user_v1"), "user_v1");
     }
+
+    use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
+    use state::ConfigRecord;
+
+    fn dummy_env() -> EnvConfig {
+        EnvConfig {
+            database_url: "host=invalid".to_string(),
+            turbopuffer_api_key: "fake".to_string(),
+            turbopuffer_region: None,
+            turbopuffer_namespace_prefix: None,
+        }
+    }
+
+    #[test]
+    fn test_errors_on_unreadable_transform_for_applied_config() {
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+
+        let loader = ConfigLoader::new(&paths.configs);
+        let cfg = &loader.load_all().unwrap()[0].1;
+        let transform_bytes = fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
+        let db = StateDb::open(&paths.state_db).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+            version: cfg.version,
+            namespace: cfg.full_namespace(),
+            content_hash: cfg.content_hash().unwrap(),
+            transform_hash: Some(transform_hash),
+            applied_at: Utc::now(),
+        })
+        .unwrap();
+
+        // Delete the transform file so it can't be read
+        fs::remove_file(paths.root.join(&cfg.transform.path)).unwrap();
+
+        let err = run(&paths, &dummy_env()).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot read transform"),
+            "expected unreadable transform error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_errors_on_modified_transform_for_applied_config() {
+        let (_dir, paths) = setup_project();
+        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+
+        let loader = ConfigLoader::new(&paths.configs);
+        let cfg = &loader.load_all().unwrap()[0].1;
+        let db = StateDb::open(&paths.state_db).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+            version: cfg.version,
+            namespace: cfg.full_namespace(),
+            content_hash: cfg.content_hash().unwrap(),
+            transform_hash: Some("stale_hash".to_string()),
+            applied_at: Utc::now(),
+        })
+        .unwrap();
+
+        let err = run(&paths, &dummy_env()).unwrap_err();
+        assert!(
+            err.to_string().contains("was modified"),
+            "expected modified transform error, got: {err}"
+        );
+    }
 }
 
 async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
@@ -85,6 +156,27 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         tables.insert(format!("{}.{}", config.source.schema, config.source.table));
 
         let transform_path = paths.root.join(&config.transform.path);
+
+        // Verify transform file can be read and hasn't drifted from the applied hash
+        let transform_content = fs::read(&transform_path).map_err(|e| {
+            CliError::Run(format!(
+                "cannot read transform file '{}' for config '{}': {e}",
+                config.transform.path, config.name,
+            ))
+        })?;
+
+        if let Some(record) = db.get_config(&config.name)? {
+            if let Some(ref stored_hash) = record.transform_hash {
+                let current_hash = format!("{:x}", Sha256::digest(&transform_content));
+                if *stored_hash != current_hash {
+                    return Err(CliError::Run(format!(
+                        "transform file '{}' was modified after config '{}' was applied",
+                        config.transform.path, config.name,
+                    )));
+                }
+            }
+        }
+
         transformers.insert(
             config.name.clone(),
             Box::new(JsTransformer::new(
@@ -206,6 +298,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         };
 
         if batch.events.is_empty() {
+            stream.ack();
             continue;
         }
 
@@ -244,12 +337,14 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         for (config_name, _) in &config_events {
             let checkpoint = StreamingCheckpoint {
                 config_name: config_name.to_string(),
-                lsn: 0, // TODO(stu-13.1): populate from batch.ack_lsn once ack semantics land
+                lsn: batch.end_lsn,
                 events_processed: *events_processed.get(*config_name).unwrap_or(&0),
                 updated_at: Utc::now(),
             };
             db.save_streaming_checkpoint(&checkpoint)?;
         }
+
+        stream.ack();
     }
 
     Ok(())

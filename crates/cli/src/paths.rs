@@ -33,8 +33,23 @@ impl ProjectPaths {
     }
 
     pub fn from_current_dir() -> Result<Self, CliError> {
-        let root = std::env::current_dir()?;
-        Ok(Self::new(root))
+        let cwd = std::env::current_dir()?;
+        Ok(Self::new(Self::detect_root(cwd)))
+    }
+
+    /// Detect the project root from a given directory.
+    ///
+    /// - If `dir/puffgres.toml` exists, root = dir (running from inside the project)
+    /// - If `dir/puffgres/puffgres.toml` exists, root = dir/puffgres/ (running from parent)
+    /// - Otherwise, root = dir (will fail later when loading config)
+    pub fn detect_root(dir: PathBuf) -> PathBuf {
+        if dir.join("puffgres.toml").exists() {
+            dir
+        } else if dir.join("puffgres").join("puffgres.toml").exists() {
+            dir.join("puffgres")
+        } else {
+            dir
+        }
     }
 
     pub fn from_path(path: &Path) -> Self {
@@ -71,5 +86,33 @@ mod tests {
         let paths = ProjectPaths::from_path(Path::new("/some/dir"));
         assert_eq!(paths.root, PathBuf::from("/some/dir"));
         assert_eq!(paths.configs, PathBuf::from("/some/dir/configs"));
+    }
+
+    #[test]
+    fn detect_root_with_config_in_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("puffgres.toml"), "").unwrap();
+
+        let root = ProjectPaths::detect_root(dir.path().to_path_buf());
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn detect_root_with_puffgres_subfolder() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("puffgres");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("puffgres.toml"), "").unwrap();
+
+        let root = ProjectPaths::detect_root(dir.path().to_path_buf());
+        assert_eq!(root, sub);
+    }
+
+    #[test]
+    fn detect_root_fallback_to_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let root = ProjectPaths::detect_root(dir.path().to_path_buf());
+        assert_eq!(root, dir.path());
     }
 }

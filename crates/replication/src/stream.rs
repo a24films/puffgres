@@ -39,6 +39,7 @@ pub struct ReplicationStreamConfig {
 /// All row events from a single committed transaction.
 pub struct StreamingBatch {
     pub events: Vec<RowEvent>,
+    pub end_lsn: u64,
 }
 
 struct TransactionState {
@@ -154,7 +155,10 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                 ReplicationEvent::Commit { end_lsn, .. } => {
                     if let Some(txn) = self.current_txn.take() {
                         self.pending_lsn = Some(end_lsn);
-                        return Ok(Some(StreamingBatch { events: txn.events }));
+                        return Ok(Some(StreamingBatch {
+                            events: txn.events,
+                            end_lsn: end_lsn.0,
+                        }));
                     }
                 }
 
