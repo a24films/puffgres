@@ -139,8 +139,8 @@ mod tests {
 
         let config = ConfigRecord {
             name: "film".to_string(),
-            version: 1,
-            namespace: "film_v1".to_string(),
+
+            namespace: "film".to_string(),
             content_hash: "abc".to_string(),
             transform_hash: None,
             applied_at: chrono::Utc::now(),
@@ -172,8 +172,8 @@ mod tests {
 
         let config = ConfigRecord {
             name: "film".to_string(),
-            version: 1,
-            namespace: "film_v1".to_string(),
+
+            namespace: "film".to_string(),
             content_hash: "abc".to_string(),
             transform_hash: None,
             applied_at: chrono::Utc::now(),

@@ -13,6 +13,7 @@ async fn test_named_dry_run_fails_with_no_configs() {
         turbopuffer_region: None,
         turbopuffer_namespace_prefix: None,
         otel_endpoint: None,
+        otel_headers: None,
     };
 
     let err = run_async(&paths, &env_config, Some("nonexistent_0001"))

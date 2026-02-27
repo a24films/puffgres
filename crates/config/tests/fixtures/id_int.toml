@@ -1,5 +1,4 @@
-name = "test_0001"
-version = 1
+name = "test"
 namespace = "test"
 
 [source]
@@ -9,6 +8,3 @@ table = "test"
 [id]
 column = "id"
 type = "int"
-
-[transform]
-path = "transforms/test.ts"

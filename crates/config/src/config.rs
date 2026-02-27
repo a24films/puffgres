@@ -6,13 +6,11 @@ use crate::ConfigError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub name: String,
-    pub version: u64,
     pub namespace: String,
     pub source: SourceConfig,
     pub id: IdConfig,
     #[serde(default)]
     pub columns: Option<Vec<String>>,
-    pub transform: TransformConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,17 +35,7 @@ pub enum IdType {
     String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransformConfig {
-    pub path: String,
-}
-
 impl Config {
-    /// Returns the full namespace with version suffix (e.g., "film_v2")
-    pub fn full_namespace(&self) -> String {
-        format!("{}_v{}", self.namespace, self.version)
-    }
-
     /// Compute content hash for immutability checking
     pub fn content_hash(&self) -> Result<String, ConfigError> {
         let serialized = toml::to_string(self)?;
@@ -68,22 +56,19 @@ mod tests {
     #[test]
     fn parse_minimal_config() {
         let config = load_fixture("valid");
-        assert_eq!(config.name, "user_0001");
-        assert_eq!(config.version, 1);
-        assert_eq!(config.namespace, "user");
+        assert_eq!(config.name, "users");
+        assert_eq!(config.namespace, "users");
         assert_eq!(config.source.schema, "public");
         assert_eq!(config.source.table, "users");
         assert_eq!(config.id.column, "id");
         assert_eq!(config.id.id_type, IdType::Uint);
         assert!(config.columns.is_none());
-        assert_eq!(config.transform.path, "transforms/user.ts");
     }
 
     #[test]
     fn parse_full_config() {
         let config = load_fixture("full");
-        assert_eq!(config.name, "film_0002");
-        assert_eq!(config.version, 2);
+        assert_eq!(config.name, "film");
         assert_eq!(config.namespace, "film");
         assert_eq!(config.source.schema, "public");
         assert_eq!(config.source.table, "films");
@@ -96,14 +81,6 @@ mod tests {
         assert_eq!(columns[1], "title");
         assert_eq!(columns[2], "director");
         assert_eq!(columns[3], "year");
-
-        assert_eq!(config.transform.path, "transforms/film.ts");
-    }
-
-    #[test]
-    fn full_namespace_format_correct() {
-        let config = load_fixture("full");
-        assert_eq!(config.full_namespace(), "film_v2");
     }
 
     #[test]
@@ -123,7 +100,7 @@ mod tests {
     fn content_hash_changes_with_content() {
         let config1 = load_fixture("valid");
         let mut config2 = config1.clone();
-        config2.version = 2;
+        config2.namespace = "different".to_string();
 
         let hash1 = config1.content_hash().unwrap();
         let hash2 = config2.content_hash().unwrap();

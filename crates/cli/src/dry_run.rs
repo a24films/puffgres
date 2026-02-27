@@ -56,12 +56,12 @@ pub async fn run_async(
     let mut errors: Vec<String> = Vec::new();
     let mut valid_configs: Vec<(PathBuf, Config)> = Vec::new();
 
-    for (path, config) in &configs {
+    for (config_path, config) in &configs {
         if let Err(validation_errors) = config.validate() {
             for err in &validation_errors {
                 errors.push(format!(
                     "{}: {} - {}",
-                    path.display(),
+                    config_path.display(),
                     err.field,
                     err.message
                 ));
@@ -69,17 +69,16 @@ pub async fn run_async(
             continue;
         }
 
-        let transform_path = paths.root.join(&config.transform.path);
+        let transform_path = config_path.parent().unwrap().join("transform.ts");
         if !transform_path.exists() {
             errors.push(format!(
-                "{}: transform file '{}' does not exist",
-                path.display(),
-                config.transform.path,
+                "{}: transform file 'transform.ts' does not exist",
+                config_path.display(),
             ));
             continue;
         }
 
-        valid_configs.push((path.clone(), config.clone()));
+        valid_configs.push((config_path.clone(), config.clone()));
     }
 
     if !errors.is_empty() {
@@ -101,8 +100,8 @@ pub async fn run_async(
     let mut passed = 0;
     let mut skipped = 0;
 
-    for (path, config) in &valid_configs {
-        let display = path.display();
+    for (config_path, config) in &valid_configs {
+        let display = config_path.display();
 
         let sample = match pg::sample::fetch_sample_row(
             &pg_client,
@@ -120,7 +119,7 @@ pub async fn run_async(
 
         match sample {
             Some((column_names, values)) => {
-                match dry_run_transform(paths, config, &column_names, &values).await {
+                match dry_run_transform(config_path, config, &column_names, &values).await {
                     Ok(actions) => {
                         println!("{display}: transform returned {} action(s):", actions.len());
                         for action in &actions {

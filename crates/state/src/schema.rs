@@ -17,7 +17,6 @@ diesel::table! {
 diesel::table! {
     configs (name) {
         name -> Text,
-        version -> BigInt,
         namespace -> Text,
         content_hash -> Text,
         transform_hash -> Nullable<Text>,

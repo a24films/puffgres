@@ -1,16 +1,16 @@
+use std::path::Path;
+
 use config::Config;
 use puffgres_core::{Action, JsTransformer, Transformer, values_to_event};
 
-use crate::paths::ProjectPaths;
-
 /// Run the transform on a sample row and validate the output.
 pub async fn dry_run_transform(
-    paths: &ProjectPaths,
+    config_path: &Path,
     config: &Config,
     column_names: &[String],
     values: &[Option<String>],
 ) -> Result<Vec<puffgres_core::Action>, String> {
-    let transform_path = paths.root.join(&config.transform.path);
+    let transform_path = config_path.parent().unwrap().join("transform.ts");
     let transformer = JsTransformer::new(transform_path, config.id.id_type.clone());
 
     let (event, doc_id) =

@@ -1,4 +1,5 @@
 use std::io;
+use std::time::SystemTimeError;
 
 use thiserror::Error;
 
@@ -37,6 +38,9 @@ pub enum CliError {
     #[error("{0}")]
     Reset(String),
 
+    #[error("A config with {field} \"{name}\" already exists")]
+    DuplicateConfig { name: String, field: String },
+
     #[error("{0} already exists")]
     AlreadyExists(String),
 
@@ -48,4 +52,7 @@ pub enum CliError {
 
     #[error("OTLP exporter error: {0}")]
     Otel(String),
+
+    #[error("System time error: {0}")]
+    SystemTime(#[from] SystemTimeError),
 }

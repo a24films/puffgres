@@ -26,9 +26,9 @@ mod tests {
 
         let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
-            name: "user_0001".to_string(),
-            version: 1,
-            namespace: "user_v1".to_string(),
+            name: "user".to_string(),
+
+            namespace: "user".to_string(),
             content_hash: "abc".to_string(),
             transform_hash: None,
             applied_at: Utc::now(),

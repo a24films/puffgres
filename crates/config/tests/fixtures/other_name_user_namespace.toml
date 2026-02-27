@@ -1,14 +1,10 @@
-name = "user_0001"
-version = 1
+name = "other"
 namespace = "user"
 
 [source]
 schema = "public"
-table = "users"
+table = "other"
 
 [id]
 column = "id"
 type = "uint"
-
-[transform]
-path = ""

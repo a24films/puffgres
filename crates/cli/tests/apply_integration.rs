@@ -43,10 +43,10 @@ async fn test_apply_and_idempotency() {
     let (_ctx, env_config) = setup_pg(&["users", "films"]).await;
     let (_dir, paths) = setup_project();
 
-    write_config(&paths, "user", 1, "public", "users", "id", "uint");
-    write_config(&paths, "film", 2, "public", "films", "id", "uint");
-    write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
-    write_transform(&paths, "film", PASSTHROUGH_TRANSFORM);
+    let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+    write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+    let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
+    write_transform(&film_dir, PASSTHROUGH_TRANSFORM);
 
     // First apply: both configs written
     run_async(&paths, &env_config).await.unwrap();
@@ -54,14 +54,13 @@ async fn test_apply_and_idempotency() {
     let mut db = StateDb::open(&paths.state_db).unwrap();
     assert_eq!(db.list_configs().unwrap().len(), 2);
 
-    let user = db.get_config("user_0001").unwrap().unwrap();
-    assert_eq!(user.version, 1);
-    assert_eq!(user.namespace, "user_v1");
+    let user = db.get_config("user").unwrap().unwrap();
+    assert_eq!(user.namespace, "user");
     assert!(user.transform_hash.is_some());
     assert_eq!(user.content_hash.len(), 64);
 
-    let film = db.get_config("film_0002").unwrap().unwrap();
-    assert_eq!(film.namespace, "film_v2");
+    let film = db.get_config("film").unwrap().unwrap();
+    assert_eq!(film.namespace, "film");
 
     // Second apply: idempotent, no errors, same count
     run_async(&paths, &env_config).await.unwrap();
@@ -73,12 +72,27 @@ async fn test_rejects_modified_config() {
     let (_ctx, env_config) = setup_pg(&["users", "accounts"]).await;
     let (_dir, paths) = setup_project();
 
-    write_config(&paths, "user", 1, "public", "users", "id", "uint");
-    write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+    let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+    write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
     run_async(&paths, &env_config).await.unwrap();
 
     // Mutate the already-applied config
-    write_config(&paths, "user", 1, "public", "accounts", "id", "uint");
+    let config_toml = user_dir.join("config.toml");
+    std::fs::write(
+        config_toml,
+        r#"name = "user"
+namespace = "user"
+
+[source]
+schema = "public"
+table = "accounts"
+
+[id]
+column = "id"
+type = "uint"
+"#,
+    )
+    .unwrap();
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -92,16 +106,8 @@ async fn test_rejects_nonexistent_table() {
     let (_ctx, env_config) = start_postgres_env().await;
     let (_dir, paths) = setup_project();
 
-    write_config(
-        &paths,
-        "ghost",
-        1,
-        "public",
-        "nonexistent_table",
-        "id",
-        "uint",
-    );
-    write_transform(&paths, "ghost", PASSTHROUGH_TRANSFORM);
+    let ghost_dir = write_config(&paths, "ghost", "public", "nonexistent_table", "id", "uint");
+    write_transform(&ghost_dir, PASSTHROUGH_TRANSFORM);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -127,16 +133,8 @@ async fn test_rejects_nonexistent_id_column() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(
-        &paths,
-        "col",
-        1,
-        "public",
-        "col_test",
-        "missing_col",
-        "uint",
-    );
-    write_transform(&paths, "col", PASSTHROUGH_TRANSFORM);
+    let col_dir = write_config(&paths, "col", "public", "col_test", "missing_col", "uint");
+    write_transform(&col_dir, PASSTHROUGH_TRANSFORM);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -162,8 +160,8 @@ async fn test_rejects_incompatible_id_type() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "typed", 1, "public", "type_test", "id", "uint");
-    write_transform(&paths, "typed", PASSTHROUGH_TRANSFORM);
+    let typed_dir = write_config(&paths, "typed", "public", "type_test", "id", "uint");
+    write_transform(&typed_dir, PASSTHROUGH_TRANSFORM);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -193,8 +191,8 @@ async fn test_rejects_vector_without_distance_metric() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "vec", 1, "public", "vec_test", "id", "uint");
-    write_transform(&paths, "vec", VECTOR_NO_METRIC_TRANSFORM);
+    let vec_dir = write_config(&paths, "vec", "public", "vec_test", "id", "uint");
+    write_transform(&vec_dir, VECTOR_NO_METRIC_TRANSFORM);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -224,8 +222,8 @@ async fn test_accepts_vector_with_distance_metric() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "goodvec", 1, "public", "good_vec", "id", "uint");
-    write_transform(&paths, "goodvec", VECTOR_WITH_METRIC_TRANSFORM);
+    let goodvec_dir = write_config(&paths, "goodvec", "public", "good_vec", "id", "uint");
+    write_transform(&goodvec_dir, VECTOR_WITH_METRIC_TRANSFORM);
 
     let result = run_async(&paths, &env_config).await;
     assert!(result.is_ok(), "expected apply to succeed, got: {result:?}");
@@ -248,8 +246,8 @@ async fn test_accepts_empty_table_skips_dry_run() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "empty", 1, "public", "empty_apply", "id", "uint");
-    write_transform(&paths, "empty", PASSTHROUGH_TRANSFORM);
+    let empty_dir = write_config(&paths, "empty", "public", "empty_apply", "id", "uint");
+    write_transform(&empty_dir, PASSTHROUGH_TRANSFORM);
 
     let result = run_async(&paths, &env_config).await;
     assert!(

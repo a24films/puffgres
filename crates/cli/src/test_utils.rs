@@ -1,6 +1,10 @@
 use crate::paths::ProjectPaths;
 use state::StateDb;
 use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_TIMESTAMP: AtomicU64 = AtomicU64::new(1000000000000);
 
 pub fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
     let dir = tempfile::tempdir().unwrap();
@@ -18,16 +22,17 @@ pub fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
 pub fn write_config(
     paths: &ProjectPaths,
     name: &str,
-    version: i64,
     schema: &str,
     table: &str,
     id_column: &str,
     id_type: &str,
-) {
-    let config_name = format!("{name}_{version:04}");
+) -> PathBuf {
+    let ts = TEST_TIMESTAMP.fetch_add(1, Ordering::SeqCst);
+    let dir_name = format!("{}_{}", ts, name);
+    let config_dir = paths.configs.join(&dir_name);
+    fs::create_dir_all(&config_dir).unwrap();
     let content = format!(
-        r#"name = "{config_name}"
-version = {version}
+        r#"name = "{name}"
 namespace = "{name}"
 
 [source]
@@ -37,33 +42,32 @@ table = "{table}"
 [id]
 column = "{id_column}"
 type = "{id_type}"
-
-[transform]
-path = "transforms/{name}.ts"
 "#
     );
-    fs::write(paths.configs.join(format!("{config_name}.toml")), content).unwrap();
+    fs::write(config_dir.join("config.toml"), content).unwrap();
+    config_dir
 }
 
 pub fn write_config_with_columns(
     paths: &ProjectPaths,
     name: &str,
-    version: i64,
     schema: &str,
     table: &str,
     id_column: &str,
     id_type: &str,
     columns: &[&str],
-) {
-    let config_name = format!("{name}_{version:04}");
+) -> PathBuf {
+    let ts = TEST_TIMESTAMP.fetch_add(1, Ordering::SeqCst);
+    let dir_name = format!("{}_{}", ts, name);
+    let config_dir = paths.configs.join(&dir_name);
+    fs::create_dir_all(&config_dir).unwrap();
     let columns_toml = columns
         .iter()
         .map(|c| format!("\"{c}\""))
         .collect::<Vec<_>>()
         .join(", ");
     let content = format!(
-        r#"name = "{config_name}"
-version = {version}
+        r#"name = "{name}"
 namespace = "{name}"
 columns = [{columns_toml}]
 
@@ -74,17 +78,17 @@ table = "{table}"
 [id]
 column = "{id_column}"
 type = "{id_type}"
-
-[transform]
-path = "transforms/{name}.ts"
 "#
     );
-    fs::write(paths.configs.join(format!("{config_name}.toml")), content).unwrap();
+    fs::write(config_dir.join("config.toml"), content).unwrap();
+    config_dir
 }
 
-pub fn write_transform(paths: &ProjectPaths, name: &str, script: &str) {
-    fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
+pub fn write_transform(config_dir: &Path, script: &str) {
+    fs::write(config_dir.join("transform.ts"), script).unwrap();
 }
+
+use std::path::Path;
 
 pub const PASSTHROUGH_TRANSFORM: &str = r#"
 import { readFileSync } from "fs";

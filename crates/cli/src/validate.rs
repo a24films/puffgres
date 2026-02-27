@@ -4,7 +4,6 @@ use config::{Config, IdType};
 
 use crate::env::EnvConfig;
 use crate::error::CliError;
-use crate::paths::ProjectPaths;
 
 use super::dry_transform::dry_run_transform;
 
@@ -38,7 +37,6 @@ pub fn validate_static(configs: &[(PathBuf, Config)]) -> Result<Vec<usize>, Vec<
 /// Validate configs against Postgres: schema checks + dry-run transforms.
 /// Returns the indices of configs that passed validation.
 pub async fn validate_live(
-    paths: &ProjectPaths,
     env_config: &EnvConfig,
     configs: &[(PathBuf, Config)],
 ) -> Result<Vec<usize>, CliError> {
@@ -118,7 +116,7 @@ pub async fn validate_live(
         };
 
         if let Some((column_names, values)) = sample {
-            if let Err(e) = dry_run_transform(paths, config, &column_names, &values).await {
+            if let Err(e) = dry_run_transform(path, config, &column_names, &values).await {
                 errors.push(format!("{display}: {e}"));
                 continue;
             }
