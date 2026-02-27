@@ -8,7 +8,7 @@ use config::IdType;
 use pg::batch::BatchQueryConfig;
 use pg::connect::connect;
 use pg::publication::ensure_publication;
-use pg::slot::{ensure_slot, get_current_wal_lsn};
+use pg::slot::{ensure_slot, get_confirmed_flush_lsn, get_current_wal_lsn};
 use pg::test_utils::{TestContext, setup_postgres, setup_postgres_logical};
 use puffgres_core::{
     Action, BackfillConfig, BackfillOutcome, BackfillSink, CoreError, DocumentId, Mapping, Router,
@@ -755,6 +755,64 @@ async fn backfill_multiple_batches_then_cdc() {
     assert_eq!(
         cdc_ids, expected_cdc,
         "CDC must capture exactly IDs 0008-0009"
+    );
+}
+
+/// Verifies that calling stream.ack() after processing advances confirmed_flush_lsn
+/// in pg_replication_slots, so Postgres knows we consumed the WAL.
+#[tokio::test]
+async fn cdc_ack_advances_confirmed_flush_lsn() {
+    let (ctx, client) = setup_replication_test().await;
+
+    let slot = "ack_flush_slot";
+    let pub_name = "ack_flush_pub";
+    ensure_slot(&client, slot).await.unwrap();
+    ensure_publication(&client, pub_name, &["public.backfill_items".to_string()])
+        .await
+        .unwrap();
+
+    // Get initial confirmed_flush_lsn (may be 0 or None for a fresh slot)
+    let initial_flush = get_confirmed_flush_lsn(&client, slot)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+
+    // Insert rows to generate WAL
+    insert_rows(&client, 3).await;
+
+    // Start CDC stream from beginning
+    let mut stream = ReplicationStream::connect(ReplicationStreamConfig {
+        connection_string: ctx.connection_url.clone(),
+        slot_name: slot.to_string(),
+        publication_name: pub_name.to_string(),
+        start_lsn: None,
+        status_interval: Duration::from_secs(1),
+    })
+    .await
+    .unwrap();
+
+    // Collect events AND ack each batch (collect_cdc_events already calls stream.ack())
+    let events = collect_cdc_events(&mut stream, 3, 10).await;
+    assert_eq!(events.len(), 3);
+
+    // Give Postgres a moment to process the standby status update
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    drop(stream);
+
+    // Reconnect to query pg_replication_slots
+    let check_client = connect(&ctx.connection_string)
+        .await
+        .expect("Failed to reconnect");
+    let final_flush = get_confirmed_flush_lsn(&check_client, slot)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+
+    assert!(
+        final_flush > initial_flush,
+        "confirmed_flush_lsn should advance after ack: initial={}, final={}",
+        initial_flush,
+        final_flush
     );
 }
 
