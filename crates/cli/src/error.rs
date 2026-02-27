@@ -45,4 +45,7 @@ pub enum CliError {
 
     #[error("Invalid PUFFGRES_STATE_PATH: {0}")]
     InvalidStatePath(String),
+
+    #[error("OTLP exporter error: {0}")]
+    Otel(String),
 }

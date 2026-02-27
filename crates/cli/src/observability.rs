@@ -1,16 +1,42 @@
+use std::collections::HashMap;
+
+use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, MeterProvider};
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::{
+    LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig, WithHttpConfig,
+};
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Holds OTel shutdown guards. Drop to flush.
+/// Holds OTel shutdown guards. Call `shutdown()` before dropping to ensure
+/// all pending telemetry is flushed to the backend.
 pub struct Telemetry {
-    _tracer_provider: SdkTracerProvider,
-    _meter_provider: SdkMeterProvider,
+    tracer_provider: SdkTracerProvider,
+    meter_provider: SdkMeterProvider,
+    logger_provider: SdkLoggerProvider,
+}
+
+impl Telemetry {
+    /// Explicitly flush and shut down all providers. Call this before the
+    /// process exits to ensure buffered telemetry reaches the backend.
+    pub fn shutdown(&self) {
+        if let Err(e) = self.logger_provider.shutdown() {
+            eprintln!("otel: logger shutdown error: {e}");
+        }
+        if let Err(e) = self.tracer_provider.shutdown() {
+            eprintln!("otel: tracer shutdown error: {e}");
+        }
+        if let Err(e) = self.meter_provider.shutdown() {
+            eprintln!("otel: meter shutdown error: {e}");
+        }
+    }
 }
 
 pub struct Metrics {
@@ -28,24 +54,60 @@ pub struct Metrics {
     pub replication_acks: Counter<u64>,
 }
 
-/// Sets up tracing + metrics export via OTLP. Keep the returned
-/// `Telemetry` alive for the lifetime of the process.
-pub fn init(otlp_endpoint: &str) -> Result<(Telemetry, Metrics), crate::CliError> {
+/// Sets up console-only tracing to stdout (no OTLP export).
+pub fn init_console() {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
-        .with_thread_ids(false);
+        .with_thread_ids(false)
+        .with_writer(std::io::stdout);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .init();
+}
+
+/// Sets up tracing to stdout + metrics/traces export via OTLP.
+/// Keep the returned `Telemetry` alive for the lifetime of the process.
+///
+/// `otlp_endpoint` is the base OTLP endpoint (e.g. `https://host/otlp`).
+/// Per-signal paths (`/v1/traces`, `/v1/metrics`) are appended here because
+/// `.with_endpoint()` uses the URL verbatim — the library only appends
+/// those paths when reading from the `OTEL_EXPORTER_OTLP_ENDPOINT` env var.
+///
+/// `otlp_headers` is an optional OTLP-formatted header string
+/// (`key=value,key2=value2`) passed to each exporter via `.with_headers()`.
+pub fn init(
+    otlp_endpoint: &str,
+    otlp_headers: Option<&str>,
+) -> Result<(Telemetry, Metrics), crate::error::CliError> {
+    let base = otlp_endpoint.trim_end_matches('/');
+    let headers = parse_otlp_headers(otlp_headers.unwrap_or_default());
+
+    let resource = Resource::builder()
+        .with_attributes([KeyValue::new("service.name", "puffgres")])
+        .build();
+
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_writer(std::io::stdout);
 
     let span_exporter = SpanExporter::builder()
         .with_http()
-        .with_endpoint(otlp_endpoint)
-        .with_protocol(Protocol::HttpBinary)
+        .with_endpoint(&format!("{base}/v1/traces"))
+        .with_protocol(Protocol::HttpJson)
+        .with_headers(headers.clone())
         .build()
-        .map_err(|e| crate::CliError::Run(format!("failed to create OTLP span exporter: {e}")))?;
+        .map_err(|e| crate::error::CliError::Otel(format!("span exporter: {e}")))?;
 
     let tracer_provider = SdkTracerProvider::builder()
         .with_batch_exporter(span_exporter)
+        .with_resource(resource.clone())
         .build();
 
     let tracer = tracer_provider.tracer("puffgres");
@@ -53,29 +115,48 @@ pub fn init(otlp_endpoint: &str) -> Result<(Telemetry, Metrics), crate::CliError
 
     let metric_exporter = MetricExporter::builder()
         .with_http()
-        .with_endpoint(otlp_endpoint)
-        .with_protocol(Protocol::HttpBinary)
+        .with_endpoint(&format!("{base}/v1/metrics"))
+        .with_protocol(Protocol::HttpJson)
+        .with_headers(headers.clone())
         .build()
-        .map_err(|e| crate::CliError::Run(format!("failed to create OTLP metric exporter: {e}")))?;
+        .map_err(|e| crate::error::CliError::Otel(format!("metric exporter: {e}")))?;
 
     let metric_reader = PeriodicReader::builder(metric_exporter).build();
     let meter_provider = SdkMeterProvider::builder()
         .with_reader(metric_reader)
+        .with_resource(resource.clone())
         .build();
 
     let meter = meter_provider.meter("puffgres");
     let metrics = build_metrics(&meter);
 
+    let log_exporter = LogExporter::builder()
+        .with_http()
+        .with_endpoint(&format!("{base}/v1/logs"))
+        .with_protocol(Protocol::HttpJson)
+        .with_headers(headers)
+        .build()
+        .map_err(|e| crate::error::CliError::Otel(format!("log exporter: {e}")))?;
+
+    let logger_provider = SdkLoggerProvider::builder()
+        .with_batch_exporter(log_exporter)
+        .with_resource(resource)
+        .build();
+
+    let otel_log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
+
     tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt_layer)
         .with(otel_trace_layer)
+        .with(otel_log_layer)
         .init();
 
     Ok((
         Telemetry {
-            _tracer_provider: tracer_provider,
-            _meter_provider: meter_provider,
+            tracer_provider,
+            meter_provider,
+            logger_provider,
         },
         metrics,
     ))
@@ -171,4 +252,16 @@ fn build_metrics(meter: &Meter) -> Metrics {
             .with_description("Replication slot acks sent")
             .build(),
     }
+}
+
+/// Parse an OTLP-formatted header string (`key=value,key2=value2`) into a map.
+/// Splits on the first `=` per entry so values may contain `=`.
+fn parse_otlp_headers(raw: &str) -> HashMap<String, String> {
+    raw.split(',')
+        .filter_map(|pair| {
+            let pair = pair.trim();
+            let (k, v) = pair.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .collect()
 }

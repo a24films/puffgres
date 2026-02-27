@@ -23,7 +23,11 @@ pub async fn connect(connection_string: &str) -> Result<Client> {
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                tracing::error!(error = %e, "postgres connection error");
+                tracing::error!(
+                    error = %e,
+                    error_debug = ?e,
+                    "postgres connection error",
+                );
             }
         });
 
@@ -36,7 +40,11 @@ pub async fn connect(connection_string: &str) -> Result<Client> {
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                tracing::error!(error = %e, "postgres connection error");
+                tracing::error!(
+                    error = %e,
+                    error_debug = ?e,
+                    "postgres connection error",
+                );
             }
         });
 
