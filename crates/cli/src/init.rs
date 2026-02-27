@@ -178,12 +178,13 @@ fn ensure_utils(paths: &ProjectPaths) -> Result<(), CliError> {
 
     let files = &[
         (
-            "truncate-to-tokens.ts",
-            include_str!("../templates/utils/truncate-to-tokens.ts"),
+            "load-env.ts",
+            include_str!("../templates/utils/load-env.ts"),
         ),
+        ("embed.ts", include_str!("../templates/utils/embed.ts")),
         (
-            "embed-with-together.ts",
-            include_str!("../templates/utils/embed-with-together.ts"),
+            "tokenize.ts",
+            include_str!("../templates/utils/tokenize.ts"),
         ),
     ];
 
@@ -461,8 +462,9 @@ mod tests {
 
         let sub = dir.path().join("puffgres");
         assert!(sub.join("utils").is_dir());
-        assert!(sub.join("utils/truncate-to-tokens.ts").exists());
-        assert!(sub.join("utils/embed-with-together.ts").exists());
+        assert!(sub.join("utils/load-env.ts").exists());
+        assert!(sub.join("utils/embed.ts").exists());
+        assert!(sub.join("utils/tokenize.ts").exists());
     }
 
     #[test]
@@ -472,13 +474,17 @@ mod tests {
         run_in(dir.path()).unwrap();
 
         let sub = dir.path().join("puffgres");
-        let truncate = fs::read_to_string(sub.join("utils/truncate-to-tokens.ts")).unwrap();
-        assert!(truncate.contains("@huggingface/transformers"));
-        assert!(truncate.contains("truncateToTokens"));
+        let load_env = fs::read_to_string(sub.join("utils/load-env.ts")).unwrap();
+        assert!(load_env.contains("dotenv"));
+        assert!(load_env.contains("smol-toml"));
 
-        let embed = fs::read_to_string(sub.join("utils/embed-with-together.ts")).unwrap();
+        let embed = fs::read_to_string(sub.join("utils/embed.ts")).unwrap();
         assert!(embed.contains("together-ai"));
-        assert!(embed.contains("getTogetherClient"));
+        assert!(embed.contains("embedBatch"));
+
+        let tokenize = fs::read_to_string(sub.join("utils/tokenize.ts")).unwrap();
+        assert!(tokenize.contains("@huggingface/transformers"));
+        assert!(tokenize.contains("tokenizeBatch"));
     }
 
     #[test]
@@ -487,13 +493,14 @@ mod tests {
         let sub = dir.path().join("puffgres");
         let utils = sub.join("utils");
         fs::create_dir_all(&utils).unwrap();
-        fs::write(utils.join("truncate-to-tokens.ts"), "custom").unwrap();
+        fs::write(utils.join("tokenize.ts"), "custom").unwrap();
 
         run_in(dir.path()).unwrap();
 
-        let content = fs::read_to_string(utils.join("truncate-to-tokens.ts")).unwrap();
+        let content = fs::read_to_string(utils.join("tokenize.ts")).unwrap();
         assert_eq!(content, "custom");
-        // But the other file should still be created
-        assert!(utils.join("embed-with-together.ts").exists());
+        // But the other files should still be created
+        assert!(utils.join("embed.ts").exists());
+        assert!(utils.join("load-env.ts").exists());
     }
 }
