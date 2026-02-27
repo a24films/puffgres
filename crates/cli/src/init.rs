@@ -59,6 +59,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
         ("TURBOPUFFER_REGION", false),
         ("TURBOPUFFER_NAMESPACE_PREFIX", false),
         ("PUFFGRES_STATE_PATH", false),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", false),
     ];
 
     for &(name, required) in env_vars {

@@ -14,6 +14,7 @@ pub struct BatchQueryConfig {
     pub batch_size: u32,
 }
 
+#[derive(Debug)]
 pub struct BatchResult {
     pub rows: Vec<tokio_postgres::Row>,
     pub last_id: Option<String>,
