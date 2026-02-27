@@ -51,7 +51,7 @@ async fn test_apply_and_idempotency() {
     // First apply: both configs written
     run_async(&paths, &env_config).await.unwrap();
 
-    let db = StateDb::open(&paths.state_db).unwrap();
+    let mut db = StateDb::open(&paths.state_db).unwrap();
     assert_eq!(db.list_configs().unwrap().len(), 2);
 
     let user = db.get_config("user_0001").unwrap().unwrap();

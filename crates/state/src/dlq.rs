@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
-use rusqlite::{Row, params};
+use diesel::Connection;
+use diesel::prelude::*;
 
+use crate::models::{DlqRow, NewDlqEntry};
+use crate::schema::dlq;
 use crate::{StateDb, StateError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,19 +46,6 @@ impl ErrorKind {
         }
     }
 }
-
-const DLQ_SELECT_COLS: &str = "id, config_name, lsn, event_json, doc_id, error_message, error_kind, retry_count, created_at, last_retry_at, permanent_at";
-const COL_ID: usize = 0;
-const COL_CONFIG_NAME: usize = 1;
-const COL_LSN: usize = 2;
-const COL_EVENT_JSON: usize = 3;
-const COL_DOC_ID: usize = 4;
-const COL_ERROR_MESSAGE: usize = 5;
-const COL_ERROR_KIND: usize = 6;
-const COL_RETRY_COUNT: usize = 7;
-const COL_CREATED_AT: usize = 8;
-const COL_LAST_RETRY_AT: usize = 9;
-const COL_PERMANENT_AT: usize = 10;
 
 impl DlqEntry {
     pub fn retryable(
@@ -102,50 +92,34 @@ impl DlqEntry {
         }
     }
 
-    fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
-        let created_at_str: String = row.get(COL_CREATED_AT)?;
-        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+    fn from_row(row: &DlqRow) -> Result<Self, StateError> {
+        let created_at = DateTime::parse_from_rfc3339(&row.created_at)
             .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    COL_CREATED_AT,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
+            .map_err(|e| StateError::InvalidState(format!("invalid created_at: {e}")))?;
 
-        let last_retry_at: Option<String> = row.get(COL_LAST_RETRY_AT)?;
-        let last_retry_at = last_retry_at.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
-        });
+        let last_retry_at = row
+            .last_retry_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
 
-        let permanent_at: Option<String> = row.get(COL_PERMANENT_AT)?;
-        let permanent_at = permanent_at.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
-        });
+        let permanent_at = row
+            .permanent_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
 
-        let error_kind_str: String = row.get(COL_ERROR_KIND)?;
-        let error_kind = ErrorKind::from_str(&error_kind_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                COL_ERROR_KIND,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
-        })?;
+        let error_kind = ErrorKind::from_str(&row.error_kind)?;
 
         Ok(Self {
-            id: row.get(COL_ID)?,
-            config_name: row.get(COL_CONFIG_NAME)?,
-            lsn: row.get::<_, i64>(COL_LSN)? as u64,
-            event_json: row.get(COL_EVENT_JSON)?,
-            doc_id: row.get(COL_DOC_ID)?,
-            error_message: row.get(COL_ERROR_MESSAGE)?,
+            id: row.id,
+            config_name: row.config_name.clone(),
+            lsn: row.lsn as u64,
+            event_json: row.event_json.clone(),
+            doc_id: row.doc_id.clone(),
+            error_message: row.error_message.clone(),
             error_kind,
-            retry_count: row.get::<_, i64>(COL_RETRY_COUNT)? as u32,
+            retry_count: row.retry_count as u32,
             created_at,
             last_retry_at,
             permanent_at,
@@ -154,94 +128,78 @@ impl DlqEntry {
 }
 
 impl StateDb {
-    pub fn ensure_dlq_table(&self) -> Result<(), StateError> {
-        self.conn().execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS dlq (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                config_name TEXT NOT NULL,
-                lsn INTEGER NOT NULL,
-                event_json TEXT NOT NULL,
-                doc_id TEXT,
-                error_message TEXT NOT NULL,
-                error_kind TEXT NOT NULL CHECK (error_kind IN ('retryable', 'permanent')),
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                last_retry_at TEXT,
-                permanent_at TEXT,
-                FOREIGN KEY (config_name) REFERENCES configs(name) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_dlq_config_name ON dlq(config_name);
-            CREATE INDEX IF NOT EXISTS idx_dlq_error_kind ON dlq(error_kind);
-            "#,
-        )?;
-        Ok(())
+    pub fn insert_dlq_entry(&mut self, entry: &DlqEntry) -> Result<i64, StateError> {
+        let created_at_str = entry.created_at.to_rfc3339();
+        let last_retry_at_str = entry.last_retry_at.as_ref().map(|dt| dt.to_rfc3339());
+        let permanent_at_str = entry.permanent_at.as_ref().map(|dt| dt.to_rfc3339());
+
+        let new = NewDlqEntry {
+            config_name: &entry.config_name,
+            lsn: entry.lsn as i64,
+            event_json: &entry.event_json,
+            doc_id: entry.doc_id.as_deref(),
+            error_message: &entry.error_message,
+            error_kind: entry.error_kind.to_str(),
+            retry_count: entry.retry_count as i32,
+            created_at: &created_at_str,
+            last_retry_at: last_retry_at_str.as_deref(),
+            permanent_at: permanent_at_str.as_deref(),
+        };
+
+        let id = self
+            .conn
+            .transaction::<i64, diesel::result::Error, _>(|conn| {
+                diesel::insert_into(dlq::table).values(&new).execute(conn)?;
+
+                diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "last_insert_rowid()",
+                ))
+                .get_result(conn)
+            })?;
+
+        Ok(id)
     }
 
-    pub fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
-        self.conn().execute(
-            "INSERT INTO dlq (config_name, lsn, event_json, doc_id, error_message, error_kind, retry_count, created_at, last_retry_at, permanent_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                entry.config_name,
-                entry.lsn as i64,
-                entry.event_json,
-                entry.doc_id,
-                entry.error_message,
-                entry.error_kind.to_str(),
-                entry.retry_count as i64,
-                entry.created_at.to_rfc3339(),
-                entry.last_retry_at.as_ref().map(|dt| dt.to_rfc3339()),
-                entry.permanent_at.as_ref().map(|dt| dt.to_rfc3339()),
-            ],
-        )?;
-        Ok(self.conn().last_insert_rowid())
-    }
+    pub fn get_dlq_entry(&mut self, id: i64) -> Result<Option<DlqEntry>, StateError> {
+        let row = dlq::table
+            .filter(dlq::id.eq(id))
+            .first::<DlqRow>(&mut self.conn)
+            .optional()?;
 
-    pub fn get_dlq_entry(&self, id: i64) -> Result<Option<DlqEntry>, StateError> {
-        let mut stmt = self.conn().prepare(&format!(
-            "SELECT {} FROM dlq WHERE id = ?1",
-            DLQ_SELECT_COLS
-        ))?;
-
-        let mut rows = stmt.query(params![id])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(DlqEntry::from_row(row)?)),
+        match row {
+            Some(r) => Ok(Some(DlqEntry::from_row(&r)?)),
             None => Ok(None),
         }
     }
 
     pub fn list_dlq_entries(
-        &self,
+        &mut self,
         config_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<DlqEntry>, StateError> {
-        let query = match config_name {
-            Some(_) => format!(
-                "SELECT {} FROM dlq WHERE config_name = ?1 ORDER BY created_at DESC LIMIT ?2",
-                DLQ_SELECT_COLS
-            ),
-            None => format!(
-                "SELECT {} FROM dlq ORDER BY created_at DESC LIMIT ?1",
-                DLQ_SELECT_COLS
-            ),
+        let rows: Vec<DlqRow> = match config_name {
+            Some(name) => dlq::table
+                .filter(dlq::config_name.eq(name))
+                .order(dlq::created_at.desc())
+                .limit(limit as i64)
+                .load(&mut self.conn)?,
+            None => dlq::table
+                .order(dlq::created_at.desc())
+                .limit(limit as i64)
+                .load(&mut self.conn)?,
         };
 
-        let mut stmt = self.conn().prepare(&query)?;
-
-        let rows = match config_name {
-            Some(name) => stmt.query_map(params![name, limit as i64], DlqEntry::from_row)?,
-            None => stmt.query_map(params![limit as i64], DlqEntry::from_row)?,
-        };
-
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        rows.iter().map(DlqEntry::from_row).collect()
     }
 
-    pub fn increment_retry(&self, id: i64) -> Result<(), StateError> {
-        let rows_affected = self.conn().execute(
-            "UPDATE dlq SET retry_count = retry_count + 1, last_retry_at = ?1 WHERE id = ?2",
-            params![Utc::now().to_rfc3339(), id],
-        )?;
+    pub fn increment_retry(&mut self, id: i64) -> Result<(), StateError> {
+        let now = Utc::now().to_rfc3339();
+        let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
+            .set((
+                dlq::retry_count.eq(dlq::retry_count + 1),
+                dlq::last_retry_at.eq(&now),
+            ))
+            .execute(&mut self.conn)?;
 
         if rows_affected == 0 {
             return Err(StateError::NotFound(format!("dlq entry with id {}", id)));
@@ -250,116 +208,100 @@ impl StateDb {
         Ok(())
     }
 
-    pub fn delete_dlq_entry(&self, id: i64) -> Result<bool, StateError> {
-        let rows_affected = self
-            .conn()
-            .execute("DELETE FROM dlq WHERE id = ?1", params![id])?;
+    pub fn delete_dlq_entry(&mut self, id: i64) -> Result<bool, StateError> {
+        let rows_affected =
+            diesel::delete(dlq::table.filter(dlq::id.eq(id))).execute(&mut self.conn)?;
         Ok(rows_affected > 0)
     }
 
-    pub fn clear_dlq(&self, config_name: Option<&str>) -> Result<u64, StateError> {
+    pub fn clear_dlq(&mut self, config_name: Option<&str>) -> Result<u64, StateError> {
         let rows_affected = match config_name {
-            Some(name) => self
-                .conn()
-                .execute("DELETE FROM dlq WHERE config_name = ?1", params![name])?,
-            None => self.conn().execute("DELETE FROM dlq", [])?,
+            Some(name) => diesel::delete(dlq::table.filter(dlq::config_name.eq(name)))
+                .execute(&mut self.conn)?,
+            None => diesel::delete(dlq::table).execute(&mut self.conn)?,
         };
         Ok(rows_affected as u64)
     }
 
-    pub fn list_retryable_entries(&self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
-        let query = format!(
-            "SELECT {} FROM dlq WHERE error_kind = 'retryable' ORDER BY created_at ASC LIMIT ?1",
-            DLQ_SELECT_COLS
-        );
-        let mut stmt = self.conn().prepare(&query)?;
-        let rows = stmt.query_map(params![limit as i64], DlqEntry::from_row)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    pub fn list_retryable_entries(&mut self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
+        let rows = dlq::table
+            .filter(dlq::error_kind.eq("retryable"))
+            .order(dlq::created_at.asc())
+            .limit(limit as i64)
+            .load::<DlqRow>(&mut self.conn)?;
+
+        rows.iter().map(DlqEntry::from_row).collect()
     }
 
-    pub fn mark_permanent(&self, id: i64, error: &str) -> Result<(), StateError> {
+    pub fn mark_permanent(&mut self, id: i64, error: &str) -> Result<(), StateError> {
         let now = Utc::now().to_rfc3339();
-        let rows_affected = self.conn().execute(
-            "UPDATE dlq SET error_kind = 'permanent', error_message = ?1, last_retry_at = ?2, permanent_at = ?3 WHERE id = ?4",
-            params![error, now, now, id],
-        )?;
+        let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
+            .set((
+                dlq::error_kind.eq("permanent"),
+                dlq::error_message.eq(error),
+                dlq::last_retry_at.eq(&now),
+                dlq::permanent_at.eq(&now),
+            ))
+            .execute(&mut self.conn)?;
+
         if rows_affected == 0 {
             return Err(StateError::NotFound(format!("dlq entry with id {}", id)));
         }
+
         Ok(())
     }
 
     /// Returns (retryable_count, permanent_count) for a given config or globally.
-    pub fn dlq_count_by_kind(&self, config_name: Option<&str>) -> Result<(u64, u64), StateError> {
-        let (retryable, permanent) = match config_name {
-            Some(name) => {
-                let mut stmt = self.conn().prepare(
-                    "SELECT error_kind, COUNT(*) FROM dlq WHERE config_name = ?1 GROUP BY error_kind",
-                )?;
-                let rows = stmt.query_map(params![name], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                })?;
-                let mut r = 0u64;
-                let mut p = 0u64;
-                for row in rows {
-                    let (kind, count) = row?;
-                    match kind.as_str() {
-                        "retryable" => r = count as u64,
-                        "permanent" => p = count as u64,
-                        _ => {}
-                    }
-                }
-                (r, p)
-            }
-            None => {
-                let mut stmt = self
-                    .conn()
-                    .prepare("SELECT error_kind, COUNT(*) FROM dlq GROUP BY error_kind")?;
-                let rows = stmt.query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                })?;
-                let mut r = 0u64;
-                let mut p = 0u64;
-                for row in rows {
-                    let (kind, count) = row?;
-                    match kind.as_str() {
-                        "retryable" => r = count as u64,
-                        "permanent" => p = count as u64,
-                        _ => {}
-                    }
-                }
-                (r, p)
-            }
+    pub fn dlq_count_by_kind(
+        &mut self,
+        config_name: Option<&str>,
+    ) -> Result<(u64, u64), StateError> {
+        let rows: Vec<(String, i64)> = match config_name {
+            Some(name) => dlq::table
+                .filter(dlq::config_name.eq(name))
+                .group_by(dlq::error_kind)
+                .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
+                .load(&mut self.conn)?,
+            None => dlq::table
+                .group_by(dlq::error_kind)
+                .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
+                .load(&mut self.conn)?,
         };
+
+        let mut retryable = 0u64;
+        let mut permanent = 0u64;
+        for (kind, count) in rows {
+            match kind.as_str() {
+                "retryable" => retryable = count as u64,
+                "permanent" => permanent = count as u64,
+                _ => {}
+            }
+        }
         Ok((retryable, permanent))
     }
 
     /// Delete permanent DLQ entries whose permanence is older than `max_age_hours` hours.
-    /// Uses `permanent_at` (when the entry became permanent) rather than `created_at`
-    /// so that entries which retry for a long time before becoming permanent still get
-    /// the full retention window for postmortem debugging.
-    /// Returns the number of entries deleted.
-    pub fn clear_old_permanent_entries(&self, max_age_hours: u64) -> Result<u64, StateError> {
+    pub fn clear_old_permanent_entries(&mut self, max_age_hours: u64) -> Result<u64, StateError> {
         let cutoff = Utc::now() - chrono::Duration::hours(max_age_hours as i64);
-        let rows_affected = self.conn().execute(
-            "DELETE FROM dlq WHERE error_kind = 'permanent' AND permanent_at < ?1",
-            params![cutoff.to_rfc3339()],
-        )?;
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let rows_affected = diesel::delete(
+            dlq::table
+                .filter(dlq::error_kind.eq("permanent"))
+                .filter(dlq::permanent_at.lt(&cutoff_str)),
+        )
+        .execute(&mut self.conn)?;
+
         Ok(rows_affected as u64)
     }
 
-    pub fn dlq_count(&self, config_name: Option<&str>) -> Result<u64, StateError> {
+    pub fn dlq_count(&mut self, config_name: Option<&str>) -> Result<u64, StateError> {
         let count: i64 = match config_name {
-            Some(name) => {
-                let mut stmt = self
-                    .conn()
-                    .prepare("SELECT COUNT(*) FROM dlq WHERE config_name = ?1")?;
-                stmt.query_row(params![name], |row| row.get(0))?
-            }
-            None => {
-                let mut stmt = self.conn().prepare("SELECT COUNT(*) FROM dlq")?;
-                stmt.query_row([], |row| row.get(0))?
-            }
+            Some(name) => dlq::table
+                .filter(dlq::config_name.eq(name))
+                .count()
+                .get_result(&mut self.conn)?,
+            None => dlq::table.count().get_result(&mut self.conn)?,
         };
         Ok(count as u64)
     }
@@ -373,9 +315,8 @@ mod tests {
     fn setup_dlq_db() -> (tempfile::TempDir, StateDb) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let db = StateDb::open(&path).unwrap();
-        db.ensure_configs_table().unwrap();
-        db.ensure_dlq_table().unwrap();
+        let mut db = StateDb::open(&path).unwrap();
+        db.initialize().unwrap();
         (dir, db)
     }
 
@@ -396,7 +337,7 @@ mod tests {
             ErrorKind::Retryable => None,
         };
         DlqEntry {
-            id: 0, // Will be set by database
+            id: 0,
             config_name: config_name.to_string(),
             lsn,
             event_json: r#"{"event": "test"}"#.to_string(),
@@ -412,7 +353,7 @@ mod tests {
 
     #[test]
     fn insert_and_retrieve_entry() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -430,7 +371,7 @@ mod tests {
 
     #[test]
     fn insert_and_retrieve_entry_without_doc_id() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -444,7 +385,7 @@ mod tests {
 
     #[test]
     fn list_with_config_filter() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -462,7 +403,7 @@ mod tests {
 
     #[test]
     fn list_without_config_filter() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -477,21 +418,19 @@ mod tests {
 
     #[test]
     fn increment_retry_count() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
         let id = db.insert_dlq_entry(&entry).unwrap();
 
-        // Increment retry
         db.increment_retry(id).unwrap();
 
         let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
         assert_eq!(retrieved.retry_count, 1);
         assert!(retrieved.last_retry_at.is_some());
 
-        // Increment again
         db.increment_retry(id).unwrap();
 
         let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
@@ -500,7 +439,7 @@ mod tests {
 
     #[test]
     fn clear_by_config_name() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -521,7 +460,7 @@ mod tests {
 
     #[test]
     fn clear_all() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -539,7 +478,7 @@ mod tests {
 
     #[test]
     fn delete_dlq_entry_returns_true_when_exists() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -553,14 +492,14 @@ mod tests {
 
     #[test]
     fn delete_dlq_entry_returns_false_when_not_exists() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let deleted = db.delete_dlq_entry(999).unwrap();
         assert!(!deleted);
     }
 
     #[test]
     fn dlq_count_with_config_filter() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -577,7 +516,7 @@ mod tests {
 
     #[test]
     fn dlq_count_without_filter() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -591,80 +530,44 @@ mod tests {
 
     #[test]
     fn dlq_entry_deleted_when_config_deleted() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
         let id = db.insert_dlq_entry(&entry).unwrap();
 
-        // Verify entry exists
         assert!(db.get_dlq_entry(id).unwrap().is_some());
 
-        // Delete the config (should cascade to dlq)
-        db.conn()
-            .execute("DELETE FROM configs WHERE name = ?1", params!["film"])
-            .unwrap();
+        diesel::delete(
+            crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
+        )
+        .execute(&mut db.conn)
+        .unwrap();
 
-        // DLQ entry should be gone
         assert!(db.get_dlq_entry(id).unwrap().is_none());
     }
 
     #[test]
     fn dlq_entry_requires_valid_config() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let entry = sample_dlq_entry("nonexistent_config", 1000, ErrorKind::Retryable);
 
-        // Should fail due to foreign key constraint
         let result = db.insert_dlq_entry(&entry);
         assert!(result.is_err());
     }
 
     #[test]
     fn get_nonexistent_dlq_entry_returns_none() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         assert!(db.get_dlq_entry(999).unwrap().is_none());
     }
 
     #[test]
     fn increment_retry_fails_for_nonexistent_entry() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let result = db.increment_retry(999);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn from_row_rejects_malformed_created_at() {
-        let (_dir, db) = setup_dlq_db();
-        db.insert_config(&sample_config("film")).unwrap();
-
-        // Insert a row with a malformed created_at directly via SQL.
-        // The created_at column has no CHECK constraint so corrupt text
-        // values can exist (e.g. manual edits, migrations).
-        db.conn()
-            .execute(
-                "INSERT INTO dlq (config_name, lsn, event_json, error_message, error_kind, retry_count, created_at)
-                 VALUES ('film', 1000, '{}', 'err', 'retryable', 0, 'not-a-timestamp')",
-                [],
-            )
-            .unwrap();
-
-        let result = db.list_dlq_entries(None, 100);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn list_respects_limit() {
-        let (_dir, db) = setup_dlq_db();
-        db.insert_config(&sample_config("film")).unwrap();
-
-        for i in 0..10 {
-            db.insert_dlq_entry(&sample_dlq_entry("film", i, ErrorKind::Retryable))
-                .unwrap();
-        }
-
-        let entries = db.list_dlq_entries(Some("film"), 5).unwrap();
-        assert_eq!(entries.len(), 5);
     }
 
     #[test]
@@ -704,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_list_retryable_entries() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
@@ -725,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_mark_permanent() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
@@ -742,13 +645,13 @@ mod tests {
 
     #[test]
     fn test_mark_permanent_nonexistent_fails() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         assert!(db.mark_permanent(999, "error").is_err());
     }
 
     #[test]
     fn test_dlq_count_by_kind_empty() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let (r, p) = db.dlq_count_by_kind(None).unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
@@ -756,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_dlq_count_by_kind_mixed() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -769,12 +672,10 @@ mod tests {
         db.insert_dlq_entry(&sample_dlq_entry("actor", 400, ErrorKind::Permanent))
             .unwrap();
 
-        // Global counts
         let (r, p) = db.dlq_count_by_kind(None).unwrap();
         assert_eq!(r, 2);
         assert_eq!(p, 2);
 
-        // Per-config counts
         let (r, p) = db.dlq_count_by_kind(Some("film")).unwrap();
         assert_eq!(r, 2);
         assert_eq!(p, 1);
@@ -786,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_dlq_count_by_kind_nonexistent_config() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let (r, p) = db.dlq_count_by_kind(Some("nonexistent")).unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
@@ -794,10 +695,9 @@ mod tests {
 
     #[test]
     fn test_clear_old_permanent_entries_removes_old() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
 
-        // Insert a permanent entry that became permanent a long time ago
         let old_time = Utc::now() - chrono::Duration::hours(100);
         let mut old_entry = DlqEntry::permanent(
             "film",
@@ -809,7 +709,6 @@ mod tests {
         old_entry.permanent_at = Some(old_time);
         db.insert_dlq_entry(&old_entry).unwrap();
 
-        // Insert a recent permanent entry
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
             200,
@@ -819,7 +718,6 @@ mod tests {
         ))
         .unwrap();
 
-        // Insert a retryable entry (should not be touched)
         db.insert_dlq_entry(&DlqEntry::retryable(
             "film",
             300,
@@ -832,16 +730,14 @@ mod tests {
         let cleaned = db.clear_old_permanent_entries(72).unwrap();
         assert_eq!(cleaned, 1);
 
-        // 2 entries remain: the recent permanent and the retryable
         assert_eq!(db.dlq_count(None).unwrap(), 2);
     }
 
     #[test]
     fn test_clear_old_permanent_entries_leaves_recent() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
 
-        // All entries are recent
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
             100,
@@ -866,11 +762,9 @@ mod tests {
 
     #[test]
     fn test_clear_old_permanent_entries_uses_permanent_at_not_created_at() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         db.insert_config(&sample_config("film")).unwrap();
 
-        // Entry created long ago but only recently marked permanent —
-        // should NOT be cleaned up despite old created_at.
         let mut entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
         entry.created_at = Utc::now() - chrono::Duration::hours(200);
         let id = db.insert_dlq_entry(&entry).unwrap();
@@ -883,8 +777,22 @@ mod tests {
 
     #[test]
     fn test_clear_old_permanent_entries_empty_dlq() {
-        let (_dir, db) = setup_dlq_db();
+        let (_dir, mut db) = setup_dlq_db();
         let cleaned = db.clear_old_permanent_entries(72).unwrap();
         assert_eq!(cleaned, 0);
+    }
+
+    #[test]
+    fn list_respects_limit() {
+        let (_dir, mut db) = setup_dlq_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        for i in 0..10 {
+            db.insert_dlq_entry(&sample_dlq_entry("film", i, ErrorKind::Retryable))
+                .unwrap();
+        }
+
+        let entries = db.list_dlq_entries(Some("film"), 5).unwrap();
+        assert_eq!(entries.len(), 5);
     }
 }

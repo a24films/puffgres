@@ -53,12 +53,12 @@ impl MemCheckpointer {
 }
 
 impl BackfillCheckpointer for MemCheckpointer {
-    fn load_progress(&self, _config_name: &str) -> Result<Option<(String, u64)>, StateError> {
+    fn load_progress(&mut self, _config_name: &str) -> Result<Option<(String, u64)>, StateError> {
         Ok(self.progress.lock().unwrap().clone())
     }
 
     fn save_progress(
-        &self,
+        &mut self,
         _config_name: &str,
         last_id: &str,
         processed_rows: u64,
@@ -238,14 +238,14 @@ async fn complete_backfill_processes_all_batches() {
     insert_rows(&client, 7).await;
 
     let sink = CollectingSink::new();
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     let config = make_config(3);
 
     let result = run_backfill(
         &config,
         &client,
         &sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;
@@ -261,14 +261,14 @@ async fn resumes_from_checkpoint() {
     insert_rows(&client, 5).await;
 
     let sink = CollectingSink::new();
-    let checkpointer = MemCheckpointer::new(Some(("0003".to_string(), 3)));
+    let mut checkpointer = MemCheckpointer::new(Some(("0003".to_string(), 3)));
     let config = make_config(10);
 
     let result = run_backfill(
         &config,
         &client,
         &sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;
@@ -287,14 +287,14 @@ async fn saves_progress_after_each_batch() {
     insert_rows(&client, 5).await;
 
     let sink = CollectingSink::new();
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     let config = make_config(2);
 
     let result = run_backfill(
         &config,
         &client,
         &sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;
@@ -310,14 +310,14 @@ async fn empty_table_completes_immediately() {
     let (_ctx, client) = setup_test_table().await;
 
     let sink = CollectingSink::new();
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     let config = make_config(10);
 
     let result = run_backfill(
         &config,
         &client,
         &sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;
@@ -332,7 +332,7 @@ async fn sink_failure_exhausts_retries() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 3).await;
 
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     let mut config = make_config(10);
     config.max_retries = 2;
 
@@ -340,7 +340,7 @@ async fn sink_failure_exhausts_retries() {
         &config,
         &client,
         &FailingSink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;
@@ -377,14 +377,14 @@ async fn backfill_then_cdc_captures_all_changes() {
 
     // --- Phase 1: Backfill (no CDC) ---
     let backfill_sink = CollectingSink::new();
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     let config = make_config(10);
 
     let result = run_backfill(
         &config,
         &client,
         &backfill_sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;
@@ -549,7 +549,7 @@ async fn no_gap_between_backfill_watermark_and_cdc_start() {
     // Sink that notifies after the first batch, letting us insert during backfill
     let (first_write_tx, first_write_rx) = tokio::sync::oneshot::channel::<()>();
     let notify_sink = NotifyingSink::new(first_write_tx);
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     // batch_size=2 ensures multiple batches over 3 seed rows
     let config = make_config(2);
 
@@ -557,7 +557,7 @@ async fn no_gap_between_backfill_watermark_and_cdc_start() {
         &config,
         &client,
         &notify_sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     );
     tokio::pin!(backfill_fut);
@@ -689,14 +689,14 @@ async fn backfill_multiple_batches_then_cdc() {
 
     // Backfill with batch_size=3 → 3 batches (3 + 3 + 1)
     let backfill_sink = CollectingSink::new();
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     let config = make_config(3);
 
     let result = run_backfill(
         &config,
         &client,
         &backfill_sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;
@@ -832,14 +832,14 @@ async fn empty_backfill_then_cdc_only() {
 
     // Backfill on empty table
     let backfill_sink = CollectingSink::new();
-    let checkpointer = MemCheckpointer::new(None);
+    let mut checkpointer = MemCheckpointer::new(None);
     let config = make_config(10);
 
     let result = run_backfill(
         &config,
         &client,
         &backfill_sink,
-        &checkpointer,
+        &mut checkpointer,
         &PassthroughTransformer,
     )
     .await;

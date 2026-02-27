@@ -68,7 +68,7 @@ pub async fn run_backfill(
     config: &BackfillConfig,
     client: &tokio_postgres::Client,
     sink: &dyn BackfillSink,
-    checkpointer: &dyn BackfillCheckpointer,
+    checkpointer: &mut dyn BackfillCheckpointer,
     transformer: &dyn Transformer,
 ) -> BackfillResult {
     // 1. Resolve columns (also validates table reachability)

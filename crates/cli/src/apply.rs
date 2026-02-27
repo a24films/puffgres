@@ -18,7 +18,7 @@ pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError>
 }
 
 pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
-    let db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&paths.state_db)?;
 
     let loader = config::ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;
@@ -207,7 +207,7 @@ mod tests {
 
         run(&paths, &dummy_env()).unwrap_err();
 
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         assert!(db.get_config("user_0001").unwrap().is_none());
     }
 
@@ -222,7 +222,7 @@ mod tests {
         let cfg = &loader.load_all().unwrap()[0].1;
         let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             version: cfg.version,
@@ -248,7 +248,7 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let all = loader.load_all().unwrap();
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         for (_, cfg) in &all {
             let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
             let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
@@ -275,7 +275,7 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             version: cfg.version,
@@ -306,7 +306,7 @@ mod tests {
         let cfg = &loader.load_all().unwrap()[0].1;
         let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             version: cfg.version,
@@ -337,7 +337,7 @@ mod tests {
         let cfg = &loader.load_all().unwrap()[0].1;
         let content_hash = cfg.content_hash().unwrap();
 
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             version: cfg.version,

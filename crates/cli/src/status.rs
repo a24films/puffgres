@@ -5,7 +5,7 @@ use crate::error::CliError;
 use crate::paths::ProjectPaths;
 
 pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
-    let db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&paths.state_db)?;
     let configs = db.list_configs()?;
 
     if configs.is_empty() {
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn configs_without_checkpoints() {
         let (_dir, paths) = setup_project();
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
 
         db.insert_config(&sample_config("film", 1)).unwrap();
         db.insert_config(&sample_config("actor", 2)).unwrap();
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn configs_with_checkpoints() {
         let (_dir, paths) = setup_project();
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
 
         db.insert_config(&sample_config("film", 1)).unwrap();
         db.insert_config(&sample_config("actor", 2)).unwrap();
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn mixed_configs_some_with_checkpoints() {
         let (_dir, paths) = setup_project();
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
 
         db.insert_config(&sample_config("film", 1)).unwrap();
         db.insert_config(&sample_config("actor", 2)).unwrap();

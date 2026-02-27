@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 chrono = { version = "0.4.44", features = ["serde"] }
-rusqlite = { version = "0.38.0", features = ["bundled"] }
+diesel = { workspace = true, features = ["sqlite"] }
+diesel_migrations = { workspace = true }
+libsqlite3-sys = { workspace = true }
 strum = { version = "0.27.2", features = ["derive"] }
 thiserror = "2.0.18"
 

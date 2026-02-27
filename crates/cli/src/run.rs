@@ -87,7 +87,7 @@ mod tests {
         let cfg = &loader.load_all().unwrap()[0].1;
         let transform_bytes = fs::read(paths.root.join(&cfg.transform.path)).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             version: cfg.version,
@@ -116,7 +116,7 @@ mod tests {
 
         let loader = ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             version: cfg.version,
@@ -142,7 +142,7 @@ async fn run_async(
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
-    let db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&paths.state_db)?;
 
     let loader = ConfigLoader::new(&paths.configs);
     let all_configs = loader.load_all()?;
@@ -311,7 +311,7 @@ async fn run_async(
                 &backfill_config,
                 &pg_client,
                 &puff_client,
-                &db,
+                &mut db,
                 transformer.as_ref(),
             )
             .await;
@@ -428,8 +428,6 @@ async fn run_async(
 
     tracing::info!("listening for changes");
 
-    db.ensure_dlq_table()?;
-
     // Auto-clean stale permanent DLQ entries
     let cleaned = db.clear_old_permanent_entries(project_config.dlq_permanent_max_age_hours())?;
     if cleaned > 0 {
@@ -442,7 +440,7 @@ async fn run_async(
 
     // Replay any retryable DLQ entries from previous runs
     replay_dlq(
-        &db,
+        &mut db,
         &transformers,
         &namespaces,
         &puff_client,
@@ -498,7 +496,7 @@ async fn run_async(
                         m.cdc_events_failed.add(events.len() as u64, &[]);
                     }
                     send_events_to_dlq(
-                        &db,
+                        &mut db,
                         config_name,
                         batch.ack_lsn,
                         events,
@@ -518,7 +516,7 @@ async fn run_async(
                                     .record(send_start.elapsed().as_millis() as f64, &[]);
                             }
                             send_events_to_dlq(
-                                &db,
+                                &mut db,
                                 config_name,
                                 batch.ack_lsn,
                                 events,
@@ -572,7 +570,7 @@ async fn run_async(
         batch_count += 1;
         if batch_count % project_config.dlq_replay_interval() == 0 {
             replay_dlq(
-                &db,
+                &mut db,
                 &transformers,
                 &namespaces,
                 &puff_client,
@@ -590,7 +588,7 @@ async fn run_async(
 /// `permanent` = true for transform errors (bad data won't fix itself on retry),
 /// false for sink errors (transient network/server failures).
 fn send_events_to_dlq(
-    db: &StateDb,
+    db: &mut StateDb,
     config_name: &str,
     lsn: u64,
     events: &[(&RowEvent, DocumentId)],
@@ -617,7 +615,7 @@ fn send_events_to_dlq(
 /// if max retries exhausted.
 #[tracing::instrument(name = "replay_dlq", skip_all)]
 async fn replay_dlq(
-    db: &StateDb,
+    db: &mut StateDb,
     transformers: &HashMap<String, Box<dyn Transformer>>,
     namespaces: &HashMap<String, String>,
     puff_client: &TurbopufferClient,

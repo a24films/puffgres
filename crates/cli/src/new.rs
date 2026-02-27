@@ -28,7 +28,7 @@ pub fn run(paths: &ProjectPaths, name: &str) -> Result<(), CliError> {
         return Err(CliError::NotInitialized("transforms".to_string()));
     }
 
-    let db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&paths.state_db)?;
     let db_max = db.max_version_for_prefix(name)?;
     let version = db_max + 1;
 
@@ -61,7 +61,7 @@ mod tests {
     use crate::test_utils::setup_project;
 
     fn insert_applied_config(paths: &ProjectPaths, name: &str, version: u64) {
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: format!("{name}_{version:04}"),
             version,
