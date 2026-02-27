@@ -1,5 +1,8 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
 use rusqlite::{Row, params};
+use strum::{AsRefStr, Display, EnumString};
 
 use crate::{StateDb, StateError};
 
@@ -14,36 +17,13 @@ const COL_COMPLETED_AT: usize = 6;
 const COL_ERROR_MESSAGE: usize = 7;
 const COL_WATERMARK_LSN: usize = 8;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Display, EnumString, AsRefStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum BackfillStatus {
     Pending,
     InProgress,
     Completed,
     Failed,
-}
-
-impl BackfillStatus {
-    fn to_str(&self) -> &str {
-        match self {
-            Self::Pending => "pending",
-            Self::InProgress => "in_progress",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-        }
-    }
-
-    fn from_str(s: &str) -> Result<Self, StateError> {
-        match s {
-            "pending" => Ok(Self::Pending),
-            "in_progress" => Ok(Self::InProgress),
-            "completed" => Ok(Self::Completed),
-            "failed" => Ok(Self::Failed),
-            _ => Err(StateError::InvalidState(format!(
-                "unknown backfill status: {}",
-                s
-            ))),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +112,7 @@ impl StateDb {
                 progress.last_id,
                 progress.total_rows.map(|v| v as i64),
                 progress.processed_rows as i64,
-                progress.status.to_str(),
+                progress.status.as_ref(),
                 progress.started_at.as_ref().map(|dt| dt.to_rfc3339()),
                 progress.completed_at.as_ref().map(|dt| dt.to_rfc3339()),
                 progress.error_message,

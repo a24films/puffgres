@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod column;
 pub mod connect;
 pub mod error;

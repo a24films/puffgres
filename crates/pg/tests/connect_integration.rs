@@ -1,7 +1,9 @@
+mod common;
+
+use common::setup_postgres;
 use pg::column::validate_column;
 use pg::connect::{connect, validate_tables};
 use pg::sample::fetch_sample_row;
-use pg::test_utils::setup_postgres;
 
 #[tokio::test]
 async fn test_connect_success() {
