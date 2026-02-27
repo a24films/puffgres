@@ -5,6 +5,7 @@ use crate::{PgError, Result};
 
 const CURSOR_ALIAS: &str = "_puffgres_cursor_id";
 
+#[derive(Clone)]
 pub struct BatchQueryConfig {
     pub schema: String,
     pub table: String,
@@ -28,9 +29,15 @@ fn build_select_clause(config: &BatchQueryConfig) -> Result<String> {
             "columns list cannot be empty; omit the field to select all columns".to_string(),
         )),
         Some(cols) => {
-            let mut parts: Vec<String> = cols.iter().map(|c| quote_identifier(c)).collect();
+            let mut parts: Vec<String> = cols
+                .iter()
+                .map(|c| {
+                    let q = quote_identifier(c);
+                    format!("{q}::text AS {q}")
+                })
+                .collect();
             if !cols.iter().any(|c| c == &config.id_column) {
-                parts.push(id_col);
+                parts.push(format!("{id_col}::text AS {id_col}"));
             }
             parts.push(cursor_expr);
             Ok(parts.join(", "))
@@ -108,10 +115,40 @@ pub async fn count_rows(client: &Client, config: &BatchQueryConfig) -> Result<u6
     Ok(count as u64)
 }
 
+pub async fn resolve_column_names(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>> {
+    let query = r#"
+        SELECT column_name::text
+        FROM information_schema.columns
+        WHERE table_schema = $1
+        AND table_name = $2
+        ORDER BY ordinal_position
+    "#;
+    let rows = client.query(query, &[&schema, &table]).await.map_err(|e| {
+        PgError::QueryError(format!(
+            "Failed to resolve columns for {}.{}: {}",
+            schema, table, e
+        ))
+    })?;
+
+    if rows.is_empty() {
+        return Err(PgError::QueryError(format!(
+            "Table {}.{} not found or has no columns",
+            schema, table,
+        )));
+    }
+
+    Ok(rows.iter().map(|r| r.get(0)).collect())
+}
+
 pub async fn fetch_batch(
     client: &Client,
     config: &BatchQueryConfig,
     cursor_id: Option<&str>,
+    cursor_cast: &str,
 ) -> Result<BatchResult> {
     if config.batch_size == 0 {
         return Err(PgError::QueryError(
@@ -128,8 +165,8 @@ pub async fn fetch_batch(
 
     let rows = if let Some(cursor) = cursor_id {
         let query = format!(
-            "SELECT {} FROM {} WHERE {} IS NOT NULL AND {} > $1 ORDER BY {} ASC LIMIT $2",
-            columns_clause, qualified_table, id_col, id_col, id_col,
+            "SELECT {} FROM {} WHERE {} IS NOT NULL AND {} > $1{} ORDER BY {} ASC LIMIT $2",
+            columns_clause, qualified_table, id_col, id_col, cursor_cast, id_col,
         );
         client.query(&query, &[&cursor, &limit_param]).await
     } else {
@@ -217,7 +254,7 @@ mod tests {
         };
         assert_eq!(
             build_select_clause(&config).unwrap(),
-            "\"id\", \"name\", \"email\", \"id\"::text AS \"_puffgres_cursor_id\""
+            "\"id\"::text AS \"id\", \"name\"::text AS \"name\", \"email\"::text AS \"email\", \"id\"::text AS \"_puffgres_cursor_id\""
         );
     }
 
@@ -238,9 +275,9 @@ mod tests {
             ..test_config()
         };
         let clause = build_select_clause(&config).unwrap();
-        assert!(clause.contains("\"id\""));
-        assert!(clause.contains("\"name\""));
-        assert!(clause.contains("\"email\""));
-        assert!(clause.contains("\"_puffgres_cursor_id\""));
+        assert_eq!(
+            clause,
+            "\"name\"::text AS \"name\", \"email\"::text AS \"email\", \"id\"::text AS \"id\", \"id\"::text AS \"_puffgres_cursor_id\""
+        );
     }
 }

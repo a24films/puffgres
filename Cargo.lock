@@ -1889,8 +1889,11 @@ dependencies = [
  "replication",
  "serde",
  "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-postgres",
  "toml 1.0.3+spec-1.1.0",
  "uuid",
 ]
