@@ -149,6 +149,7 @@ mod tests {
             config_name: "film".to_string(),
             lsn: 100,
             event_json: r#"{"test": true}"#.to_string(),
+            doc_id: Some(r#"{"Uint":1}"#.to_string()),
             error_message: "boom".to_string(),
             error_kind: crate::ErrorKind::Retryable,
             retry_count: 0,

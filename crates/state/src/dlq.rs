@@ -9,6 +9,7 @@ pub struct DlqEntry {
     pub config_name: String,
     pub lsn: u64,
     pub event_json: String,
+    pub doc_id: Option<String>,
     pub error_message: String,
     pub error_kind: ErrorKind,
     pub retry_count: u32,
@@ -42,18 +43,61 @@ impl ErrorKind {
     }
 }
 
-const DLQ_SELECT_COLS: &str = "id, config_name, lsn, event_json, error_message, error_kind, retry_count, created_at, last_retry_at";
+const DLQ_SELECT_COLS: &str = "id, config_name, lsn, event_json, doc_id, error_message, error_kind, retry_count, created_at, last_retry_at";
 const COL_ID: usize = 0;
 const COL_CONFIG_NAME: usize = 1;
 const COL_LSN: usize = 2;
 const COL_EVENT_JSON: usize = 3;
-const COL_ERROR_MESSAGE: usize = 4;
-const COL_ERROR_KIND: usize = 5;
-const COL_RETRY_COUNT: usize = 6;
-const COL_CREATED_AT: usize = 7;
-const COL_LAST_RETRY_AT: usize = 8;
+const COL_DOC_ID: usize = 4;
+const COL_ERROR_MESSAGE: usize = 5;
+const COL_ERROR_KIND: usize = 6;
+const COL_RETRY_COUNT: usize = 7;
+const COL_CREATED_AT: usize = 8;
+const COL_LAST_RETRY_AT: usize = 9;
 
 impl DlqEntry {
+    pub fn retryable(
+        config_name: &str,
+        lsn: u64,
+        event_json: String,
+        doc_id: Option<String>,
+        error: &str,
+    ) -> Self {
+        Self {
+            id: 0,
+            config_name: config_name.to_string(),
+            lsn,
+            event_json,
+            doc_id,
+            error_message: error.to_string(),
+            error_kind: ErrorKind::Retryable,
+            retry_count: 0,
+            created_at: Utc::now(),
+            last_retry_at: None,
+        }
+    }
+
+    pub fn permanent(
+        config_name: &str,
+        lsn: u64,
+        event_json: String,
+        doc_id: Option<String>,
+        error: &str,
+    ) -> Self {
+        Self {
+            id: 0,
+            config_name: config_name.to_string(),
+            lsn,
+            event_json,
+            doc_id,
+            error_message: error.to_string(),
+            error_kind: ErrorKind::Permanent,
+            retry_count: 0,
+            created_at: Utc::now(),
+            last_retry_at: None,
+        }
+    }
+
     fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let created_at_str: String = row.get(COL_CREATED_AT)?;
         let created_at = DateTime::parse_from_rfc3339(&created_at_str)
@@ -87,6 +131,7 @@ impl DlqEntry {
             config_name: row.get(COL_CONFIG_NAME)?,
             lsn: row.get::<_, i64>(COL_LSN)? as u64,
             event_json: row.get(COL_EVENT_JSON)?,
+            doc_id: row.get(COL_DOC_ID)?,
             error_message: row.get(COL_ERROR_MESSAGE)?,
             error_kind,
             retry_count: row.get::<_, i64>(COL_RETRY_COUNT)? as u32,
@@ -105,6 +150,7 @@ impl StateDb {
                 config_name TEXT NOT NULL,
                 lsn INTEGER NOT NULL,
                 event_json TEXT NOT NULL,
+                doc_id TEXT,
                 error_message TEXT NOT NULL,
                 error_kind TEXT NOT NULL CHECK (error_kind IN ('retryable', 'permanent')),
                 retry_count INTEGER NOT NULL DEFAULT 0,
@@ -121,12 +167,13 @@ impl StateDb {
 
     pub fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
         self.conn().execute(
-            "INSERT INTO dlq (config_name, lsn, event_json, error_message, error_kind, retry_count, created_at, last_retry_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO dlq (config_name, lsn, event_json, doc_id, error_message, error_kind, retry_count, created_at, last_retry_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 entry.config_name,
                 entry.lsn as i64,
                 entry.event_json,
+                entry.doc_id,
                 entry.error_message,
                 entry.error_kind.to_str(),
                 entry.retry_count as i64,
@@ -206,6 +253,27 @@ impl StateDb {
         Ok(rows_affected as u64)
     }
 
+    pub fn list_retryable_entries(&self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
+        let query = format!(
+            "SELECT {} FROM dlq WHERE error_kind = 'retryable' ORDER BY created_at ASC LIMIT ?1",
+            DLQ_SELECT_COLS
+        );
+        let mut stmt = self.conn().prepare(&query)?;
+        let rows = stmt.query_map(params![limit as i64], DlqEntry::from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn mark_permanent(&self, id: i64, error: &str) -> Result<(), StateError> {
+        let rows_affected = self.conn().execute(
+            "UPDATE dlq SET error_kind = 'permanent', error_message = ?1, last_retry_at = ?2 WHERE id = ?3",
+            params![error, Utc::now().to_rfc3339(), id],
+        )?;
+        if rows_affected == 0 {
+            return Err(StateError::NotFound(format!("dlq entry with id {}", id)));
+        }
+        Ok(())
+    }
+
     pub fn dlq_count(&self, config_name: Option<&str>) -> Result<u64, StateError> {
         let count: i64 = match config_name {
             Some(name) => {
@@ -254,6 +322,7 @@ mod tests {
             config_name: config_name.to_string(),
             lsn,
             event_json: r#"{"event": "test"}"#.to_string(),
+            doc_id: Some(r#"{"Uint":42}"#.to_string()),
             error_message: "Test error".to_string(),
             error_kind,
             retry_count: 0,
@@ -274,9 +343,24 @@ mod tests {
         let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
         assert_eq!(retrieved.config_name, "film");
         assert_eq!(retrieved.lsn, 1000);
+        assert_eq!(retrieved.doc_id, Some(r#"{"Uint":42}"#.to_string()));
         assert_eq!(retrieved.error_kind, ErrorKind::Retryable);
         assert_eq!(retrieved.retry_count, 0);
         assert!(retrieved.last_retry_at.is_none());
+    }
+
+    #[test]
+    fn insert_and_retrieve_entry_without_doc_id() {
+        let (_dir, db) = setup_dlq_db();
+        let config = sample_config("film");
+        db.insert_config(&config).unwrap();
+
+        let mut entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
+        entry.doc_id = None;
+        let id = db.insert_dlq_entry(&entry).unwrap();
+
+        let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
+        assert_eq!(retrieved.doc_id, None);
     }
 
     #[test]
@@ -502,5 +586,83 @@ mod tests {
 
         let entries = db.list_dlq_entries(Some("film"), 5).unwrap();
         assert_eq!(entries.len(), 5);
+    }
+
+    #[test]
+    fn test_dlq_entry_retryable_constructor() {
+        let entry = DlqEntry::retryable(
+            "film",
+            1000,
+            r#"{"test":true}"#.to_string(),
+            Some(r#"{"Uint":1}"#.to_string()),
+            "network timeout",
+        );
+        assert_eq!(entry.config_name, "film");
+        assert_eq!(entry.lsn, 1000);
+        assert_eq!(entry.error_kind, ErrorKind::Retryable);
+        assert_eq!(entry.retry_count, 0);
+        assert_eq!(entry.error_message, "network timeout");
+        assert_eq!(entry.doc_id, Some(r#"{"Uint":1}"#.to_string()));
+        assert!(entry.last_retry_at.is_none());
+    }
+
+    #[test]
+    fn test_dlq_entry_permanent_constructor() {
+        let entry = DlqEntry::permanent(
+            "film",
+            2000,
+            r#"{"test":true}"#.to_string(),
+            Some(r#"{"Uint":2}"#.to_string()),
+            "bad transform",
+        );
+        assert_eq!(entry.config_name, "film");
+        assert_eq!(entry.lsn, 2000);
+        assert_eq!(entry.error_kind, ErrorKind::Permanent);
+        assert_eq!(entry.retry_count, 0);
+        assert_eq!(entry.error_message, "bad transform");
+        assert_eq!(entry.doc_id, Some(r#"{"Uint":2}"#.to_string()));
+    }
+
+    #[test]
+    fn test_list_retryable_entries() {
+        let (_dir, db) = setup_dlq_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .unwrap();
+        db.insert_dlq_entry(&sample_dlq_entry("film", 200, ErrorKind::Permanent))
+            .unwrap();
+        db.insert_dlq_entry(&sample_dlq_entry("film", 300, ErrorKind::Retryable))
+            .unwrap();
+
+        let retryable = db.list_retryable_entries(100).unwrap();
+        assert_eq!(retryable.len(), 2);
+        assert!(
+            retryable
+                .iter()
+                .all(|e| e.error_kind == ErrorKind::Retryable)
+        );
+    }
+
+    #[test]
+    fn test_mark_permanent() {
+        let (_dir, db) = setup_dlq_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        let entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
+        let id = db.insert_dlq_entry(&entry).unwrap();
+
+        db.mark_permanent(id, "max retries exhausted").unwrap();
+
+        let updated = db.get_dlq_entry(id).unwrap().unwrap();
+        assert_eq!(updated.error_kind, ErrorKind::Permanent);
+        assert_eq!(updated.error_message, "max retries exhausted");
+        assert!(updated.last_retry_at.is_some());
+    }
+
+    #[test]
+    fn test_mark_permanent_nonexistent_fails() {
+        let (_dir, db) = setup_dlq_db();
+        assert!(db.mark_permanent(999, "error").is_err());
     }
 }
