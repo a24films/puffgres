@@ -1844,6 +1844,7 @@ dependencies = [
 name = "puff"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "puffgres-core",
  "rs-puff",
  "serde_json",
@@ -1889,6 +1890,7 @@ dependencies = [
  "replication",
  "serde",
  "serde_json",
+ "state",
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.18",

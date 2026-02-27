@@ -10,10 +10,7 @@ pub mod row_convert;
 pub mod transform;
 
 pub use action::Action;
-pub use backfill::{
-    BackfillCheckpointer, BackfillConfig, BackfillOutcome, BackfillResult, BackfillSink,
-    run_backfill,
-};
+pub use backfill::{BackfillConfig, BackfillOutcome, BackfillResult, BackfillSink, run_backfill};
 pub use backoff::{Backoff, BackoffConfig};
 pub use error::CoreError;
 pub use id::DocumentId;

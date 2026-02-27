@@ -11,6 +11,9 @@ pub enum CoreError {
     #[error("replication error: {0}")]
     Replication(#[from] replication::ReplicationError),
 
+    #[error("state error: {0}")]
+    State(#[from] state::StateError),
+
     #[error("pipeline error: {0}")]
     Pipeline(String),
 }

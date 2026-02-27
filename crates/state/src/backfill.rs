@@ -71,6 +71,34 @@ impl BackfillProgress {
     }
 }
 
+/// Trait for persisting backfill cursor state. Implemented by `StateDb` for
+/// production use; tests can supply an in-memory implementation.
+pub trait BackfillCheckpointer {
+    fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError>;
+
+    fn save_progress(
+        &self,
+        config_name: &str,
+        last_id: &str,
+        processed_rows: u64,
+    ) -> Result<(), StateError>;
+}
+
+impl BackfillCheckpointer for StateDb {
+    fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError> {
+        self.load_backfill_cursor(config_name)
+    }
+
+    fn save_progress(
+        &self,
+        config_name: &str,
+        last_id: &str,
+        processed_rows: u64,
+    ) -> Result<(), StateError> {
+        self.save_backfill_cursor(config_name, last_id, processed_rows)
+    }
+}
+
 impl StateDb {
     pub fn ensure_backfill_table(&self) -> Result<(), StateError> {
         self.conn().execute_batch(
@@ -120,6 +148,35 @@ impl StateDb {
             ],
         )?;
         Ok(())
+    }
+
+    /// Lightweight cursor load for the backfill loop — returns just (last_id, processed_rows).
+    pub fn load_backfill_cursor(
+        &self,
+        config_name: &str,
+    ) -> Result<Option<(String, u64)>, StateError> {
+        let p = self.get_backfill_progress(config_name)?;
+        Ok(p.and_then(|p| p.last_id.map(|id| (id, p.processed_rows))))
+    }
+
+    /// Lightweight cursor save for the backfill loop — saves cursor position as InProgress.
+    pub fn save_backfill_cursor(
+        &self,
+        config_name: &str,
+        last_id: &str,
+        processed_rows: u64,
+    ) -> Result<(), StateError> {
+        self.save_backfill_progress(&BackfillProgress {
+            config_name: config_name.to_string(),
+            last_id: Some(last_id.to_string()),
+            total_rows: None,
+            processed_rows,
+            status: BackfillStatus::InProgress,
+            started_at: Some(Utc::now()),
+            completed_at: None,
+            error_message: None,
+            watermark_lsn: None,
+        })
     }
 
     pub fn get_backfill_progress(
@@ -263,6 +320,63 @@ mod tests {
 
         let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
         assert_eq!(retrieved.watermark_lsn, Some(42_000));
+    }
+
+    #[test]
+    fn load_backfill_cursor_returns_none_when_no_progress() {
+        let (_dir, db) = setup_backfill_db();
+        assert!(db.load_backfill_cursor("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn load_backfill_cursor_returns_none_when_no_last_id() {
+        let (_dir, db) = setup_backfill_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        let mut progress = sample_backfill_progress("film");
+        progress.last_id = None;
+        db.save_backfill_progress(&progress).unwrap();
+
+        assert!(db.load_backfill_cursor("film").unwrap().is_none());
+    }
+
+    #[test]
+    fn load_backfill_cursor_returns_id_and_count() {
+        let (_dir, db) = setup_backfill_db();
+        db.insert_config(&sample_config("film")).unwrap();
+        db.save_backfill_progress(&sample_backfill_progress("film"))
+            .unwrap();
+
+        let (id, rows) = db.load_backfill_cursor("film").unwrap().unwrap();
+        assert_eq!(id, "12345");
+        assert_eq!(rows, 100);
+    }
+
+    #[test]
+    fn save_backfill_cursor_creates_in_progress_record() {
+        let (_dir, db) = setup_backfill_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        db.save_backfill_cursor("film", "500", 250).unwrap();
+
+        let p = db.get_backfill_progress("film").unwrap().unwrap();
+        assert_eq!(p.last_id, Some("500".to_string()));
+        assert_eq!(p.processed_rows, 250);
+        assert_eq!(p.status, BackfillStatus::InProgress);
+        assert!(p.started_at.is_some());
+    }
+
+    #[test]
+    fn save_backfill_cursor_updates_existing() {
+        let (_dir, db) = setup_backfill_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        db.save_backfill_cursor("film", "100", 50).unwrap();
+        db.save_backfill_cursor("film", "200", 100).unwrap();
+
+        let (id, rows) = db.load_backfill_cursor("film").unwrap().unwrap();
+        assert_eq!(id, "200");
+        assert_eq!(rows, 100);
     }
 
     #[test]

@@ -143,6 +143,15 @@ pub async fn get_active_pid(client: &Client, slot_name: &str) -> Result<Option<i
     Ok(row.get(0))
 }
 
+pub async fn get_current_wal_lsn(client: &Client) -> Result<u64> {
+    let row = client
+        .query_one("SELECT pg_current_wal_lsn()", &[])
+        .await
+        .map_err(|e| PgError::ReplicationError(format!("Failed to get current WAL LSN: {e}")))?;
+    let lsn: tokio_postgres::types::PgLsn = row.get(0);
+    Ok(u64::from(lsn))
+}
+
 pub async fn get_confirmed_flush_lsn(client: &Client, slot_name: &str) -> Result<Option<u64>> {
     let rows = client
         .query(

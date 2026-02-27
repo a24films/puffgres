@@ -8,10 +8,11 @@ use pg::batch::BatchQueryConfig;
 use pg::connect::connect;
 use pg::test_utils::{TestContext, setup_postgres};
 use puffgres_core::{
-    Action, BackfillCheckpointer, BackfillConfig, BackfillOutcome, BackfillSink, CoreError,
-    DocumentId, Transformer, run_backfill,
+    Action, BackfillConfig, BackfillOutcome, BackfillSink, CoreError, DocumentId, Transformer,
+    run_backfill,
 };
 use replication::{Operation, RowEvent};
+use state::{BackfillCheckpointer, StateError};
 
 // --- Test impls ---
 
@@ -48,18 +49,17 @@ impl MemCheckpointer {
     }
 }
 
-#[async_trait]
 impl BackfillCheckpointer for MemCheckpointer {
-    async fn load_progress(&self, _config_name: &str) -> Result<Option<(String, u64)>, CoreError> {
+    fn load_progress(&self, _config_name: &str) -> Result<Option<(String, u64)>, StateError> {
         Ok(self.progress.lock().unwrap().clone())
     }
 
-    async fn save_progress(
+    fn save_progress(
         &self,
         _config_name: &str,
         last_id: &str,
         processed_rows: u64,
-    ) -> Result<(), CoreError> {
+    ) -> Result<(), StateError> {
         *self.progress.lock().unwrap() = Some((last_id.to_string(), processed_rows));
         Ok(())
     }

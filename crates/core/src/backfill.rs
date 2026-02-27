@@ -6,6 +6,7 @@ use crate::{Action, CoreError, DocumentId, Transformer};
 use config::IdType;
 use pg::batch::BatchQueryConfig;
 use replication::RowEvent;
+use state::BackfillCheckpointer;
 
 /// Unwrap a `Result` inside the batch loop: on error, sleep with backoff and
 /// retry. Once retries are exhausted, return a failed `BackfillResult`.
@@ -56,17 +57,6 @@ pub trait BackfillSink: Send + Sync {
     async fn write(&self, namespace: &str, actions: &[Action]) -> Result<(), CoreError>;
 }
 
-#[async_trait]
-pub trait BackfillCheckpointer: Send + Sync {
-    async fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, CoreError>;
-    async fn save_progress(
-        &self,
-        config_name: &str,
-        last_id: &str,
-        processed_rows: u64,
-    ) -> Result<(), CoreError>;
-}
-
 pub async fn run_backfill(
     config: &BackfillConfig,
     client: &tokio_postgres::Client,
@@ -109,7 +99,7 @@ pub async fn run_backfill(
     };
 
     // 3. Resume from checkpoint or start fresh
-    let (mut cursor, mut processed) = match checkpointer.load_progress(&config.config_name).await {
+    let (mut cursor, mut processed) = match checkpointer.load_progress(&config.config_name) {
         Ok(Some((last_id, count))) => (Some(last_id), count),
         Ok(None) => (None, 0),
         Err(e) => {
@@ -180,10 +170,7 @@ pub async fn run_backfill(
             .as_deref()
             .unwrap_or_else(|| cursor.as_deref().unwrap_or(""));
         loop {
-            match checkpointer
-                .save_progress(&config.config_name, last_id, processed + batch_len)
-                .await
-            {
+            match checkpointer.save_progress(&config.config_name, last_id, processed + batch_len) {
                 Ok(()) => break,
                 Err(e) => match backoff.next_delay() {
                     Some(delay) => tokio::time::sleep(delay).await,
