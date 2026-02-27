@@ -58,7 +58,7 @@ fn main() -> Result<(), CliError> {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
         }
         Command::Apply => puffgres_cli::apply::run(&paths, &env_config),
-        Command::Run => puffgres_cli::run::run(&paths, &env_config),
+        Command::Run => puffgres_cli::run::run(&paths, &env_config, &project_config),
         Command::Status => puffgres_cli::status::run(&paths),
     }
 }

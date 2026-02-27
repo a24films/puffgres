@@ -17,22 +17,20 @@ use state::{BackfillProgress, BackfillStatus, DlqEntry, StateDb, StreamingCheckp
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
+use crate::project_config::ProjectConfig;
 
 const SLOT_NAME: &str = "puffgres";
 const PUBLICATION_NAME: &str = "puffgres";
 const STATUS_INTERVAL: Duration = Duration::from_secs(10);
-// TODO: for ergonomics, these can go in the project config, in future PR
-const BACKFILL_BATCH_SIZE: u32 = 1000;
-const BACKFILL_MAX_RETRIES: u32 = 5;
-const DLQ_REPLAY_INTERVAL: u64 = 10; // replay DLQ every N batches
-const DLQ_REPLAY_BATCH_SIZE: usize = 50;
-const DLQ_MAX_RETRIES: u32 = 5;
-const DLQ_PERMANENT_MAX_AGE_HOURS: u64 = 72; // auto-clean permanent entries older than 3 days
 
-pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
+pub fn run(
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    project_config: &ProjectConfig,
+) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::Run(format!("failed to create async runtime: {e}")))?;
-    rt.block_on(run_async(paths, env_config))
+    rt.block_on(run_async(paths, env_config, project_config))
 }
 
 fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
@@ -99,7 +97,7 @@ mod tests {
         // Delete the transform file so it can't be read
         fs::remove_file(paths.root.join(&cfg.transform.path)).unwrap();
 
-        let err = run(&paths, &dummy_env()).unwrap_err();
+        let err = run(&paths, &dummy_env(), &ProjectConfig::default()).unwrap_err();
         assert!(
             err.to_string().contains("cannot read transform"),
             "expected unreadable transform error, got: {err}"
@@ -125,7 +123,7 @@ mod tests {
         })
         .unwrap();
 
-        let err = run(&paths, &dummy_env()).unwrap_err();
+        let err = run(&paths, &dummy_env(), &ProjectConfig::default()).unwrap_err();
         assert!(
             err.to_string().contains("was modified"),
             "expected modified transform error, got: {err}"
@@ -133,7 +131,11 @@ mod tests {
     }
 }
 
-async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
+async fn run_async(
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    project_config: &ProjectConfig,
+) -> Result<(), CliError> {
     let db = StateDb::open(&paths.state_db)?;
 
     let loader = ConfigLoader::new(&paths.configs);
@@ -291,8 +293,8 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
                 .expect("transformer missing for applied config");
 
             let backfill_config = BackfillConfig {
-                batch_size: BACKFILL_BATCH_SIZE,
-                max_retries: BACKFILL_MAX_RETRIES,
+                batch_size: project_config.batch_size(),
+                max_retries: project_config.max_retries(),
                 config_name: config.name.clone(),
                 namespace: namespace.clone(),
                 query_config: BatchQueryConfig {
@@ -300,7 +302,7 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
                     table: config.source.table.clone(),
                     id_column: config.id.column.clone(),
                     columns: config.columns.clone(),
-                    batch_size: BACKFILL_BATCH_SIZE,
+                    batch_size: project_config.batch_size(),
                 },
                 id_type: config.id.id_type.clone(),
             };
@@ -425,17 +427,25 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
     db.ensure_dlq_table()?;
 
     // Auto-clean stale permanent DLQ entries
-    let cleaned = db.clear_old_permanent_entries(DLQ_PERMANENT_MAX_AGE_HOURS)?;
+    let cleaned = db.clear_old_permanent_entries(project_config.dlq_permanent_max_age_hours())?;
     if cleaned > 0 {
         // TODO: pipe these into otel
         eprintln!(
             r#"{{"event":"dlq_permanent_cleanup","entries_removed":{},"max_age_hours":{}}}"#,
-            cleaned, DLQ_PERMANENT_MAX_AGE_HOURS,
+            cleaned,
+            project_config.dlq_permanent_max_age_hours(),
         );
     }
 
     // Replay any retryable DLQ entries from previous runs
-    replay_dlq(&db, &transformers, &namespaces, &puff_client).await?;
+    replay_dlq(
+        &db,
+        &transformers,
+        &namespaces,
+        &puff_client,
+        project_config,
+    )
+    .await?;
 
     // Note: delivery to Turbopuffer is at-least-once. If we crash between
     // send_batch and save_streaming_checkpoint, we'll re-send on restart.
@@ -524,8 +534,15 @@ async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), C
         stream.ack();
 
         batch_count += 1;
-        if batch_count % DLQ_REPLAY_INTERVAL == 0 {
-            replay_dlq(&db, &transformers, &namespaces, &puff_client).await?;
+        if batch_count % project_config.dlq_replay_interval() == 0 {
+            replay_dlq(
+                &db,
+                &transformers,
+                &namespaces,
+                &puff_client,
+                project_config,
+            )
+            .await?;
         }
     }
 
@@ -566,8 +583,9 @@ async fn replay_dlq(
     transformers: &HashMap<String, Box<dyn Transformer>>,
     namespaces: &HashMap<String, String>,
     puff_client: &TurbopufferClient,
+    project_config: &ProjectConfig,
 ) -> Result<(), CliError> {
-    let entries = db.list_retryable_entries(DLQ_REPLAY_BATCH_SIZE)?;
+    let entries = db.list_retryable_entries(project_config.dlq_replay_batch_size())?;
     if entries.is_empty() {
         return Ok(());
     }
@@ -636,7 +654,7 @@ async fn replay_dlq(
 
         match transform_result {
             Err(e) => {
-                if entry.retry_count + 1 >= DLQ_MAX_RETRIES {
+                if entry.retry_count + 1 >= project_config.dlq_max_retries() {
                     eprintln!(
                         "  DLQ entry {}: max retries exhausted, marking permanent: {e}",
                         entry.id
@@ -648,7 +666,7 @@ async fn replay_dlq(
             }
             Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
                 Err(e) => {
-                    if entry.retry_count + 1 >= DLQ_MAX_RETRIES {
+                    if entry.retry_count + 1 >= project_config.dlq_max_retries() {
                         eprintln!(
                             "  DLQ entry {}: max retries exhausted, marking permanent: {e}",
                             entry.id
