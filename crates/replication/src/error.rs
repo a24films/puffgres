@@ -13,6 +13,16 @@ pub enum ReplicationError {
 
     #[error("stream error: {0}")]
     Stream(String),
+
+    /// Not a fatal error — used as a signal to tear down and reconnect the replication
+    /// stream so the caller can rebuild state (e.g. routing, transforms) against the new
+    /// schema. The replication slot retains un-acked WAL, so no messages are lost.
+    #[error("schema changed for relation {namespace}.{name} (OID {relation_id})")]
+    SchemaChanged {
+        relation_id: u32,
+        namespace: String,
+        name: String,
+    },
 }
 
 #[cfg(test)]

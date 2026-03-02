@@ -25,7 +25,7 @@ impl ReplicaIdentity {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColumnInfo {
     pub part_of_key: bool,
     pub name: String,
@@ -61,6 +61,14 @@ impl RelationCache {
         Self::default()
     }
 
+    /// Returns `true` if the given relation already exists in the cache with
+    /// different column metadata, indicating a schema change (e.g. ALTER TABLE).
+    pub fn schema_changed(&self, relation: &RelationInfo) -> bool {
+        self.relations
+            .get(&relation.id)
+            .is_some_and(|existing| existing.columns != relation.columns)
+    }
+
     pub fn insert(&mut self, relation: RelationInfo) {
         self.relations.insert(relation.id, relation);
     }
@@ -79,6 +87,10 @@ impl RelationCache {
 
     pub fn is_empty(&self) -> bool {
         self.relations.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &RelationInfo> {
+        self.relations.values()
     }
 }
 
@@ -132,6 +144,73 @@ mod tests {
         let cached = cache.get(16384).unwrap();
         assert_eq!(cached.name, "users");
         assert!(cached.columns[0].part_of_key);
+    }
+
+    #[test]
+    fn schema_changed_detects_column_diff() {
+        let mut cache = RelationCache::new();
+
+        let original = RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![ColumnInfo {
+                part_of_key: true,
+                name: "id".to_string(),
+                type_oid: 23,
+                type_modifier: -1,
+            }],
+        };
+        cache.insert(original);
+
+        // Same columns → no change
+        let same = RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![ColumnInfo {
+                part_of_key: true,
+                name: "id".to_string(),
+                type_oid: 23,
+                type_modifier: -1,
+            }],
+        };
+        assert!(!cache.schema_changed(&same));
+
+        // Added column → change detected
+        let added_column = RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![
+                ColumnInfo {
+                    part_of_key: true,
+                    name: "id".to_string(),
+                    type_oid: 23,
+                    type_modifier: -1,
+                },
+                ColumnInfo {
+                    part_of_key: false,
+                    name: "email".to_string(),
+                    type_oid: 25,
+                    type_modifier: -1,
+                },
+            ],
+        };
+        assert!(cache.schema_changed(&added_column));
+
+        // New relation (not in cache) → no change
+        let new_relation = RelationInfo {
+            id: 99,
+            namespace: "public".to_string(),
+            name: "orders".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![],
+        };
+        assert!(!cache.schema_changed(&new_relation));
     }
 
     #[test]

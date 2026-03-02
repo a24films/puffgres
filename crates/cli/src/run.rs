@@ -10,7 +10,7 @@ use puffgres_core::{
     BackfillConfig, BackfillOutcome, Backoff, BackoffConfig, DocumentId, JsTransformer, Mapping,
     Router, Transformer, run_backfill,
 };
-use replication::{ReplicationStream, ReplicationStreamConfig, RowEvent};
+use replication::{ReplicationError, ReplicationStream, ReplicationStreamConfig, RowEvent};
 use sha2::{Digest, Sha256};
 use state::{BackfillProgress, BackfillStatus, DlqEntry, StateDb, StreamingCheckpoint};
 
@@ -301,6 +301,10 @@ async fn run_async(
         .await
         .map_err(|e| CliError::Run(format!("failed to ensure publication: {e}")))?;
 
+    pg::publication::ensure_replica_identity_full(&pg_client, &tables)
+        .await
+        .map_err(|e| CliError::Run(format!("failed to set replica identity: {e}")))?;
+
     tracing::info!(slot = SLOT_NAME, "replication slot ready");
     tracing::info!(publication = PUBLICATION_NAME, "publication ready");
 
@@ -470,23 +474,6 @@ async fn run_async(
 
     drop(pg_client);
 
-    let stream_config = ReplicationStreamConfig {
-        connection_string: env_config.database_url.clone(),
-        slot_name: SLOT_NAME.to_string(),
-        publication_name: PUBLICATION_NAME.to_string(),
-        start_lsn,
-        status_interval: STATUS_INTERVAL,
-    };
-
-    let mut stream = ReplicationStream::connect(stream_config)
-        .await
-        .map_err(|e| CliError::Run(format!("failed to connect replication stream: {e}")))?;
-
-    let lsn_display = start_lsn
-        .map(|l| pg::PgLsn::from(l).to_string())
-        .unwrap_or_else(|| "-".to_string());
-    tracing::info!(lsn = %lsn_display, "streaming from LSN");
-
     let mut events_processed: HashMap<String, u64> = HashMap::new();
     for (_, config) in &applied_configs {
         let count = db
@@ -495,8 +482,6 @@ async fn run_async(
             .unwrap_or(0);
         events_processed.insert(config.name.clone(), count);
     }
-
-    tracing::info!("listening for changes");
 
     // Auto-clean stale permanent DLQ entries
     let dlq_max_age_hours = env_config
@@ -522,136 +507,243 @@ async fn run_async(
     )
     .await?;
 
-    // Note: delivery to Turbopuffer is at-least-once. If we crash between
-    // send_batch and save_streaming_checkpoint, we'll re-send on restart.
-    // This is fine because Turbopuffer upserts are idempotent.
+    let mut start_lsn = start_lsn;
     let mut batch_count: u64 = 0;
+
+    // Outer loop: reconnects the replication stream on schema changes.
+    // When Postgres sends a Relation message with changed columns (e.g. ALTER TABLE),
+    // we drop the stream and reconnect so the fresh RelationCache picks up the new schema.
     loop {
-        let batch = match stream.recv_batch().await {
-            Ok(Some(batch)) => batch,
-            Ok(None) => {
-                tracing::info!("replication stream ended");
-                break;
-            }
-            Err(e) => {
-                return Err(CliError::Run(format!("replication stream error: {e}")));
-            }
+        let stream_config = ReplicationStreamConfig {
+            connection_string: env_config.database_url.clone(),
+            slot_name: SLOT_NAME.to_string(),
+            publication_name: PUBLICATION_NAME.to_string(),
+            start_lsn,
+            status_interval: STATUS_INTERVAL,
         };
 
-        if batch.events.is_empty() {
+        let mut stream = ReplicationStream::connect(stream_config)
+            .await
+            .map_err(|e| CliError::Run(format!("failed to connect replication stream: {e}")))?;
+
+        let lsn_display = start_lsn
+            .map(|l| pg::PgLsn::from(l).to_string())
+            .unwrap_or_else(|| "-".to_string());
+        tracing::info!(lsn = %lsn_display, "streaming from LSN");
+
+        tracing::info!("listening for changes");
+
+        // Note: delivery to Turbopuffer is at-least-once. If we crash between
+        // send_batch and save_streaming_checkpoint, we'll re-send on restart.
+        // This is fine because Turbopuffer upserts are idempotent.
+        let should_reconnect;
+        loop {
+            let batch = match stream.recv_batch().await {
+                Ok(Some(batch)) => batch,
+                Ok(None) => {
+                    tracing::info!("replication stream ended");
+                    return Ok(());
+                }
+                Err(ReplicationError::SchemaChanged {
+                    relation_id,
+                    ref namespace,
+                    ref name,
+                }) => {
+                    tracing::warn!(
+                        relation_id,
+                        schema = %namespace,
+                        table = %name,
+                        "schema change detected, reconnecting replication stream",
+                    );
+                    should_reconnect = true;
+                    break;
+                }
+                Err(e) => {
+                    return Err(CliError::Run(format!("replication stream error: {e}")));
+                }
+            };
+
+            if batch.events.is_empty() {
+                stream.ack();
+                continue;
+            }
+
+            let _batch_span = tracing::info_span!(
+                "cdc_batch",
+                lsn = batch.ack_lsn,
+                events = batch.events.len()
+            )
+            .entered();
+            let batch_start = std::time::Instant::now();
+            let config_events = router.route_batch(&batch.events, stream.relation_cache());
+
+            for (config_name, events) in &config_events {
+                let transformer = transformers
+                    .get(*config_name)
+                    .expect("transformer missing for applied config");
+                let namespace = namespaces
+                    .get(*config_name)
+                    .expect("namespace missing for applied config");
+
+                let transform_result = transformer.transform_batch(events.as_slice()).await;
+
+                match transform_result {
+                    Err(e) => {
+                        tracing::error!(config = %config_name, error = %e, "transform error, sending to DLQ");
+                        if let Some(m) = metrics {
+                            m.cdc_events_failed.add(events.len() as u64, &[]);
+                        }
+                        send_events_to_dlq(
+                            &mut db,
+                            config_name,
+                            batch.ack_lsn,
+                            events,
+                            &e.to_string(),
+                            false,
+                        )?;
+                    }
+                    Ok(actions) => {
+                        let send_start = std::time::Instant::now();
+                        match puff_client.send_batch(namespace, &actions).await {
+                            Err(e) => {
+                                tracing::error!(config = %config_name, error = %e, "turbopuffer error, sending to DLQ");
+                                if let Some(m) = metrics {
+                                    m.cdc_events_failed.add(events.len() as u64, &[]);
+                                    m.turbopuffer_requests.add(1, &[]);
+                                    m.turbopuffer_latency
+                                        .record(send_start.elapsed().as_millis() as f64, &[]);
+                                }
+                                send_events_to_dlq(
+                                    &mut db,
+                                    config_name,
+                                    batch.ack_lsn,
+                                    events,
+                                    &e.to_string(),
+                                    false,
+                                )?;
+                            }
+                            Ok(()) => {
+                                let count =
+                                    events_processed.entry(config_name.to_string()).or_insert(0);
+                                *count += events.len() as u64;
+
+                                if let Some(m) = metrics {
+                                    m.cdc_events_processed.add(events.len() as u64, &[]);
+                                    m.turbopuffer_requests.add(1, &[]);
+                                    m.turbopuffer_latency
+                                        .record(send_start.elapsed().as_millis() as f64, &[]);
+                                }
+
+                                tracing::info!(
+                                    config = %config_name,
+                                    namespace = %namespace,
+                                    events = events.len(),
+                                    total = *count,
+                                    "batch sent",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (_, config) in &applied_configs {
+                let checkpoint = StreamingCheckpoint {
+                    config_name: config.name.clone(),
+                    lsn: batch.ack_lsn,
+                    events_processed: *events_processed.get(&config.name).unwrap_or(&0),
+                    updated_at: Utc::now(),
+                };
+                db.save_streaming_checkpoint(&checkpoint)?;
+            }
+
+            // Ack unconditionally — failed events are in the DLQ for retry
             stream.ack();
-            continue;
+            if let Some(m) = metrics {
+                m.replication_acks.add(1, &[]);
+                m.cdc_batch_duration
+                    .record(batch_start.elapsed().as_millis() as f64, &[]);
+            }
+
+            batch_count += 1;
+            if batch_count % project_config.dlq_replay_interval() == 0 {
+                replay_dlq(
+                    &mut db,
+                    &transformers,
+                    &namespaces,
+                    &puff_client,
+                    project_config,
+                    metrics,
+                )
+                .await?;
+            }
         }
 
-        let _batch_span = tracing::info_span!(
-            "cdc_batch",
-            lsn = batch.ack_lsn,
-            events = batch.events.len()
-        )
-        .entered();
-        let batch_start = std::time::Instant::now();
-        let config_events = router.route_batch(&batch.events, stream.relation_cache());
+        if !should_reconnect {
+            break;
+        }
 
-        for (config_name, events) in &config_events {
-            let transformer = transformers
-                .get(*config_name)
-                .expect("transformer missing for applied config");
-            let namespace = namespaces
-                .get(*config_name)
-                .expect("namespace missing for applied config");
+        // Update start_lsn from latest checkpoints before reconnecting
+        drop(stream);
 
-            let transform_result = transformer.transform_batch(events.as_slice()).await;
+        // Wait for the replication slot to be released before reconnecting.
+        // After dropping the stream, Postgres may still consider the previous
+        // backend active for a short window. Without this backoff the new
+        // connect() races against slot release and can fail, taking down CDC
+        // until a manual restart.
+        {
+            let slot_client = pg::connect::connect(&env_config.database_url)
+                .await
+                .map_err(|e| {
+                    CliError::Run(format!("failed to connect for slot release check: {e}"))
+                })?;
 
-            match transform_result {
-                Err(e) => {
-                    tracing::error!(config = %config_name, error = %e, "transform error, sending to DLQ");
-                    if let Some(m) = metrics {
-                        m.cdc_events_failed.add(events.len() as u64, &[]);
+            pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME)
+                .await
+                .map_err(|e| {
+                    CliError::Run(format!("failed to terminate stale slot backend: {e}"))
+                })?;
+
+            let mut backoff = Backoff::new(BackoffConfig {
+                initial_delay_ms: 100,
+                max_delay_ms: 5_000,
+                max_retries: 10,
+                multiplier: 2.0,
+                jitter: true,
+            });
+            while pg::slot::get_active_pid(&slot_client, SLOT_NAME)
+                .await
+                .map_err(|e| CliError::Run(format!("failed to check slot active PID: {e}")))?
+                .is_some()
+            {
+                match backoff.next_delay() {
+                    Some(delay) => {
+                        tokio::time::sleep(delay).await;
+                        pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME)
+                            .await
+                            .map_err(|e| {
+                                CliError::Run(format!(
+                                    "failed to terminate stale slot backend: {e}"
+                                ))
+                            })?;
                     }
-                    send_events_to_dlq(
-                        &mut db,
-                        config_name,
-                        batch.ack_lsn,
-                        events,
-                        &e.to_string(),
-                        false,
-                    )?;
-                }
-                Ok(actions) => {
-                    let send_start = std::time::Instant::now();
-                    match puff_client.send_batch(namespace, &actions).await {
-                        Err(e) => {
-                            tracing::error!(config = %config_name, error = %e, "turbopuffer error, sending to DLQ");
-                            if let Some(m) = metrics {
-                                m.cdc_events_failed.add(events.len() as u64, &[]);
-                                m.turbopuffer_requests.add(1, &[]);
-                                m.turbopuffer_latency
-                                    .record(send_start.elapsed().as_millis() as f64, &[]);
-                            }
-                            send_events_to_dlq(
-                                &mut db,
-                                config_name,
-                                batch.ack_lsn,
-                                events,
-                                &e.to_string(),
-                                false,
-                            )?;
-                        }
-                        Ok(()) => {
-                            let count =
-                                events_processed.entry(config_name.to_string()).or_insert(0);
-                            *count += events.len() as u64;
-
-                            if let Some(m) = metrics {
-                                m.cdc_events_processed.add(events.len() as u64, &[]);
-                                m.turbopuffer_requests.add(1, &[]);
-                                m.turbopuffer_latency
-                                    .record(send_start.elapsed().as_millis() as f64, &[]);
-                            }
-
-                            tracing::info!(
-                                config = %config_name,
-                                namespace = %namespace,
-                                events = events.len(),
-                                total = *count,
-                                "batch sent",
-                            );
-                        }
+                    None => {
+                        return Err(CliError::Run(format!(
+                            "timed out waiting for replication slot '{}' to be released after schema change",
+                            SLOT_NAME
+                        )));
                     }
                 }
             }
         }
 
+        let mut checkpoint_lsns = Vec::new();
         for (_, config) in &applied_configs {
-            let checkpoint = StreamingCheckpoint {
-                config_name: config.name.clone(),
-                lsn: batch.ack_lsn,
-                events_processed: *events_processed.get(&config.name).unwrap_or(&0),
-                updated_at: Utc::now(),
-            };
-            db.save_streaming_checkpoint(&checkpoint)?;
+            if let Some(cp) = db.get_streaming_checkpoint(&config.name)? {
+                checkpoint_lsns.push(cp.lsn);
+            }
         }
-
-        // Ack unconditionally — failed events are in the DLQ for retry
-        stream.ack();
-        if let Some(m) = metrics {
-            m.replication_acks.add(1, &[]);
-            m.cdc_batch_duration
-                .record(batch_start.elapsed().as_millis() as f64, &[]);
-        }
-
-        batch_count += 1;
-        if batch_count % project_config.dlq_replay_interval() == 0 {
-            replay_dlq(
-                &mut db,
-                &transformers,
-                &namespaces,
-                &puff_client,
-                project_config,
-                metrics,
-            )
-            .await?;
-        }
+        start_lsn = checkpoint_lsns.into_iter().min();
     }
 
     Ok(())

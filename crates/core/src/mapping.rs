@@ -68,10 +68,12 @@ impl Mapping {
         })?;
 
         let bytes = col_value.as_bytes().ok_or_else(|| {
-            CoreError::Pipeline(format!(
-                "id column \"{}\" is null or unchanged",
-                self.id_column
-            ))
+            let reason = if col_value.is_unchanged() {
+                "unchanged (REPLICA IDENTITY may not be FULL)"
+            } else {
+                "null"
+            };
+            CoreError::Pipeline(format!("id column \"{}\" is {}", self.id_column, reason))
         })?;
 
         let text = std::str::from_utf8(bytes)
@@ -237,6 +239,6 @@ mod tests {
         };
 
         let err = mapping.extract_id(&event, &test_relation()).unwrap_err();
-        assert!(err.to_string().contains("null or unchanged"));
+        assert!(err.to_string().contains("is null"));
     }
 }
