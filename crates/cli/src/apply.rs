@@ -193,6 +193,7 @@ mod tests {
             otel_endpoint: None,
             otel_headers: None,
             state_db_path,
+            dlq_max_age_hours: None,
         }
     }
 

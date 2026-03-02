@@ -113,6 +113,7 @@ async fn start_postgres(state_db_path: PathBuf) -> (ContainerAsync<Postgres>, En
         otel_endpoint: None,
         otel_headers: None,
         state_db_path,
+        dlq_max_age_hours: None,
     };
 
     (container, env_config)
