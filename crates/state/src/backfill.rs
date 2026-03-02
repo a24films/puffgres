@@ -186,6 +186,7 @@ mod tests {
             transform_hash: None,
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         }
     }
 

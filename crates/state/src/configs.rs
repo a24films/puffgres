@@ -13,6 +13,7 @@ pub struct ConfigRecord {
     pub transform_hash: Option<String>,
     pub applied_at: DateTime<Utc>,
     pub tombstone_applied_at: Option<DateTime<Utc>>,
+    pub namespace_prefix: Option<String>,
 }
 
 impl ConfigRecord {
@@ -40,6 +41,7 @@ impl ConfigRecord {
             transform_hash: row.transform_hash.clone(),
             applied_at,
             tombstone_applied_at,
+            namespace_prefix: row.namespace_prefix.clone(),
         })
     }
 }
@@ -54,6 +56,7 @@ impl StateDb {
             transform_hash: config.transform_hash.as_deref(),
             applied_at: &applied_at_str,
             tombstone_applied_at: None,
+            namespace_prefix: config.namespace_prefix.as_deref(),
         };
 
         diesel::insert_into(configs::table)
@@ -125,6 +128,41 @@ impl StateDb {
 
         rows.iter().map(ConfigRecord::from_row).collect()
     }
+
+    pub fn get_namespace_prefix(
+        &mut self,
+        config_name: &str,
+    ) -> Result<Option<String>, StateError> {
+        let row = configs::table
+            .filter(configs::name.eq(config_name))
+            .first::<ConfigRow>(&mut self.conn)
+            .optional()?;
+
+        match row {
+            Some(r) => Ok(r.namespace_prefix),
+            None => Err(StateError::InvalidState(format!(
+                "config '{config_name}' not found"
+            ))),
+        }
+    }
+
+    pub fn set_namespace_prefix(
+        &mut self,
+        config_name: &str,
+        prefix: Option<&str>,
+    ) -> Result<(), StateError> {
+        let updated = diesel::update(configs::table.filter(configs::name.eq(config_name)))
+            .set(configs::namespace_prefix.eq(prefix))
+            .execute(&mut self.conn)?;
+
+        if updated == 0 {
+            return Err(StateError::InvalidState(format!(
+                "config '{config_name}' not found"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +184,7 @@ mod tests {
             transform_hash: None,
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         }
     }
 
