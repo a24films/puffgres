@@ -1,5 +1,4 @@
-name = "bad_0001"
-version = 1
+name = "bad"
 namespace = "bad"
 
 [source]
@@ -9,6 +8,3 @@ table = "bad"
 [id]
 column = "id"
 type = "text"
-
-[transform]
-path = "transforms/bad.ts"

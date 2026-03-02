@@ -1,5 +1,4 @@
-name = "{{CONFIG_NAME}}"
-version = {{VERSION}}
+name = "{{NAME}}"
 namespace = "{{NAME}}"
 
 [source]
@@ -9,6 +8,3 @@ table = "{{NAME}}"
 [id]
 column = "id"
 type = "uint"
-
-[transform]
-path = "transforms/{{NAME}}.ts"

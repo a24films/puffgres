@@ -176,8 +176,7 @@ mod tests {
     fn sample_config(name: &str) -> ConfigRecord {
         ConfigRecord {
             name: name.to_string(),
-            version: 1,
-            namespace: format!("{}_v1", name),
+            namespace: name.to_string(),
             content_hash: "abc123".to_string(),
             transform_hash: None,
             applied_at: Utc::now(),

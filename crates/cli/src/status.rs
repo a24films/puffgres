@@ -20,24 +20,24 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
         .collect();
 
     println!(
-        "{:<20} {:<20} {:<8} {:<16} {}",
-        "CONFIG", "NAMESPACE", "VERSION", "LSN", "EVENTS"
+        "{:<20} {:<20} {:<16} {}",
+        "CONFIG", "NAMESPACE", "LSN", "EVENTS"
     );
-    println!("{}", "-".repeat(76));
+    println!("{}", "-".repeat(67));
 
     for config in &configs {
         match checkpoint_map.get(config.name.as_str()) {
             Some(cp) => {
                 let lsn = PgLsn::from(cp.lsn);
                 println!(
-                    "{:<20} {:<20} {:<8} {:<16} {}",
-                    config.name, config.namespace, config.version, lsn, cp.events_processed,
+                    "{:<20} {:<20} {:<16} {}",
+                    config.name, config.namespace, lsn, cp.events_processed,
                 );
             }
             None => {
                 println!(
-                    "{:<20} {:<20} {:<8} {:<16} {}",
-                    config.name, config.namespace, config.version, "-", "-",
+                    "{:<20} {:<20} {:<16} {}",
+                    config.name, config.namespace, "-", "-",
                 );
             }
         }
@@ -54,11 +54,10 @@ mod tests {
 
     use crate::test_utils::setup_project;
 
-    fn sample_config(name: &str, version: u64) -> ConfigRecord {
+    fn sample_config(name: &str) -> ConfigRecord {
         ConfigRecord {
             name: name.to_string(),
-            version,
-            namespace: format!("{}_v{}", name, version),
+            namespace: name.to_string(),
             content_hash: "abc123".to_string(),
             transform_hash: None,
             applied_at: Utc::now(),
@@ -85,8 +84,8 @@ mod tests {
         let (_dir, paths) = setup_project();
         let mut db = StateDb::open(&paths.state_db).unwrap();
 
-        db.insert_config(&sample_config("film", 1)).unwrap();
-        db.insert_config(&sample_config("actor", 2)).unwrap();
+        db.insert_config(&sample_config("film")).unwrap();
+        db.insert_config(&sample_config("actor")).unwrap();
 
         run(&paths).unwrap();
     }
@@ -96,8 +95,8 @@ mod tests {
         let (_dir, paths) = setup_project();
         let mut db = StateDb::open(&paths.state_db).unwrap();
 
-        db.insert_config(&sample_config("film", 1)).unwrap();
-        db.insert_config(&sample_config("actor", 2)).unwrap();
+        db.insert_config(&sample_config("film")).unwrap();
+        db.insert_config(&sample_config("actor")).unwrap();
         db.save_streaming_checkpoint(&sample_checkpoint("film", 0x016B_3740, 500))
             .unwrap();
 
@@ -109,9 +108,9 @@ mod tests {
         let (_dir, paths) = setup_project();
         let mut db = StateDb::open(&paths.state_db).unwrap();
 
-        db.insert_config(&sample_config("film", 1)).unwrap();
-        db.insert_config(&sample_config("actor", 2)).unwrap();
-        db.insert_config(&sample_config("genre", 1)).unwrap();
+        db.insert_config(&sample_config("film")).unwrap();
+        db.insert_config(&sample_config("actor")).unwrap();
+        db.insert_config(&sample_config("genre")).unwrap();
 
         db.save_streaming_checkpoint(&sample_checkpoint("film", 0x016B_3740, 500))
             .unwrap();

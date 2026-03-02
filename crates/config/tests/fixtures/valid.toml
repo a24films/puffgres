@@ -1,6 +1,5 @@
-name = "user_0001"
-version = 1
-namespace = "user"
+name = "users"
+namespace = "users"
 
 [source]
 schema = "public"
@@ -9,6 +8,3 @@ table = "users"
 [id]
 column = "id"
 type = "uint"
-
-[transform]
-path = "transforms/user.ts"

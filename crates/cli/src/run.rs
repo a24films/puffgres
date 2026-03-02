@@ -49,18 +49,18 @@ mod tests {
     #[test]
     fn prefixed_namespace_with_prefix() {
         let prefix = Some("production".to_string());
-        assert_eq!(prefixed_namespace(&prefix, "user_v1"), "production_user_v1");
+        assert_eq!(prefixed_namespace(&prefix, "user"), "production_user");
     }
 
     #[test]
     fn prefixed_namespace_without_prefix() {
-        assert_eq!(prefixed_namespace(&None, "user_v1"), "user_v1");
+        assert_eq!(prefixed_namespace(&None, "user"), "user");
     }
 
     #[test]
     fn prefixed_namespace_empty_prefix_treated_as_none() {
         let prefix = Some("".to_string());
-        assert_eq!(prefixed_namespace(&prefix, "user_v1"), "user_v1");
+        assert_eq!(prefixed_namespace(&prefix, "user"), "user");
     }
 
     use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
@@ -80,18 +80,18 @@ mod tests {
     #[test]
     fn test_errors_on_unreadable_transform_for_applied_config() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
-        let transform_bytes = fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
         let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-            version: cfg.version,
-            namespace: cfg.full_namespace(),
+
+            namespace: cfg.namespace.clone(),
             content_hash: cfg.content_hash().unwrap(),
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
@@ -99,7 +99,7 @@ mod tests {
         .unwrap();
 
         // Delete the transform file so it can't be read
-        fs::remove_file(paths.root.join(&cfg.transform.path)).unwrap();
+        fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
         let err = run(&paths, &dummy_env(), &ProjectConfig::default(), None).unwrap_err();
         assert!(
@@ -111,16 +111,16 @@ mod tests {
     #[test]
     fn test_errors_on_modified_transform_for_applied_config() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
         let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-            version: cfg.version,
-            namespace: cfg.full_namespace(),
+
+            namespace: cfg.namespace.clone(),
             content_hash: cfg.content_hash().unwrap(),
             transform_hash: Some("stale_hash".to_string()),
             applied_at: Utc::now(),
@@ -150,7 +150,6 @@ async fn run_async(
     let applied_configs: Vec<_> = all_configs
         .into_iter()
         .filter(|(_, config)| db.get_config(&config.name).ok().flatten().is_some())
-        .map(|(_, config)| config)
         .collect();
 
     if applied_configs.is_empty() {
@@ -163,24 +162,21 @@ async fn run_async(
     let mut namespaces: HashMap<String, String> = HashMap::new();
     let mut tables: BTreeSet<String> = BTreeSet::new();
 
-    for config in &applied_configs {
+    for (config_path, config) in &applied_configs {
         mappings.push(Mapping::from_config(config));
         namespaces.insert(
             config.name.clone(),
-            prefixed_namespace(
-                &env_config.turbopuffer_namespace_prefix,
-                &config.full_namespace(),
-            ),
+            prefixed_namespace(&env_config.turbopuffer_namespace_prefix, &config.namespace),
         );
         tables.insert(format!("{}.{}", config.source.schema, config.source.table));
 
-        let transform_path = paths.root.join(&config.transform.path);
+        let transform_path = config_path.parent().unwrap().join("transform.ts");
 
         // Verify transform file can be read and hasn't drifted from the applied hash
         let transform_content = fs::read(&transform_path).map_err(|e| {
             CliError::Run(format!(
-                "cannot read transform file '{}' for config '{}': {e}",
-                config.transform.path, config.name,
+                "cannot read transform file for config '{}': {e}",
+                config.name,
             ))
         })?;
 
@@ -189,8 +185,8 @@ async fn run_async(
                 let current_hash = format!("{:x}", Sha256::digest(&transform_content));
                 if *stored_hash != current_hash {
                     return Err(CliError::Run(format!(
-                        "transform file '{}' was modified after config '{}' was applied",
-                        config.transform.path, config.name,
+                        "transform file was modified after config '{}' was applied",
+                        config.name,
                     )));
                 }
             }
@@ -214,7 +210,7 @@ async fn run_async(
 
     let mut table_refs: Vec<(&str, &str)> = applied_configs
         .iter()
-        .map(|c| (c.source.schema.as_str(), c.source.table.as_str()))
+        .map(|(_, c)| (c.source.schema.as_str(), c.source.table.as_str()))
         .collect();
     table_refs.sort();
     table_refs.dedup();
@@ -238,7 +234,7 @@ async fn run_async(
     let mut needs_backfill: Vec<&config::Config> = Vec::new();
     let mut watermark_lsns: Vec<u64> = Vec::new();
 
-    for config in &applied_configs {
+    for (_, config) in &applied_configs {
         match db.get_backfill_progress(&config.name)? {
             Some(bp) if bp.status == BackfillStatus::Completed => {
                 if let Some(wlsn) = bp.watermark_lsn {
@@ -353,7 +349,7 @@ async fn run_async(
     // start_lsn: minimum of all watermark LSNs and streaming checkpoints
     let start_lsn = {
         let mut candidates: Vec<u64> = watermark_lsns;
-        for config in &applied_configs {
+        for (_, config) in &applied_configs {
             if let Some(cp) = db.get_streaming_checkpoint(&config.name)? {
                 candidates.push(cp.lsn);
             }
@@ -418,7 +414,7 @@ async fn run_async(
     tracing::info!(lsn = %lsn_display, "streaming from LSN");
 
     let mut events_processed: HashMap<String, u64> = HashMap::new();
-    for config in &applied_configs {
+    for (_, config) in &applied_configs {
         let count = db
             .get_streaming_checkpoint(&config.name)?
             .map(|c| c.events_processed)

@@ -33,32 +33,25 @@ impl ConfigLoader {
         let mut configs = Vec::new();
         let mut entries: Vec<_> = fs::read_dir(&self.config_dir)?
             .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .path()
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext == "toml")
-                    .unwrap_or(false)
-            })
+            .filter(|entry| entry.path().is_dir())
             .collect();
 
         entries.sort_by_key(|entry| entry.file_name());
 
         for entry in entries {
-            let path = entry.path();
-            let config = Config::from_file(&path).map_err(|e| ConfigError::FileError {
-                path: path.clone(),
+            let config_path = entry.path().join("config.toml");
+            let config = Config::from_file(&config_path).map_err(|e| ConfigError::FileError {
+                path: config_path.clone(),
                 source: Box::new(e),
             })?;
-            configs.push((path, config));
+            configs.push((config_path, config));
         }
 
         Ok(configs)
     }
 
-    pub fn compute_transform_hash(&self, config: &Config) -> Result<Option<String>, ConfigError> {
-        let transform_path = self.config_dir.join(&config.transform.path);
+    pub fn compute_transform_hash(config_path: &Path) -> Result<Option<String>, ConfigError> {
+        let transform_path = config_path.parent().unwrap().join("transform.ts");
 
         if !transform_path.exists() {
             return Ok(None);
@@ -83,14 +76,11 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
-    fn write_file(dir: &Path, filename: &str, content: &str) {
-        fs::write(dir.join(filename), content).unwrap();
-    }
-
-    fn load_config_from_dir(dir: &Path, name: &str) -> Config {
-        let loader = ConfigLoader::new(dir);
-        let all = loader.load_all().unwrap();
-        all.into_iter().find(|(_, c)| c.name == name).unwrap().1
+    fn write_config_dir(dir: &Path, dir_name: &str, content: &str) -> PathBuf {
+        let config_dir = dir.join(dir_name);
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(config_dir.join("config.toml"), content).unwrap();
+        config_dir
     }
 
     mod parse {
@@ -99,9 +89,8 @@ mod tests {
         #[test]
         fn from_toml_valid() {
             let config = Config::from_toml(&fixture("valid")).unwrap();
-            assert_eq!(config.name, "user_0001");
-            assert_eq!(config.version, 1);
-            assert_eq!(config.namespace, "user");
+            assert_eq!(config.name, "users");
+            assert_eq!(config.namespace, "users");
         }
 
         #[test]
@@ -113,10 +102,10 @@ mod tests {
         #[test]
         fn from_file() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "film.toml", &fixture("film"));
+            let config_dir = write_config_dir(dir.path(), "1000_film", &fixture("film"));
 
-            let config = Config::from_file(&dir.path().join("film.toml")).unwrap();
-            assert_eq!(config.name, "film_0001");
+            let config = Config::from_file(&config_dir.join("config.toml")).unwrap();
+            assert_eq!(config.name, "film");
             assert_eq!(config.namespace, "film");
         }
 
@@ -170,25 +159,26 @@ mod tests {
         }
 
         #[test]
-        fn multiple_configs_sorted_by_filename() {
+        fn multiple_configs_sorted_by_dirname() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "user.toml", &fixture("valid"));
-            write_file(dir.path(), "film.toml", &fixture("film"));
-            write_file(dir.path(), "readme.txt", "not a config");
+            write_config_dir(dir.path(), "1000_user", &fixture("valid"));
+            write_config_dir(dir.path(), "0999_film", &fixture("film"));
+            // Non-directory file should be ignored
+            fs::write(dir.path().join("readme.txt"), "not a config").unwrap();
 
             let loader = ConfigLoader::new(dir.path());
             let configs = loader.load_all().unwrap();
 
             assert_eq!(configs.len(), 2);
-            assert_eq!(configs[0].1.name, "film_0001");
-            assert_eq!(configs[1].1.name, "user_0001");
+            assert_eq!(configs[0].1.name, "film");
+            assert_eq!(configs[1].1.name, "users");
         }
 
         #[test]
         fn invalid_config_in_dir_errors_not_skipped() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "valid.toml", &fixture("valid"));
-            write_file(dir.path(), "invalid.toml", &fixture("invalid_id_type"));
+            write_config_dir(dir.path(), "1000_valid", &fixture("valid"));
+            write_config_dir(dir.path(), "1001_invalid", &fixture("invalid_id_type"));
 
             let loader = ConfigLoader::new(dir.path());
             let result = loader.load_all();
@@ -202,8 +192,8 @@ mod tests {
         #[test]
         fn malformed_toml_in_dir_errors_not_skipped() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "valid.toml", &fixture("valid"));
-            write_file(dir.path(), "broken.toml", &fixture("malformed"));
+            write_config_dir(dir.path(), "1000_valid", &fixture("valid"));
+            write_config_dir(dir.path(), "1001_broken", &fixture("malformed"));
 
             let loader = ConfigLoader::new(dir.path());
             let result = loader.load_all();
@@ -217,16 +207,16 @@ mod tests {
         #[test]
         fn preserves_io_error_variant() {
             let dir = create_test_config_dir();
-            // A directory with a .toml extension triggers an IoError from read_to_string
-            fs::create_dir(dir.path().join("bad.toml")).unwrap();
+            // A directory without config.toml triggers an IoError from read_to_string
+            fs::create_dir(dir.path().join("1000_bad")).unwrap();
 
             let loader = ConfigLoader::new(dir.path());
             let err = loader.load_all().unwrap_err();
             match &err {
                 crate::ConfigError::FileError { path, source } => {
                     assert!(
-                        path.ends_with("bad.toml"),
-                        "expected path ending in bad.toml, got: {path:?}"
+                        path.ends_with("config.toml"),
+                        "expected path ending in config.toml, got: {path:?}"
                     );
                     assert!(
                         matches!(**source, crate::ConfigError::IoError(_)),
@@ -240,15 +230,15 @@ mod tests {
         #[test]
         fn preserves_toml_error_variant() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "broken.toml", "not valid toml {[}");
+            write_config_dir(dir.path(), "1000_broken", "not valid toml {[}");
 
             let loader = ConfigLoader::new(dir.path());
             let err = loader.load_all().unwrap_err();
             match &err {
                 crate::ConfigError::FileError { path, source } => {
                     assert!(
-                        path.ends_with("broken.toml"),
-                        "expected path ending in broken.toml, got: {path:?}"
+                        path.ends_with("config.toml"),
+                        "expected path ending in config.toml, got: {path:?}"
                     );
                     assert!(
                         matches!(**source, crate::ConfigError::TomlError(_)),
@@ -266,30 +256,31 @@ mod tests {
         #[test]
         fn returns_none_when_transform_missing() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "user.toml", &fixture("valid"));
+            let config_dir = write_config_dir(dir.path(), "1000_user", &fixture("valid"));
 
-            let cfg = load_config_from_dir(dir.path(), "user_0001");
-            let loader = ConfigLoader::new(dir.path());
-
-            assert!(loader.compute_transform_hash(&cfg).unwrap().is_none());
+            assert!(
+                ConfigLoader::compute_transform_hash(&config_dir.join("config.toml"))
+                    .unwrap()
+                    .is_none()
+            );
         }
 
         #[test]
         fn returns_deterministic_hash() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "user.toml", &fixture("valid"));
-            fs::create_dir_all(dir.path().join("transforms")).unwrap();
-            write_file(
-                &dir.path().join("transforms"),
-                "user.ts",
+            let config_dir = write_config_dir(dir.path(), "1000_user", &fixture("valid"));
+            fs::write(
+                config_dir.join("transform.ts"),
                 "export function transform(data) { return data; }",
-            );
+            )
+            .unwrap();
 
-            let cfg = load_config_from_dir(dir.path(), "user_0001");
-            let loader = ConfigLoader::new(dir.path());
-
-            let hash1 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
-            let hash2 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
+            let hash1 = ConfigLoader::compute_transform_hash(&config_dir.join("config.toml"))
+                .unwrap()
+                .unwrap();
+            let hash2 = ConfigLoader::compute_transform_hash(&config_dir.join("config.toml"))
+                .unwrap()
+                .unwrap();
 
             assert_eq!(hash1.len(), 64);
             assert_eq!(hash1, hash2);
@@ -298,17 +289,17 @@ mod tests {
         #[test]
         fn different_content_produces_different_hash() {
             let dir = create_test_config_dir();
-            write_file(dir.path(), "user.toml", &fixture("valid"));
-            fs::create_dir_all(dir.path().join("transforms")).unwrap();
+            let config_dir = write_config_dir(dir.path(), "1000_user", &fixture("valid"));
 
-            let cfg = load_config_from_dir(dir.path(), "user_0001");
-            let loader = ConfigLoader::new(dir.path());
+            fs::write(config_dir.join("transform.ts"), "content1").unwrap();
+            let hash1 = ConfigLoader::compute_transform_hash(&config_dir.join("config.toml"))
+                .unwrap()
+                .unwrap();
 
-            write_file(&dir.path().join("transforms"), "user.ts", "content1");
-            let hash1 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
-
-            write_file(&dir.path().join("transforms"), "user.ts", "content2");
-            let hash2 = loader.compute_transform_hash(&cfg).unwrap().unwrap();
+            fs::write(config_dir.join("transform.ts"), "content2").unwrap();
+            let hash2 = ConfigLoader::compute_transform_hash(&config_dir.join("config.toml"))
+                .unwrap()
+                .unwrap();
 
             assert_ne!(hash1, hash2);
         }

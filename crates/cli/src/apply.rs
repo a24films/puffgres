@@ -44,21 +44,20 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
     let mut new_configs: Vec<(PathBuf, Config, String, String)> = Vec::new();
 
     for &i in &static_passed {
-        let (path, config) = &configs[i];
+        let (config_path, config) = &configs[i];
 
         let content_hash = config.content_hash()?;
         if let Some(existing) = db.get_config(&config.name)? {
             if existing.content_hash == content_hash {
                 // Also verify transform file hasn't been modified
                 if let Some(ref stored_hash) = existing.transform_hash {
-                    let transform_path = paths.root.join(&config.transform.path);
+                    let transform_path = config_path.parent().unwrap().join("transform.ts");
                     let transform_content = match fs::read(&transform_path) {
                         Ok(bytes) => bytes,
                         Err(e) => {
                             errors.push(format!(
-                                "{}: cannot read transform file '{}' for applied config '{}': {e}",
-                                path.display(),
-                                config.transform.path,
+                                "{}: cannot read transform file for applied config '{}': {e}",
+                                config_path.display(),
                                 config.name,
                             ));
                             continue;
@@ -67,9 +66,8 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
                     let current_hash = format!("{:x}", Sha256::digest(&transform_content));
                     if *stored_hash != current_hash {
                         errors.push(format!(
-                            "{}: transform file '{}' was modified after config '{}' was applied",
-                            path.display(),
-                            config.transform.path,
+                            "{}: transform file was modified after config '{}' was applied",
+                            config_path.display(),
                             config.name,
                         ));
                         continue;
@@ -80,7 +78,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             } else {
                 errors.push(format!(
                     "{}: config '{}' was modified after being applied",
-                    path.display(),
+                    config_path.display(),
                     config.name,
                 ));
                 continue;
@@ -88,21 +86,25 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         }
 
         // 3. Read transform file and compute hash
-        let transform_path = paths.root.join(&config.transform.path);
+        let transform_path = config_path.parent().unwrap().join("transform.ts");
         let transform_content = match fs::read(&transform_path) {
             Ok(bytes) => bytes,
             Err(_) => {
                 errors.push(format!(
-                    "{}: transform file '{}' does not exist",
-                    path.display(),
-                    config.transform.path,
+                    "{}: transform file 'transform.ts' does not exist",
+                    config_path.display(),
                 ));
                 continue;
             }
         };
         let transform_hash = format!("{:x}", Sha256::digest(&transform_content));
 
-        new_configs.push((path.clone(), config.clone(), content_hash, transform_hash));
+        new_configs.push((
+            config_path.clone(),
+            config.clone(),
+            content_hash,
+            transform_hash,
+        ));
     }
 
     if !errors.is_empty() {
@@ -123,7 +125,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             .map(|(p, c, _, _)| (p.clone(), c.clone()))
             .collect();
 
-        let validated = validate_live(paths, env_config, &live_configs).await?;
+        let validated = validate_live(env_config, &live_configs).await?;
 
         for (i, (_path, config, content_hash, transform_hash)) in new_configs.iter().enumerate() {
             if !validated.contains(&i) {
@@ -132,8 +134,8 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
 
             let record = ConfigRecord {
                 name: config.name.clone(),
-                version: config.version,
-                namespace: config.full_namespace(),
+
+                namespace: config.namespace.clone(),
                 content_hash: content_hash.clone(),
                 transform_hash: Some(transform_hash.clone()),
                 applied_at: Utc::now(),
@@ -174,21 +176,9 @@ mod tests {
     }
 
     #[test]
-    fn test_errors_on_invalid_config() {
-        let (_dir, paths) = setup_project();
-        write_config(&paths, "bad", 0, "public", "bad", "id", "uint");
-
-        let err = run(&paths, &dummy_env()).unwrap_err();
-        assert!(
-            err.to_string().contains("had errors"),
-            "expected validation error, got: {err}"
-        );
-    }
-
-    #[test]
     fn test_errors_on_missing_transform() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
+        write_config(&paths, "user", "public", "users", "id", "uint");
 
         let err = run(&paths, &dummy_env()).unwrap_err();
         assert!(
@@ -201,32 +191,35 @@ mod tests {
     fn test_any_error_prevents_all_applies() {
         let (_dir, paths) = setup_project();
 
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
-        write_config(&paths, "bad", 0, "public", "bad", "id", "uint");
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+        // Create a config with an invalid name (starts with number) — but we need it to parse
+        // So instead, create a config without a transform
+        write_config(&paths, "bad", "public", "bad", "id", "uint");
 
         run(&paths, &dummy_env()).unwrap_err();
 
         let mut db = StateDb::open(&paths.state_db).unwrap();
-        assert!(db.get_config("user_0001").unwrap().is_none());
+        assert!(db.get_config("user").unwrap().is_none());
     }
 
     #[test]
     fn test_skips_already_applied_unchanged() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         // Load to get the content hash, then pre-seed the state DB
         let loader = config::ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
-        let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+        let all = loader.load_all().unwrap();
+        let (config_path, cfg) = &all[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
         let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-            version: cfg.version,
-            namespace: cfg.full_namespace(),
+
+            namespace: cfg.namespace.clone(),
             content_hash: cfg.content_hash().unwrap(),
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
@@ -241,21 +234,22 @@ mod tests {
     #[test]
     fn test_skips_multiple_already_applied() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
-        write_config(&paths, "film", 2, "public", "films", "id", "uint");
-        write_transform(&paths, "film", PASSTHROUGH_TRANSFORM);
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+        let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
+        write_transform(&film_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let all = loader.load_all().unwrap();
         let mut db = StateDb::open(&paths.state_db).unwrap();
-        for (_, cfg) in &all {
-            let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+        for (config_path, cfg) in &all {
+            let transform_bytes =
+                fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
             let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
             db.insert_config(&ConfigRecord {
                 name: cfg.name.clone(),
-                version: cfg.version,
-                namespace: cfg.full_namespace(),
+
+                namespace: cfg.namespace.clone(),
                 content_hash: cfg.content_hash().unwrap(),
                 transform_hash: Some(transform_hash),
                 applied_at: Utc::now(),
@@ -270,16 +264,16 @@ mod tests {
     #[test]
     fn test_errors_on_modified_config() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-            version: cfg.version,
-            namespace: cfg.full_namespace(),
+
+            namespace: cfg.namespace.clone(),
             content_hash: cfg.content_hash().unwrap(),
             transform_hash: Some("abc".into()),
             applied_at: Utc::now(),
@@ -287,7 +281,20 @@ mod tests {
         .unwrap();
 
         // Mutate the config on disk
-        write_config(&paths, "user", 1, "public", "accounts", "id", "uint");
+        let content = format!(
+            r#"name = "user"
+namespace = "user"
+
+[source]
+schema = "public"
+table = "accounts"
+
+[id]
+column = "id"
+type = "uint"
+"#
+        );
+        fs::write(config_path, content).unwrap();
 
         let err = run(&paths, &dummy_env()).unwrap_err();
         assert!(
@@ -299,18 +306,18 @@ mod tests {
     #[test]
     fn test_errors_on_unreadable_transform_for_applied_config() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "user", 1, "public", "users", "id", "uint");
-        write_transform(&paths, "user", PASSTHROUGH_TRANSFORM);
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
-        let transform_bytes = std::fs::read(paths.root.join(&cfg.transform.path)).unwrap();
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
         let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-            version: cfg.version,
-            namespace: cfg.full_namespace(),
+
+            namespace: cfg.namespace.clone(),
             content_hash: cfg.content_hash().unwrap(),
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
@@ -318,7 +325,7 @@ mod tests {
         .unwrap();
 
         // Delete the transform file so it can't be read
-        std::fs::remove_file(paths.root.join(&cfg.transform.path)).unwrap();
+        fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
         let err = run(&paths, &dummy_env()).unwrap_err();
         assert!(
@@ -330,8 +337,8 @@ mod tests {
     #[test]
     fn test_stored_record_fields() {
         let (_dir, paths) = setup_project();
-        write_config(&paths, "film", 2, "public", "films", "id", "uint");
-        write_transform(&paths, "film", PASSTHROUGH_TRANSFORM);
+        let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
+        write_transform(&film_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
@@ -340,17 +347,16 @@ mod tests {
         let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-            version: cfg.version,
-            namespace: cfg.full_namespace(),
+
+            namespace: cfg.namespace.clone(),
             content_hash: content_hash.clone(),
             transform_hash: Some("t_hash".into()),
             applied_at: Utc::now(),
         })
         .unwrap();
 
-        let record = db.get_config("film_0002").unwrap().unwrap();
-        assert_eq!(record.version, 2);
-        assert_eq!(record.namespace, "film_v2");
+        let record = db.get_config("film").unwrap().unwrap();
+        assert_eq!(record.namespace, "film");
         assert_eq!(record.content_hash.len(), 64);
         assert_eq!(record.content_hash, content_hash);
         assert!(record.transform_hash.is_some());

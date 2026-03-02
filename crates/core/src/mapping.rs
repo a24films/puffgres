@@ -21,7 +21,7 @@ impl Mapping {
     pub fn from_config(config: &Config) -> Self {
         Self {
             name: config.name.clone(),
-            namespace: config.full_namespace(),
+            namespace: config.namespace.clone(),
             source_schema: config.source.schema.clone(),
             source_table: config.source.table.clone(),
             id_column: config.id.column.clone(),
@@ -119,8 +119,8 @@ mod tests {
     fn from_config_fields() {
         let mapping = Mapping::from_config(&load_fixture("valid"));
 
-        assert_eq!(mapping.name, "user_0001");
-        assert_eq!(mapping.namespace, "user_v1");
+        assert_eq!(mapping.name, "users");
+        assert_eq!(mapping.namespace, "users");
         assert_eq!(mapping.source_schema, "public");
         assert_eq!(mapping.source_table, "users");
         assert_eq!(mapping.id_column, "id");

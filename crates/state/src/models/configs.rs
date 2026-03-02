@@ -6,7 +6,6 @@ use crate::schema::configs;
 #[diesel(table_name = configs)]
 pub struct ConfigRow {
     pub name: String,
-    pub version: i64,
     pub namespace: String,
     pub content_hash: String,
     pub transform_hash: Option<String>,
@@ -17,7 +16,6 @@ pub struct ConfigRow {
 #[diesel(table_name = configs)]
 pub struct NewConfig<'a> {
     pub name: &'a str,
-    pub version: i64,
     pub namespace: &'a str,
     pub content_hash: &'a str,
     pub transform_hash: Option<&'a str>,

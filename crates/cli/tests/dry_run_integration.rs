@@ -1,4 +1,6 @@
 use std::fs;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use puffgres_cli::dry_run::run_async;
 use puffgres_cli::{EnvConfig, ProjectPaths};
@@ -7,12 +9,13 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 
+static TEST_TIMESTAMP: AtomicU64 = AtomicU64::new(2000000000000);
+
 fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
     let dir = tempfile::tempdir().unwrap();
     let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
 
     fs::create_dir_all(&paths.configs).unwrap();
-    fs::create_dir_all(&paths.transforms).unwrap();
 
     let mut db = StateDb::open(&paths.state_db).unwrap();
     db.initialize().unwrap();
@@ -23,16 +26,17 @@ fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
 fn write_config(
     paths: &ProjectPaths,
     name: &str,
-    version: i64,
     schema: &str,
     table: &str,
     id_column: &str,
     id_type: &str,
-) {
-    let config_name = format!("{name}_{version:04}");
+) -> std::path::PathBuf {
+    let ts = TEST_TIMESTAMP.fetch_add(1, Ordering::SeqCst);
+    let dir_name = format!("{}_{}", ts, name);
+    let config_dir = paths.configs.join(&dir_name);
+    fs::create_dir_all(&config_dir).unwrap();
     let content = format!(
-        r#"name = "{config_name}"
-version = {version}
+        r#"name = "{name}"
 namespace = "{name}"
 
 [source]
@@ -42,16 +46,17 @@ table = "{table}"
 [id]
 column = "{id_column}"
 type = "{id_type}"
-
-[transform]
-path = "transforms/{name}.ts"
 "#
     );
-    fs::write(paths.configs.join(format!("{config_name}.toml")), content).unwrap();
+    fs::write(config_dir.join("config.toml"), content).unwrap();
+    config_dir
 }
 
-fn write_passthrough_transform(paths: &ProjectPaths, name: &str) {
-    let script = r#"
+fn write_transform(config_dir: &Path, script: &str) {
+    fs::write(config_dir.join("transform.ts"), script).unwrap();
+}
+
+const PASSTHROUGH_TRANSFORM: &str = r#"
 import { readFileSync } from "fs";
 const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
 const output = input.map((event: any) => {
@@ -62,10 +67,8 @@ const output = input.map((event: any) => {
 });
 process.stdout.write(JSON.stringify(output));
 "#;
-    fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
-}
 
-fn write_vector_transform(paths: &ProjectPaths, name: &str, include_distance: bool) {
+fn write_vector_transform(config_dir: &Path, include_distance: bool) {
     let distance_field = if include_distance {
         r#", distance_metric: "cosine_distance""#
     } else {
@@ -84,7 +87,7 @@ const output = input.map((event: any) => {{
 process.stdout.write(JSON.stringify(output));
 "#
     );
-    fs::write(paths.transforms.join(format!("{name}.ts")), script).unwrap();
+    fs::write(config_dir.join("transform.ts"), script).unwrap();
 }
 
 async fn start_postgres() -> (ContainerAsync<Postgres>, EnvConfig) {
@@ -135,8 +138,8 @@ async fn test_rejects_vector_without_distance_metric() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "vec", 1, "public", "dry_vec_test", "id", "uint");
-    write_vector_transform(&paths, "vec", false);
+    let vec_dir = write_config(&paths, "vec", "public", "dry_vec_test", "id", "uint");
+    write_vector_transform(&vec_dir, false);
 
     let err = run_async(&paths, &env_config, None).await.unwrap_err();
     assert!(
@@ -166,8 +169,8 @@ async fn test_accepts_valid_transform() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "valid", 1, "public", "dry_valid_test", "id", "uint");
-    write_passthrough_transform(&paths, "valid");
+    let valid_dir = write_config(&paths, "valid", "public", "dry_valid_test", "id", "uint");
+    write_transform(&valid_dir, PASSTHROUGH_TRANSFORM);
 
     let result = run_async(&paths, &env_config, None).await;
     assert!(
@@ -197,8 +200,8 @@ async fn test_accepts_vector_with_distance_metric() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "dist", 1, "public", "dry_dist_test", "id", "uint");
-    write_vector_transform(&paths, "dist", true);
+    let dist_dir = write_config(&paths, "dist", "public", "dry_dist_test", "id", "uint");
+    write_vector_transform(&dist_dir, true);
 
     let result = run_async(&paths, &env_config, None).await;
     assert!(
@@ -224,8 +227,8 @@ async fn test_skips_empty_table_gracefully() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "empty", 1, "public", "dry_empty_test", "id", "uint");
-    write_passthrough_transform(&paths, "empty");
+    let empty_dir = write_config(&paths, "empty", "public", "dry_empty_test", "id", "uint");
+    write_transform(&empty_dir, PASSTHROUGH_TRANSFORM);
 
     let result = run_async(&paths, &env_config, None).await;
     assert!(
@@ -255,22 +258,14 @@ async fn test_filters_by_config_name() {
     drop(pg_client);
 
     let (_dir, paths) = setup_project();
-    write_config(&paths, "good", 1, "public", "dry_filter_test", "id", "uint");
-    write_passthrough_transform(&paths, "good");
+    let good_dir = write_config(&paths, "good", "public", "dry_filter_test", "id", "uint");
+    write_transform(&good_dir, PASSTHROUGH_TRANSFORM);
 
-    write_config(
-        &paths,
-        "bad",
-        1,
-        "public",
-        "nonexistent_table",
-        "id",
-        "uint",
-    );
-    write_passthrough_transform(&paths, "bad");
+    let bad_dir = write_config(&paths, "bad", "public", "nonexistent_table", "id", "uint");
+    write_transform(&bad_dir, PASSTHROUGH_TRANSFORM);
 
     // Dry-running only the good config should pass
-    let result = run_async(&paths, &env_config, Some("good_0001")).await;
+    let result = run_async(&paths, &env_config, Some("good")).await;
     assert!(
         result.is_ok(),
         "expected dry-run to succeed for filtered config, got: {result:?}"

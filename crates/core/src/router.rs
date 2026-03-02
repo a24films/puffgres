@@ -32,7 +32,7 @@ impl Router {
     ///
     /// ```text
     /// {
-    ///   "user_0001": [(event1, id1), (event2, id2), (event3, id3)],
+    ///   "users": [(event1, id1), (event2, id2), (event3, id3)],
     ///   "film_0001": [(event4, id4)],
     /// }
     /// ```
@@ -121,7 +121,7 @@ mod tests {
 
         let matches = router.route(&insert_event(16384), &cache);
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].name, "user_0001");
+        assert_eq!(matches[0].name, "users");
     }
 
     #[test]
@@ -183,7 +183,7 @@ mod tests {
         let grouped = router.route_batch(&events, &cache);
 
         assert_eq!(grouped.len(), 1);
-        assert_eq!(grouped["user_0001"].len(), 2);
+        assert_eq!(grouped["users"].len(), 2);
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
         let events = vec![insert_event(16384), insert_event(99999)];
         let grouped = router.route_batch(&events, &cache);
 
-        assert_eq!(grouped["user_0001"].len(), 1);
+        assert_eq!(grouped["users"].len(), 1);
     }
 
     #[test]
@@ -250,10 +250,7 @@ mod tests {
             },
         ];
         let grouped = router.route_batch(&events, &cache);
-        let ids: Vec<_> = grouped["user_0001"]
-            .iter()
-            .map(|(_, id)| id.clone())
-            .collect();
+        let ids: Vec<_> = grouped["users"].iter().map(|(_, id)| id.clone()).collect();
         assert_eq!(ids, vec![DocumentId::Uint(42), DocumentId::Uint(99)]);
     }
 }

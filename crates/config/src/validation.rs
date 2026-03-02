@@ -11,24 +11,10 @@ impl Config {
     pub fn validate(&self) -> Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
 
-        if self.version <= 0 {
-            errors.push(ValidationError {
-                field: "version".into(),
-                message: "Version must be positive".into(),
-            });
-        }
-
         if !is_valid_identifier(&self.name) {
             errors.push(ValidationError {
                 field: "name".into(),
                 message: "Name must be valid (alphanumeric, underscore)".into(),
-            });
-        }
-
-        if self.transform.path.is_empty() {
-            errors.push(ValidationError {
-                field: "transform.path".into(),
-                message: "Transform path cannot be empty".into(),
             });
         }
 
@@ -62,31 +48,11 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_version_fails() {
-        let config = load_fixture("invalid_version");
-        let errors = config.validate().unwrap_err();
-
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].field, "version");
-        assert_eq!(errors[0].message, "Version must be positive");
-    }
-
-    #[test]
     fn test_invalid_name_fails() {
         let config = load_fixture("invalid_name");
         let errors = config.validate().unwrap_err();
 
         assert!(errors.iter().any(|e| e.field == "name"));
-    }
-
-    #[test]
-    fn test_empty_transform_path_fails() {
-        let config = load_fixture("empty_path");
-        let errors = config.validate().unwrap_err();
-
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].field, "transform.path");
-        assert_eq!(errors[0].message, "Transform path cannot be empty");
     }
 
     #[test]

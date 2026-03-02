@@ -1,5 +1,4 @@
-name = "film_0001"
-version = 1
+name = "film"
 namespace = "film"
 
 [source]
@@ -9,6 +8,3 @@ table = "films"
 [id]
 column = "id"
 type = "uuid"
-
-[transform]
-path = "transforms/film.ts"
