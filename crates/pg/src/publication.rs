@@ -175,6 +175,31 @@ pub async fn remove_tables_from_publication(
     Ok(())
 }
 
+/// Set REPLICA IDENTITY FULL on each table so DELETE events include all
+/// column values in the old tuple (not just the primary-key columns).
+/// Without this, non-PK id columns appear as `Unchanged` in deletes and
+/// `extract_id` fails.
+pub async fn ensure_replica_identity_full(client: &Client, tables: &[String]) -> Result<()> {
+    for table in tables {
+        let qualified = match table.split_once('.') {
+            Some((schema, name)) => {
+                format!("{}.{}", quote_identifier(schema), quote_identifier(name))
+            }
+            None => format!("{}.{}", quote_identifier("public"), quote_identifier(table)),
+        };
+
+        let query = format!("ALTER TABLE {qualified} REPLICA IDENTITY FULL");
+        client.execute(&query, &[]).await.map_err(|e| {
+            PgError::ReplicationError(format!(
+                "Failed to set REPLICA IDENTITY FULL on '{}': {}",
+                table, e
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
 pub async fn get_publication_tables(
     client: &Client,
     publication_name: &str,
