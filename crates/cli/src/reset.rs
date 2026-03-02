@@ -32,6 +32,7 @@ mod tests {
             content_hash: "abc".to_string(),
             transform_hash: None,
             applied_at: Utc::now(),
+            tombstone_applied_at: None,
         })
         .unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 1);

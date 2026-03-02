@@ -32,6 +32,12 @@ enum Command {
     Status,
     /// Clear all state (configs and checkpoints)
     Reset,
+    /// Tombstone a config (exclude from CDC, backfill, and DLQ replay)
+    Tombstone {
+        /// Name of the config to tombstone
+        #[arg(long)]
+        name: String,
+    },
 }
 
 fn main() {
@@ -59,6 +65,13 @@ fn run() -> (
                 Err(e) => return (Err(e), None),
             };
             return (puffgres_cli::reset::run(&paths), None);
+        }
+        Command::Tombstone { ref name } => {
+            let paths = match ProjectPaths::from_current_dir() {
+                Ok(p) => p,
+                Err(e) => return (Err(e), None),
+            };
+            return (puffgres_cli::tombstone::run(&paths, name), None);
         }
         _ => {}
     }
@@ -88,7 +101,7 @@ fn run() -> (
     };
 
     let result = match cli.command {
-        Command::Init | Command::Reset => unreachable!(),
+        Command::Init | Command::Reset | Command::Tombstone { .. } => unreachable!(),
         Command::New { name } => puffgres_cli::new::run(&paths, &name),
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())

@@ -13,8 +13,7 @@ pub fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
     fs::create_dir_all(&paths.configs).unwrap();
     fs::create_dir_all(&paths.transforms).unwrap();
 
-    let mut db = StateDb::open(&paths.state_db).unwrap();
-    db.initialize().unwrap();
+    StateDb::open(&paths.state_db).unwrap();
 
     (dir, paths)
 }

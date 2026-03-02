@@ -38,6 +38,9 @@ pub enum CliError {
     #[error("{0}")]
     Reset(String),
 
+    #[error("{0}")]
+    Tombstone(String),
+
     #[error("A config with {field} \"{name}\" already exists")]
     DuplicateConfig { name: String, field: String },
 

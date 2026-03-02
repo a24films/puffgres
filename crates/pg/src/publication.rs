@@ -71,21 +71,32 @@ pub async fn ensure_publication(
     tables: &[String],
 ) -> Result<()> {
     if publication_exists(client, publication_name).await? {
-        if !tables.is_empty() {
-            let current = get_publication_tables(client, publication_name).await?;
-            let missing: Vec<String> = tables
-                .iter()
-                .filter(|t| {
-                    let normalized = match t.split_once('.') {
-                        Some((schema, table)) => format!("{}.{}", schema, table),
-                        None => format!("public.{}", t),
-                    };
-                    !current.contains(&normalized)
-                })
-                .cloned()
-                .collect();
-            add_tables_to_publication(client, publication_name, &missing).await?;
-        }
+        let current = get_publication_tables(client, publication_name).await?;
+
+        let normalize = |t: &str| -> String {
+            match t.split_once('.') {
+                Some((schema, table)) => format!("{}.{}", schema, table),
+                None => format!("public.{}", t),
+            }
+        };
+
+        let desired: Vec<String> = tables.iter().map(|t| normalize(t)).collect();
+
+        let missing: Vec<String> = tables
+            .iter()
+            .filter(|t| !current.contains(&normalize(t)))
+            .cloned()
+            .collect();
+
+        let stale: Vec<String> = current
+            .iter()
+            .filter(|t| !desired.contains(t))
+            .cloned()
+            .collect();
+
+        add_tables_to_publication(client, publication_name, &missing).await?;
+        remove_tables_from_publication(client, publication_name, &stale).await?;
+
         return Ok(());
     }
 
@@ -121,6 +132,42 @@ pub async fn add_tables_to_publication(
     client.execute(&query, &[]).await.map_err(|e| {
         PgError::ReplicationError(format!(
             "Failed to add tables to publication '{}': {}",
+            publication_name, e
+        ))
+    })?;
+
+    Ok(())
+}
+
+pub async fn remove_tables_from_publication(
+    client: &Client,
+    publication_name: &str,
+    tables: &[String],
+) -> Result<()> {
+    if tables.is_empty() {
+        return Ok(());
+    }
+
+    let table_list: String = tables
+        .iter()
+        .map(|t| match t.split_once('.') {
+            Some((schema, name)) => {
+                format!("{}.{}", quote_identifier(schema), quote_identifier(name))
+            }
+            None => quote_identifier(t),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let query = format!(
+        "ALTER PUBLICATION {} DROP TABLE {}",
+        quote_identifier(publication_name),
+        table_list
+    );
+
+    client.execute(&query, &[]).await.map_err(|e| {
+        PgError::ReplicationError(format!(
+            "Failed to remove tables from publication '{}': {}",
             publication_name, e
         ))
     })?;

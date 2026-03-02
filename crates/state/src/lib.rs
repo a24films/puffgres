@@ -40,6 +40,9 @@ impl StateDb {
             .execute(&mut conn)
             .ok();
 
+        conn.run_pending_migrations(MIGRATIONS)
+            .map_err(|e| StateError::Migration(e.to_string()))?;
+
         Ok(Self {
             conn,
             path: path.to_path_buf(),
@@ -48,13 +51,6 @@ impl StateDb {
 
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    pub fn initialize(&mut self) -> Result<(), StateError> {
-        self.conn
-            .run_pending_migrations(MIGRATIONS)
-            .map_err(|e| StateError::Migration(e.to_string()))?;
-        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), StateError> {
@@ -92,12 +88,10 @@ mod tests {
     }
 
     #[test]
-    fn initialize_creates_all_tables() {
+    fn open_creates_all_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         let mut db = StateDb::open(&path).unwrap();
-
-        db.initialize().unwrap();
 
         // Verify each table exists by querying it via the ORM.
         assert_eq!(
@@ -135,7 +129,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         let mut db = StateDb::open(&path).unwrap();
-        db.initialize().unwrap();
 
         let config = ConfigRecord {
             name: "film".to_string(),
@@ -144,6 +137,7 @@ mod tests {
             content_hash: "abc".to_string(),
             transform_hash: None,
             applied_at: chrono::Utc::now(),
+            tombstone_applied_at: None,
         };
         db.insert_config(&config).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 1);
@@ -157,7 +151,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         let mut db = StateDb::open(&path).unwrap();
-        db.initialize().unwrap();
 
         db.reset().unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 0);
@@ -168,7 +161,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         let mut db = StateDb::open(&path).unwrap();
-        db.initialize().unwrap();
 
         let config = ConfigRecord {
             name: "film".to_string(),
@@ -177,6 +169,7 @@ mod tests {
             content_hash: "abc".to_string(),
             transform_hash: None,
             applied_at: chrono::Utc::now(),
+            tombstone_applied_at: None,
         };
         db.insert_config(&config).unwrap();
 
@@ -218,13 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn initialize_is_idempotent() {
+    fn open_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let mut db = StateDb::open(&path).unwrap();
 
-        db.initialize().unwrap();
-        db.initialize().unwrap();
-        db.initialize().unwrap();
+        StateDb::open(&path).unwrap();
+        StateDb::open(&path).unwrap();
+        StateDb::open(&path).unwrap();
     }
 }

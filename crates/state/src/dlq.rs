@@ -315,8 +315,7 @@ mod tests {
     fn setup_dlq_db() -> (tempfile::TempDir, StateDb) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let mut db = StateDb::open(&path).unwrap();
-        db.initialize().unwrap();
+        let db = StateDb::open(&path).unwrap();
         (dir, db)
     }
 
@@ -327,6 +326,7 @@ mod tests {
             content_hash: "abc123".to_string(),
             transform_hash: None,
             applied_at: Utc::now(),
+            tombstone_applied_at: None,
         }
     }
 

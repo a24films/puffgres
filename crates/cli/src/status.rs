@@ -6,7 +6,7 @@ use crate::paths::ProjectPaths;
 
 pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
     let mut db = StateDb::open(&paths.state_db)?;
-    let configs = db.list_configs()?;
+    let configs = db.list_active_configs()?;
 
     if configs.is_empty() {
         println!("No configs applied yet. Run `puffgres apply` to apply configs.");
@@ -61,6 +61,7 @@ mod tests {
             content_hash: "abc123".to_string(),
             transform_hash: None,
             applied_at: Utc::now(),
+            tombstone_applied_at: None,
         }
     }
 
@@ -117,6 +118,19 @@ mod tests {
         db.save_streaming_checkpoint(&sample_checkpoint("genre", 0x0000_0002_ABCD_EF01, 1200))
             .unwrap();
 
+        run(&paths).unwrap();
+    }
+
+    #[test]
+    fn tombstoned_configs_hidden() {
+        let (_dir, paths) = setup_project();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
+
+        db.insert_config(&sample_config("film")).unwrap();
+        db.insert_config(&sample_config("actor")).unwrap();
+        db.tombstone_config("actor").unwrap();
+
+        // Should succeed, only showing "film"
         run(&paths).unwrap();
     }
 }

@@ -12,6 +12,7 @@ pub struct ConfigRecord {
     pub content_hash: String,
     pub transform_hash: Option<String>,
     pub applied_at: DateTime<Utc>,
+    pub tombstone_applied_at: Option<DateTime<Utc>>,
 }
 
 impl ConfigRecord {
@@ -20,12 +21,25 @@ impl ConfigRecord {
             .map(|dt| dt.with_timezone(&Utc))
             .map_err(|e| StateError::InvalidState(format!("invalid applied_at: {e}")))?;
 
+        let tombstone_applied_at = row
+            .tombstone_applied_at
+            .as_deref()
+            .map(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| {
+                        StateError::InvalidState(format!("invalid tombstone_applied_at: {e}"))
+                    })
+            })
+            .transpose()?;
+
         Ok(Self {
             name: row.name.clone(),
             namespace: row.namespace.clone(),
             content_hash: row.content_hash.clone(),
             transform_hash: row.transform_hash.clone(),
             applied_at,
+            tombstone_applied_at,
         })
     }
 }
@@ -39,6 +53,7 @@ impl StateDb {
             content_hash: &config.content_hash,
             transform_hash: config.transform_hash.as_deref(),
             applied_at: &applied_at_str,
+            tombstone_applied_at: None,
         };
 
         diesel::insert_into(configs::table)
@@ -67,6 +82,49 @@ impl StateDb {
 
         rows.iter().map(ConfigRecord::from_row).collect()
     }
+
+    pub fn tombstone_config(&mut self, name: &str) -> Result<(), StateError> {
+        let now = Utc::now().to_rfc3339();
+        let updated = diesel::update(configs::table.filter(configs::name.eq(name)))
+            .set(configs::tombstone_applied_at.eq(&now))
+            .execute(&mut self.conn)?;
+
+        if updated == 0 {
+            return Err(StateError::InvalidState(format!(
+                "config '{name}' not found"
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn is_tombstoned(&mut self, name: &str) -> Result<bool, StateError> {
+        let row = configs::table
+            .filter(configs::name.eq(name))
+            .filter(configs::tombstone_applied_at.is_not_null())
+            .first::<ConfigRow>(&mut self.conn)
+            .optional()?;
+
+        Ok(row.is_some())
+    }
+
+    pub fn list_active_configs(&mut self) -> Result<Vec<ConfigRecord>, StateError> {
+        let rows = configs::table
+            .filter(configs::tombstone_applied_at.is_null())
+            .order(configs::name.asc())
+            .load::<ConfigRow>(&mut self.conn)?;
+
+        rows.iter().map(ConfigRecord::from_row).collect()
+    }
+
+    pub fn list_tombstoned_configs(&mut self) -> Result<Vec<ConfigRecord>, StateError> {
+        let rows = configs::table
+            .filter(configs::tombstone_applied_at.is_not_null())
+            .order(configs::name.asc())
+            .load::<ConfigRow>(&mut self.conn)?;
+
+        rows.iter().map(ConfigRecord::from_row).collect()
+    }
 }
 
 #[cfg(test)]
@@ -76,8 +134,7 @@ mod tests {
     fn setup_configs_db() -> (tempfile::TempDir, StateDb) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let mut db = StateDb::open(&path).unwrap();
-        db.initialize().unwrap();
+        let db = StateDb::open(&path).unwrap();
         (dir, db)
     }
 
@@ -88,6 +145,7 @@ mod tests {
             content_hash: "abc123".to_string(),
             transform_hash: None,
             applied_at: Utc::now(),
+            tombstone_applied_at: None,
         }
     }
 
@@ -103,6 +161,7 @@ mod tests {
         assert_eq!(retrieved.namespace, "film");
         assert_eq!(retrieved.content_hash, "abc123");
         assert!(retrieved.transform_hash.is_none());
+        assert!(retrieved.tombstone_applied_at.is_none());
     }
 
     #[test]
@@ -158,5 +217,66 @@ mod tests {
 
         let retrieved = db.get_config("film").unwrap().unwrap();
         assert_eq!(retrieved.transform_hash, Some("transform_abc".to_string()));
+    }
+
+    #[test]
+    fn tombstone_config_sets_timestamp() {
+        let (_dir, mut db) = setup_configs_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        db.tombstone_config("film").unwrap();
+
+        let config = db.get_config("film").unwrap().unwrap();
+        assert!(config.tombstone_applied_at.is_some());
+    }
+
+    #[test]
+    fn tombstone_nonexistent_errors() {
+        let (_dir, mut db) = setup_configs_db();
+        let result = db.tombstone_config("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_tombstoned_returns_false_for_active() {
+        let (_dir, mut db) = setup_configs_db();
+        db.insert_config(&sample_config("film")).unwrap();
+        assert!(!db.is_tombstoned("film").unwrap());
+    }
+
+    #[test]
+    fn is_tombstoned_returns_true_after_tombstone() {
+        let (_dir, mut db) = setup_configs_db();
+        db.insert_config(&sample_config("film")).unwrap();
+        db.tombstone_config("film").unwrap();
+        assert!(db.is_tombstoned("film").unwrap());
+    }
+
+    #[test]
+    fn list_active_excludes_tombstoned() {
+        let (_dir, mut db) = setup_configs_db();
+        db.insert_config(&sample_config("alpha")).unwrap();
+        db.insert_config(&sample_config("beta")).unwrap();
+        db.insert_config(&sample_config("gamma")).unwrap();
+
+        db.tombstone_config("beta").unwrap();
+
+        let active = db.list_active_configs().unwrap();
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].name, "alpha");
+        assert_eq!(active[1].name, "gamma");
+    }
+
+    #[test]
+    fn list_tombstoned_returns_only_tombstoned() {
+        let (_dir, mut db) = setup_configs_db();
+        db.insert_config(&sample_config("alpha")).unwrap();
+        db.insert_config(&sample_config("beta")).unwrap();
+
+        db.tombstone_config("alpha").unwrap();
+
+        let tombstoned = db.list_tombstoned_configs().unwrap();
+        assert_eq!(tombstoned.len(), 1);
+        assert_eq!(tombstoned[0].name, "alpha");
     }
 }
