@@ -11,6 +11,7 @@ pub mod project_config;
 pub mod reset;
 pub mod run;
 pub mod status;
+pub mod tombstone;
 pub mod validate;
 
 #[cfg(any(test, feature = "test-utils"))]

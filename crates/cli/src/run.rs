@@ -95,6 +95,7 @@ mod tests {
             content_hash: cfg.content_hash().unwrap(),
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
+            tombstone_applied_at: None,
         })
         .unwrap();
 
@@ -124,6 +125,7 @@ mod tests {
             content_hash: cfg.content_hash().unwrap(),
             transform_hash: Some("stale_hash".to_string()),
             applied_at: Utc::now(),
+            tombstone_applied_at: None,
         })
         .unwrap();
 
@@ -149,7 +151,12 @@ async fn run_async(
 
     let applied_configs: Vec<_> = all_configs
         .into_iter()
-        .filter(|(_, config)| db.get_config(&config.name).ok().flatten().is_some())
+        .filter(|(_, config)| {
+            db.get_config(&config.name)
+                .ok()
+                .flatten()
+                .is_some_and(|r| r.tombstone_applied_at.is_none())
+        })
         .collect();
 
     if applied_configs.is_empty() {
