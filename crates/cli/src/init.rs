@@ -70,6 +70,9 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
         println!("  {name:<32} ({req_label}, {status})");
     }
 
+    println!();
+    println!("Next, run `puffgres setup` to create the state database.");
+
     Ok(())
 }
 

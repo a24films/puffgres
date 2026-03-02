@@ -127,6 +127,31 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
 
         let validated = validate_live(env_config, &live_configs).await?;
 
+        // Collect tables that need REPLICA IDENTITY FULL before persisting
+        // to the state DB. This ensures that if the ALTER fails, configs are
+        // not marked as applied and will be retried on the next run.
+        let mut applied_tables: Vec<String> = Vec::new();
+        for (i, (_path, config, _, _)) in new_configs.iter().enumerate() {
+            if !validated.contains(&i) {
+                continue;
+            }
+            applied_tables.push(format!("{}.{}", config.source.schema, config.source.table));
+        }
+
+        if !applied_tables.is_empty() {
+            applied_tables.sort();
+            applied_tables.dedup();
+
+            let pg_client = pg::connect::connect(&env_config.database_url)
+                .await
+                .map_err(|e| CliError::Apply(format!("failed to connect to postgres: {e}")))?;
+
+            pg::publication::ensure_replica_identity_full(&pg_client, &applied_tables)
+                .await
+                .map_err(|e| CliError::Apply(format!("failed to set replica identity: {e}")))?;
+        }
+
+        // Persist configs only after replica identity is set successfully.
         for (i, (_path, config, content_hash, transform_hash)) in new_configs.iter().enumerate() {
             if !validated.contains(&i) {
                 continue;

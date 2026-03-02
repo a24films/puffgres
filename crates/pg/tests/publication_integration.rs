@@ -1,6 +1,7 @@
 use pg::connect::connect;
 use pg::publication::{
-    add_tables_to_publication, drop_publication, ensure_publication, get_publication_tables,
+    add_tables_to_publication, drop_publication, ensure_publication, ensure_replica_identity_full,
+    get_publication_tables,
 };
 use pg::test_utils::setup_postgres_logical;
 
@@ -213,4 +214,75 @@ async fn ensure_publication_unqualified_table_defaults_to_public() {
 
     let pub_tables = get_publication_tables(&client, "unqual_pub").await.unwrap();
     assert_eq!(pub_tables, vec!["public.users".to_string()]);
+}
+
+#[tokio::test]
+async fn ensure_replica_identity_full_sets_identity_on_tables() {
+    let ctx = setup_postgres_logical().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    create_test_tables(&client).await;
+
+    // Default replica identity is 'd' (DEFAULT — only PK columns in old tuple)
+    let row = client
+        .query_one(
+            "SELECT relreplident FROM pg_class WHERE relname = 'users'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let before: i8 = row.get(0);
+    assert_eq!(
+        before, b'd' as i8,
+        "expected default replica identity before calling ensure_replica_identity_full"
+    );
+
+    // Set REPLICA IDENTITY FULL on both tables
+    let tables = vec!["public.users".to_string(), "public.orders".to_string()];
+    ensure_replica_identity_full(&client, &tables)
+        .await
+        .unwrap();
+
+    // Verify both tables now have replica identity 'f' (FULL)
+    for table_name in &["users", "orders"] {
+        let row = client
+            .query_one(
+                "SELECT relreplident FROM pg_class WHERE relname = $1",
+                &[table_name],
+            )
+            .await
+            .unwrap();
+        let ident: i8 = row.get(0);
+        assert_eq!(
+            ident, b'f' as i8,
+            "expected FULL replica identity on '{table_name}' after ensure_replica_identity_full"
+        );
+    }
+
+    // Idempotent — calling again should not error
+    ensure_replica_identity_full(&client, &tables)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ensure_replica_identity_full_unqualified_table() {
+    let ctx = setup_postgres_logical().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    create_test_tables(&client).await;
+
+    // Unqualified name should default to public schema
+    let tables = vec!["users".to_string()];
+    ensure_replica_identity_full(&client, &tables)
+        .await
+        .unwrap();
+
+    let row = client
+        .query_one(
+            "SELECT relreplident FROM pg_class WHERE relname = 'users'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let ident: i8 = row.get(0);
+    assert_eq!(ident, b'f' as i8);
 }
