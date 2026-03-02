@@ -9,7 +9,7 @@ use state::{ConfigRecord, StateDb};
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
-use crate::validate::{validate_live, validate_static};
+use crate::validate::preflight_check;
 
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
@@ -28,25 +28,20 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         return Ok(());
     }
 
-    // Static validation (no DB connection needed)
-    let static_passed = validate_static(&configs).map_err(|errors| {
-        for err in &errors {
-            println!("Error: {}", err);
-        }
-        CliError::Apply(format!("{} config(s) had errors", errors.len()))
-    })?;
-
     // Immutability check — filter to only new configs
     let mut errors: Vec<String> = Vec::new();
     let mut skipped = 0;
 
-    // First pass: basic validation, immutability check, and transform hashing
     let mut new_configs: Vec<(PathBuf, Config, String, String)> = Vec::new();
 
-    for &i in &static_passed {
-        let (config_path, config) = &configs[i];
-
-        let content_hash = config.content_hash()?;
+    for (config_path, config) in &configs {
+        let content_hash = match config.content_hash() {
+            Ok(h) => h,
+            Err(e) => {
+                errors.push(format!("{}: {e}", config_path.display()));
+                continue;
+            }
+        };
         if let Some(existing) = db.get_config(&config.name)? {
             if existing.content_hash == content_hash {
                 // Also verify transform file hasn't been modified
@@ -85,7 +80,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             }
         }
 
-        // 3. Read transform file and compute hash
+        // New config: read transform file and compute hash
         let transform_path = config_path.parent().unwrap().join("transform.ts");
         let transform_content = match fs::read(&transform_path) {
             Ok(bytes) => bytes,
@@ -117,46 +112,41 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         )));
     }
 
-    // Live validation against Postgres and apply
+    // Pre-flight validation on new configs (static + transforms + namespaces + Postgres)
     let mut applied = 0;
     if !new_configs.is_empty() {
-        let live_configs: Vec<(PathBuf, Config)> = new_configs
+        let new_config_refs: Vec<(PathBuf, Config)> = new_configs
             .iter()
             .map(|(p, c, _, _)| (p.clone(), c.clone()))
             .collect();
 
-        let validated = validate_live(env_config, &live_configs).await?;
+        preflight_check(
+            &env_config.database_url,
+            &env_config.state_db_path,
+            &new_config_refs,
+            None,
+        )
+        .await
+        .map_err(CliError::Apply)?;
 
-        // Collect tables that need REPLICA IDENTITY FULL before persisting
-        // to the state DB. This ensures that if the ALTER fails, configs are
-        // not marked as applied and will be retried on the next run.
-        let mut applied_tables: Vec<String> = Vec::new();
-        for (i, (_path, config, _, _)) in new_configs.iter().enumerate() {
-            if !validated.contains(&i) {
-                continue;
-            }
-            applied_tables.push(format!("{}.{}", config.source.schema, config.source.table));
-        }
+        // Set REPLICA IDENTITY FULL before persisting to state DB.
+        let mut applied_tables: Vec<String> = new_configs
+            .iter()
+            .map(|(_, config, _, _)| format!("{}.{}", config.source.schema, config.source.table))
+            .collect();
+        applied_tables.sort();
+        applied_tables.dedup();
 
-        if !applied_tables.is_empty() {
-            applied_tables.sort();
-            applied_tables.dedup();
+        let pg_client = pg::connect::connect(&env_config.database_url)
+            .await
+            .map_err(|e| CliError::Apply(format!("failed to connect to postgres: {e}")))?;
 
-            let pg_client = pg::connect::connect(&env_config.database_url)
-                .await
-                .map_err(|e| CliError::Apply(format!("failed to connect to postgres: {e}")))?;
-
-            pg::publication::ensure_replica_identity_full(&pg_client, &applied_tables)
-                .await
-                .map_err(|e| CliError::Apply(format!("failed to set replica identity: {e}")))?;
-        }
+        pg::publication::ensure_replica_identity_full(&pg_client, &applied_tables)
+            .await
+            .map_err(|e| CliError::Apply(format!("failed to set replica identity: {e}")))?;
 
         // Persist configs only after replica identity is set successfully.
-        for (i, (_path, config, content_hash, transform_hash)) in new_configs.iter().enumerate() {
-            if !validated.contains(&i) {
-                continue;
-            }
-
+        for (_path, config, content_hash, transform_hash) in &new_configs {
             let record = ConfigRecord {
                 name: config.name.clone(),
 
@@ -222,8 +212,7 @@ mod tests {
 
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
-        // Create a config with an invalid name (starts with number) — but we need it to parse
-        // So instead, create a config without a transform
+        // Create a config without a transform
         write_config(&paths, "bad", "public", "bad", "id", "uint");
 
         run(&paths, &dummy_env(state_db_path.clone())).unwrap_err();

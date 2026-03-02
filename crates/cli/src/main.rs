@@ -21,6 +21,8 @@ enum Command {
         /// Name for the config (e.g. "user", "film")
         name: String,
     },
+    /// Validate all configs against the live database without applying
+    Check,
     /// Run transforms on sample data without writing state
     DryRun {
         /// Optional config name to dry-run
@@ -108,7 +110,39 @@ fn run() -> (
         _ => {}
     }
 
-    // Tier 4: full ProjectConfig + EnvConfig (DATABASE_URL, TURBOPUFFER_API_KEY, etc.)
+    // Tier 4: Check only needs DATABASE_URL + state_db_path (no TURBOPUFFER_API_KEY)
+    if let Command::Check = cli.command {
+        let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
+            Ok(c) => c,
+            Err(e) => return (Err(e), None),
+        };
+        let env_paths = project_config.resolve_env_paths(&paths.root);
+        let file_vars = match puffgres_cli::env::load_env_files(&env_paths) {
+            Ok(v) => v,
+            Err(e) => return (Err(e), None),
+        };
+        let database_url = match puffgres_cli::env::resolve_env_var("DATABASE_URL", &file_vars) {
+            Some(v) => v,
+            None => {
+                return (
+                    Err(puffgres_cli::CliError::MissingEnvVar("DATABASE_URL".into())),
+                    None,
+                );
+            }
+        };
+        let state_db_path = match puffgres_cli::env::resolve_state_db_path(&env_paths, &paths.root)
+        {
+            Ok(p) => p,
+            Err(e) => return (Err(e), None),
+        };
+
+        return (
+            puffgres_cli::check::run(&paths, &database_url, &state_db_path),
+            None,
+        );
+    }
+
+    // Tier 5: full ProjectConfig + EnvConfig (DATABASE_URL, TURBOPUFFER_API_KEY, etc.)
     let project_config = match ProjectConfig::load(&paths.project_config) {
         Ok(c) => c,
         Err(e) => return (Err(e), None),
@@ -134,7 +168,8 @@ fn run() -> (
         | Command::New { .. }
         | Command::Setup
         | Command::Reset
-        | Command::Tombstone { .. } => unreachable!(),
+        | Command::Tombstone { .. }
+        | Command::Check => unreachable!(),
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
         }

@@ -30,6 +30,9 @@ pub enum CliError {
     Apply(String),
 
     #[error("{0}")]
+    Check(String),
+
+    #[error("{0}")]
     DryRun(String),
 
     #[error("{0}")]

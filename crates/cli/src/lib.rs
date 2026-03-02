@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod check;
 pub mod dry_run;
 pub mod dry_transform;
 pub mod env;
