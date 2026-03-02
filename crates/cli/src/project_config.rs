@@ -43,17 +43,17 @@ impl ProjectConfig {
 
     fn validate(&self) -> Result<(), CliError> {
         if self.batch_size == Some(0) {
-            return Err(CliError::Run(
+            return Err(CliError::RunValidation(
                 "batch_size must be at least 1 in puffgres.toml".to_string(),
             ));
         }
         if self.dlq_replay_interval == Some(0) {
-            return Err(CliError::Run(
+            return Err(CliError::RunValidation(
                 "dlq_replay_interval must be at least 1 in puffgres.toml".to_string(),
             ));
         }
         if self.dlq_replay_batch_size == Some(0) {
-            return Err(CliError::Run(
+            return Err(CliError::RunValidation(
                 "dlq_replay_batch_size must be at least 1 in puffgres.toml".to_string(),
             ));
         }

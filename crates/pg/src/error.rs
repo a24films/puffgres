@@ -8,6 +8,9 @@ pub enum PgError {
     #[error("Query error: {0}")]
     QueryError(String),
 
+    #[error("Table {schema}.{table} does not exist")]
+    TableNotFound { schema: String, table: String },
+
     #[error("Replication error: {0}")]
     ReplicationError(String),
 

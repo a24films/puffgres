@@ -36,7 +36,7 @@ pub enum CliError {
     Run(String),
 
     #[error("{0}")]
-    RunConfig(String),
+    RunValidation(String),
 
     #[error("{0}")]
     Reset(String),
@@ -61,10 +61,17 @@ pub enum CliError {
 }
 
 impl CliError {
-    /// Returns `true` for transient/runtime errors worth retrying (network
-    /// failures, replication stream drops, etc.) and `false` for deterministic
-    /// configuration errors that require operator action.
+    /// Whether this error is potentially transient and worth retrying.
+    ///
+    /// `Run` errors (connection drops, replication failures) and transient
+    /// `State` errors (SQLite busy/locked) are retryable.  Everything else —
+    /// config validation, missing env vars, state-db corruption — requires
+    /// operator intervention.
     pub fn is_retryable(&self) -> bool {
-        !matches!(self, CliError::RunConfig(_) | CliError::State(_))
+        match self {
+            CliError::Run(_) => true,
+            CliError::State(e) => e.is_retryable(),
+            _ => false,
+        }
     }
 }
