@@ -40,9 +40,16 @@ impl TurbopufferClient {
                     vector,
                     distance_metric,
                 } => {
-                    if batch_distance_metric.is_none() {
-                        batch_distance_metric =
-                            distance_metric.as_deref().and_then(parse_distance_metric);
+                    let parsed = distance_metric.as_deref().and_then(parse_distance_metric);
+                    match (&batch_distance_metric, &parsed) {
+                        (None, _) => batch_distance_metric = parsed,
+                        (Some(existing), Some(new)) if existing != new => {
+                            return Err(PuffError::Client(format!(
+                                "mixed distance metrics in batch: {:?} and {:?}",
+                                existing, new,
+                            )));
+                        }
+                        _ => {}
                     }
                     let mut row = match document {
                         Value::Object(map) => map
@@ -180,6 +187,32 @@ mod tests {
     fn json_f32_nan() {
         let val = json_f32(f32::NAN);
         assert_eq!(val, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn send_batch_rejects_mixed_distance_metrics() {
+        let client = TurbopufferClient::new("test-key".to_string(), None).unwrap();
+        let actions = vec![
+            Action::Upsert {
+                id: DocumentId::Uint(1),
+                document: json!({"title": "doc a"}),
+                vector: Some(vec![0.1, 0.2, 0.3]),
+                distance_metric: Some("cosine_distance".to_string()),
+            },
+            Action::Upsert {
+                id: DocumentId::Uint(2),
+                document: json!({"title": "doc b"}),
+                vector: Some(vec![0.4, 0.5, 0.6]),
+                distance_metric: Some("euclidean_squared".to_string()),
+            },
+        ];
+        let result = client.send_batch("ns", &actions).await;
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mixed distance metrics"),
+            "expected mixed distance metrics error, got: {msg}",
+        );
     }
 
     #[tokio::test]
