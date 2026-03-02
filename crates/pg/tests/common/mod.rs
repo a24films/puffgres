@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 
