@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use puffgres_cli::dry_run::run_async;
@@ -11,15 +11,16 @@ use testcontainers_modules::postgres::Postgres;
 
 static TEST_TIMESTAMP: AtomicU64 = AtomicU64::new(2000000000000);
 
-fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
+fn setup_project() -> (tempfile::TempDir, ProjectPaths, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
 
     fs::create_dir_all(&paths.configs).unwrap();
 
-    StateDb::open(&paths.state_db).unwrap();
+    let state_db_path = dir.path().join("state.db");
+    StateDb::open(&state_db_path).unwrap();
 
-    (dir, paths)
+    (dir, paths, state_db_path)
 }
 
 fn write_config(
@@ -89,7 +90,7 @@ process.stdout.write(JSON.stringify(output));
     fs::write(config_dir.join("transform.ts"), script).unwrap();
 }
 
-async fn start_postgres() -> (ContainerAsync<Postgres>, EnvConfig) {
+async fn start_postgres(state_db_path: PathBuf) -> (ContainerAsync<Postgres>, EnvConfig) {
     let container = Postgres::default()
         .with_tag("16-alpine")
         .start()
@@ -111,6 +112,7 @@ async fn start_postgres() -> (ContainerAsync<Postgres>, EnvConfig) {
         turbopuffer_namespace_prefix: None,
         otel_endpoint: None,
         otel_headers: None,
+        state_db_path,
     };
 
     (container, env_config)
@@ -118,7 +120,8 @@ async fn start_postgres() -> (ContainerAsync<Postgres>, EnvConfig) {
 
 #[tokio::test]
 async fn test_rejects_vector_without_distance_metric() {
-    let (_container, env_config) = start_postgres().await;
+    let (_dir, paths, state_db_path) = setup_project();
+    let (_container, env_config) = start_postgres(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -135,8 +138,6 @@ async fn test_rejects_vector_without_distance_metric() {
         .await
         .unwrap();
     drop(pg_client);
-
-    let (_dir, paths) = setup_project();
     let vec_dir = write_config(&paths, "vec", "public", "dry_vec_test", "id", "uint");
     write_vector_transform(&vec_dir, false);
 
@@ -149,7 +150,8 @@ async fn test_rejects_vector_without_distance_metric() {
 
 #[tokio::test]
 async fn test_accepts_valid_transform() {
-    let (_container, env_config) = start_postgres().await;
+    let (_dir, paths, state_db_path) = setup_project();
+    let (_container, env_config) = start_postgres(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -166,8 +168,6 @@ async fn test_accepts_valid_transform() {
         .await
         .unwrap();
     drop(pg_client);
-
-    let (_dir, paths) = setup_project();
     let valid_dir = write_config(&paths, "valid", "public", "dry_valid_test", "id", "uint");
     write_transform(&valid_dir, PASSTHROUGH_TRANSFORM);
 
@@ -180,7 +180,8 @@ async fn test_accepts_valid_transform() {
 
 #[tokio::test]
 async fn test_accepts_vector_with_distance_metric() {
-    let (_container, env_config) = start_postgres().await;
+    let (_dir, paths, state_db_path) = setup_project();
+    let (_container, env_config) = start_postgres(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -197,8 +198,6 @@ async fn test_accepts_vector_with_distance_metric() {
         .await
         .unwrap();
     drop(pg_client);
-
-    let (_dir, paths) = setup_project();
     let dist_dir = write_config(&paths, "dist", "public", "dry_dist_test", "id", "uint");
     write_vector_transform(&dist_dir, true);
 
@@ -211,7 +210,8 @@ async fn test_accepts_vector_with_distance_metric() {
 
 #[tokio::test]
 async fn test_skips_empty_table_gracefully() {
-    let (_container, env_config) = start_postgres().await;
+    let (_dir, paths, state_db_path) = setup_project();
+    let (_container, env_config) = start_postgres(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -224,8 +224,6 @@ async fn test_skips_empty_table_gracefully() {
         .await
         .unwrap();
     drop(pg_client);
-
-    let (_dir, paths) = setup_project();
     let empty_dir = write_config(&paths, "empty", "public", "dry_empty_test", "id", "uint");
     write_transform(&empty_dir, PASSTHROUGH_TRANSFORM);
 
@@ -238,7 +236,8 @@ async fn test_skips_empty_table_gracefully() {
 
 #[tokio::test]
 async fn test_filters_by_config_name() {
-    let (_container, env_config) = start_postgres().await;
+    let (_dir, paths, state_db_path) = setup_project();
+    let (_container, env_config) = start_postgres(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -255,8 +254,6 @@ async fn test_filters_by_config_name() {
         .await
         .unwrap();
     drop(pg_client);
-
-    let (_dir, paths) = setup_project();
     let good_dir = write_config(&paths, "good", "public", "dry_filter_test", "id", "uint");
     write_transform(&good_dir, PASSTHROUGH_TRANSFORM);
 

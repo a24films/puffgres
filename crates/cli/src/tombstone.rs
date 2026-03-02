@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use chrono::Utc;
 use config::ConfigLoader;
@@ -7,8 +8,13 @@ use state::StateDb;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
 
-pub fn run(paths: &ProjectPaths, name: &str) -> Result<(), CliError> {
-    let mut db = StateDb::open(&paths.state_db)?;
+pub fn run(paths: &ProjectPaths, state_db_path: &Path, name: &str) -> Result<(), CliError> {
+    if !state_db_path.exists() {
+        return Err(CliError::NotInitialized(
+            "state.db — run `puffgres setup` first".to_string(),
+        ));
+    }
+    let mut db = StateDb::open(state_db_path)?;
 
     let config = db.get_config(name)?.ok_or_else(|| {
         CliError::Tombstone(format!("config '{name}' not found in state database"))
@@ -65,11 +71,11 @@ mod tests {
 
     #[test]
     fn tombstone_sets_timestamp() {
-        let (_dir, paths) = setup_project();
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let (_dir, paths, state_db_path) = setup_project();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&sample_config("film")).unwrap();
 
-        run(&paths, "film").unwrap();
+        run(&paths, &state_db_path, "film").unwrap();
 
         let config = db.get_config("film").unwrap().unwrap();
         assert!(config.tombstone_applied_at.is_some());
@@ -77,32 +83,32 @@ mod tests {
 
     #[test]
     fn tombstone_nonexistent_errors() {
-        let (_dir, paths) = setup_project();
-        let err = run(&paths, "nonexistent").unwrap_err();
+        let (_dir, paths, state_db_path) = setup_project();
+        let err = run(&paths, &state_db_path, "nonexistent").unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 
     #[test]
     fn tombstone_already_tombstoned_is_idempotent() {
-        let (_dir, paths) = setup_project();
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let (_dir, paths, state_db_path) = setup_project();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&sample_config("film")).unwrap();
 
-        run(&paths, "film").unwrap();
+        run(&paths, &state_db_path, "film").unwrap();
         // Second call should succeed (skip with message)
-        run(&paths, "film").unwrap();
+        run(&paths, &state_db_path, "film").unwrap();
     }
 
     #[test]
     fn tombstone_writes_marker_file() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let config_dir = write_config(&paths, "film", "public", "films", "id", "uint");
         write_transform(&config_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
 
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -113,7 +119,7 @@ mod tests {
         })
         .unwrap();
 
-        run(&paths, "film").unwrap();
+        run(&paths, &state_db_path, "film").unwrap();
 
         let tombstone_path = config_dir.join("tombstone.toml");
         assert!(tombstone_path.exists());

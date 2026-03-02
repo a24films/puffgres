@@ -1,13 +1,14 @@
+use std::path::Path;
+
 use state::StateDb;
 
 use crate::error::CliError;
-use crate::paths::ProjectPaths;
 
-pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
-    if !paths.state_db.exists() {
+pub fn run(state_db_path: &Path) -> Result<(), CliError> {
+    if !state_db_path.exists() {
         return Err(CliError::NotInitialized("state.db".to_string()));
     }
-    let mut db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(state_db_path)?;
     db.reset()?;
     println!("Reset: cleared all configs and checkpoints");
     Ok(())
@@ -22,9 +23,9 @@ mod tests {
 
     #[test]
     fn reset_clears_configs() {
-        let (_dir, paths) = setup_project();
+        let (_dir, _paths, state_db_path) = setup_project();
 
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: "user".to_string(),
 
@@ -38,24 +39,24 @@ mod tests {
         assert_eq!(db.list_configs().unwrap().len(), 1);
         drop(db);
 
-        run(&paths).unwrap();
+        run(&state_db_path).unwrap();
 
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 0);
     }
 
     #[test]
     fn reset_on_empty_db() {
-        let (_dir, paths) = setup_project();
-        run(&paths).unwrap();
+        let (_dir, _paths, state_db_path) = setup_project();
+        run(&state_db_path).unwrap();
     }
 
     #[test]
     fn reset_rejects_uninitialized_project() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
+        let missing_db = dir.path().join("nonexistent.db");
 
-        let err = run(&paths).unwrap_err();
+        let err = run(&missing_db).unwrap_err();
         assert!(
             err.to_string().contains("not found"),
             "expected NotInitialized error, got: {err}"

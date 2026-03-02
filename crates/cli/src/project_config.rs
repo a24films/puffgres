@@ -24,12 +24,20 @@ pub struct ProjectConfig {
 
 impl ProjectConfig {
     pub fn load(path: &Path) -> Result<Self, CliError> {
+        let config = Self::load_unvalidated(path)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Load config without running runtime validation. Use this for commands
+    /// (reset, tombstone, status) that only need `environment_files` and should
+    /// work even when runtime fields like `batch_size` are invalid.
+    pub fn load_unvalidated(path: &Path) -> Result<Self, CliError> {
         let contents = fs::read_to_string(path)?;
         let config: Self = toml::from_str(&contents).map_err(|e| CliError::ProjectConfig {
             path: path.display().to_string(),
             source: e,
         })?;
-        config.validate()?;
         Ok(config)
     }
 

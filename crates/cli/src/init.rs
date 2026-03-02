@@ -1,7 +1,5 @@
 use std::fs;
 
-use state::StateDb;
-
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
 use crate::project_config::ProjectConfig;
@@ -34,8 +32,6 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     ensure_vitest_config(&paths)?;
     ensure_utils(&paths)?;
 
-    StateDb::open(&paths.state_db)?;
-
     println!("Initialized puffgres project at {}", paths.root.display());
     println!();
 
@@ -60,7 +56,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
         ("TURBOPUFFER_API_KEY", true),
         ("TURBOPUFFER_REGION", false),
         ("TURBOPUFFER_NAMESPACE_PREFIX", false),
-        ("PUFFGRES_STATE_PATH", false),
+        ("PUFFGRES_STATE_DB", false),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", false),
     ];
 
@@ -77,42 +73,39 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn ensure_gitignore(cwd: &std::path::Path, paths: &ProjectPaths) -> Result<(), CliError> {
-    // Place .gitignore in the parent directory for fresh-init (root != cwd),
-    // or in the project root for Docker / re-init mode (root == cwd).
-    let gitignore_path = if paths.root != cwd {
-        cwd.join(".gitignore")
+fn ensure_gitignore(_cwd: &std::path::Path, paths: &ProjectPaths) -> Result<(), CliError> {
+    let gitignore_path = paths.root.join(".gitignore");
+
+    let entries = [
+        "state.db",
+        "state.db-journal",
+        "state.db-wal",
+        "state.db-shm",
+    ];
+
+    if gitignore_path.exists() {
+        let existing = fs::read_to_string(&gitignore_path)?;
+        let mut to_add = Vec::new();
+        for entry in &entries {
+            if !existing.lines().any(|l| l.trim() == *entry) {
+                to_add.push(*entry);
+            }
+        }
+        if !to_add.is_empty() {
+            let mut content = existing;
+            if !content.ends_with('\n') && !content.is_empty() {
+                content.push('\n');
+            }
+            for entry in to_add {
+                content.push_str(entry);
+                content.push('\n');
+            }
+            fs::write(&gitignore_path, content)?;
+        }
     } else {
-        paths.root.join(".gitignore")
-    };
-
-    let gitignore_dir = gitignore_path.parent().unwrap_or(cwd);
-
-    // Derive the entry from the resolved state_db path. If state_db is
-    // outside the gitignore directory (e.g. an absolute external path),
-    // there's nothing to ignore.
-    let entry = match paths.state_db.strip_prefix(gitignore_dir) {
-        Ok(relative) => relative.display().to_string(),
-        Err(_) => return Ok(()),
-    };
-
-    let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
-    if existing.lines().any(|line| line.trim() == entry) {
-        return Ok(());
+        let content: String = entries.iter().map(|e| format!("{e}\n")).collect();
+        fs::write(&gitignore_path, content)?;
     }
-
-    let needs_leading_newline = !existing.is_empty() && !existing.ends_with('\n');
-
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&gitignore_path)?;
-
-    if needs_leading_newline {
-        file.write_all(b"\n")?;
-    }
-    file.write_all(format!("{entry}\n").as_bytes())?;
 
     Ok(())
 }
@@ -133,15 +126,7 @@ fn ensure_dockerignore(paths: &ProjectPaths) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let mut content = String::new();
-
-    // Generate state DB ignore patterns from the resolved path.
-    if let Ok(relative) = paths.state_db.strip_prefix(&paths.root) {
-        let base = relative.display().to_string();
-        content.push_str(&format!("{base}\n{base}-journal\n{base}-wal\n{base}-shm\n"));
-    }
-
-    content.push_str(".env\n.env.*\nnode_modules\nDockerfile\n.dockerignore\n.git\n");
+    let content = "state.db\nstate.db-journal\nstate.db-wal\nstate.db-shm\n.env\n.env.*\nnode_modules\nDockerfile\n.dockerignore\n.git\n";
     fs::write(&paths.dockerignore, content)?;
 
     Ok(())
@@ -234,36 +219,47 @@ mod tests {
     }
 
     #[test]
-    fn creates_gitignore_in_parent_with_puffgres_state_db() {
+    fn creates_gitignore_with_state_db_entries() {
         let dir = tempfile::tempdir().unwrap();
 
         run_in(dir.path()).unwrap();
 
-        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(gitignore.lines().any(|l| l.trim() == "puffgres/state.db"));
+        let gitignore = fs::read_to_string(dir.path().join("puffgres").join(".gitignore")).unwrap();
+        assert!(gitignore.contains("state.db\n"));
+        assert!(gitignore.contains("state.db-journal"));
+        assert!(gitignore.contains("state.db-wal"));
+        assert!(gitignore.contains("state.db-shm"));
     }
 
     #[test]
-    fn appends_to_existing_parent_gitignore() {
+    fn appends_state_db_to_existing_gitignore() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(".gitignore"), "node_modules\n").unwrap();
+        let sub = dir.path().join("puffgres");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join(".gitignore"), "node_modules\n").unwrap();
 
         run_in(dir.path()).unwrap();
 
-        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        let gitignore = fs::read_to_string(sub.join(".gitignore")).unwrap();
         assert!(gitignore.contains("node_modules"));
-        assert!(gitignore.lines().any(|l| l.trim() == "puffgres/state.db"));
+        assert!(gitignore.contains("state.db\n"));
+        assert!(gitignore.contains("state.db-wal"));
     }
 
     #[test]
-    fn appends_newline_if_missing() {
+    fn does_not_duplicate_gitignore_entries() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(".gitignore"), "node_modules").unwrap();
+        let sub = dir.path().join("puffgres");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join(".gitignore"), "state.db\nstate.db-wal\n").unwrap();
 
         run_in(dir.path()).unwrap();
 
-        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(gitignore, "node_modules\npuffgres/state.db\n");
+        let gitignore = fs::read_to_string(sub.join(".gitignore")).unwrap();
+        // Should not have duplicates
+        assert_eq!(gitignore.matches("state.db\n").count(), 1);
+        assert!(gitignore.contains("state.db-journal"));
+        assert!(gitignore.contains("state.db-shm"));
     }
 
     #[test]
@@ -301,6 +297,7 @@ mod tests {
         let dockerignore =
             fs::read_to_string(dir.path().join("puffgres").join(".dockerignore")).unwrap();
         assert!(dockerignore.contains("state.db"));
+        assert!(dockerignore.contains("state.db-wal"));
         assert!(dockerignore.contains(".env"));
     }
 
@@ -318,12 +315,12 @@ mod tests {
     }
 
     #[test]
-    fn creates_state_db() {
+    fn does_not_create_state_db() {
         let dir = tempfile::tempdir().unwrap();
 
         run_in(dir.path()).unwrap();
 
-        assert!(dir.path().join("puffgres").join("state.db").exists());
+        assert!(!dir.path().join("puffgres").join("state.db").exists());
     }
 
     #[test]
@@ -372,7 +369,8 @@ mod tests {
         // Should create files directly in cwd
         assert!(dir.path().join("configs").is_dir());
         assert!(dir.path().join("transforms").is_dir());
-        assert!(dir.path().join("state.db").exists());
+        // Should NOT create state.db (handled by `puffgres setup`)
+        assert!(!dir.path().join("state.db").exists());
     }
 
     #[test]
@@ -382,8 +380,10 @@ mod tests {
         run_in(dir.path()).unwrap();
         run_in(dir.path()).unwrap();
 
-        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(gitignore.matches("puffgres/state.db").count(), 1);
+        // Should still have all directories
+        let sub = dir.path().join("puffgres");
+        assert!(sub.join("configs").is_dir());
+        assert!(sub.join("transforms").is_dir());
     }
 
     #[test]
