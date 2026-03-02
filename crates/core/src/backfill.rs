@@ -91,7 +91,18 @@ pub async fn run_backfill(
         }
     };
 
-    // 2. Build effective query config: honor top-level batch_size, ensure
+    // 2. Validate id column has a non-partial unique index
+    if let Err(e) = pg::batch::validate_id_column_uniqueness(client, &config.query_config).await {
+        return BackfillResult {
+            processed_rows: 0,
+            status: BackfillOutcome::Failed {
+                error: e.to_string(),
+                processed: 0,
+            },
+        };
+    }
+
+    // 3. Build effective query config: honor top-level batch_size, ensure
     //    columns are explicit (so every value is text-cast in the SELECT).
     let mut query_config = config.query_config.clone();
     query_config.batch_size = config.batch_size;
@@ -99,13 +110,20 @@ pub async fn run_backfill(
         query_config.columns = Some(columns);
     }
 
-    let cursor_cast = match &config.id_type {
-        IdType::String => "",
-        IdType::Uint | IdType::Int => "::int8",
-        IdType::Uuid => "::uuid",
+    let cursor_cast = match pg::batch::resolve_cursor_cast(client, &config.query_config).await {
+        Ok(cast) => cast,
+        Err(e) => {
+            return BackfillResult {
+                processed_rows: 0,
+                status: BackfillOutcome::Failed {
+                    error: e.to_string(),
+                    processed: 0,
+                },
+            };
+        }
     };
 
-    // 3. Resume from checkpoint or start fresh
+    // 4. Resume from checkpoint or start fresh
     let (mut cursor, mut processed) = match checkpointer.load_progress(&config.config_name) {
         Ok(Some((last_id, count))) => (Some(last_id), count),
         Ok(None) => (None, 0),
@@ -120,7 +138,7 @@ pub async fn run_backfill(
         }
     };
 
-    // 4. Create backoff
+    // 5. Create backoff
     let mut backoff = Backoff::new(BackoffConfig {
         max_retries: config.max_retries,
         initial_delay_ms: 100,
@@ -128,14 +146,14 @@ pub async fn run_backfill(
         ..BackoffConfig::default()
     });
 
-    // 5. Main loop
+    // 6. Main loop
     let mut batch_num: u64 = 0;
     loop {
         let batch_start = Instant::now();
         let batch_result = retry_or_fail!(
             backoff,
             processed,
-            pg::batch::fetch_batch(client, &query_config, cursor.as_deref(), cursor_cast)
+            pg::batch::fetch_batch(client, &query_config, cursor.as_deref(), &cursor_cast)
                 .await
                 .map_err(CoreError::from)
         );
@@ -217,7 +235,7 @@ pub async fn run_backfill(
         }
     }
 
-    // 6. Completed
+    // 7. Completed
     BackfillResult {
         processed_rows: processed,
         status: BackfillOutcome::Completed,

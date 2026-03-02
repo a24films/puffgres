@@ -52,6 +52,11 @@ impl ProjectConfig {
                 "dlq_replay_interval must be at least 1 in puffgres.toml".to_string(),
             ));
         }
+        if self.dlq_replay_batch_size == Some(0) {
+            return Err(CliError::Run(
+                "dlq_replay_batch_size must be at least 1 in puffgres.toml".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -225,6 +230,25 @@ dlq_permanent_max_age_hours = 48
         assert!(
             err.contains("batch_size"),
             "error should mention batch_size: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_dlq_replay_batch_size_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("puffgres.toml");
+        std::fs::write(
+            &path,
+            "environment_files = [\".env\"]\ndlq_replay_batch_size = 0\n",
+        )
+        .unwrap();
+
+        let result = ProjectConfig::load(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("dlq_replay_batch_size"),
+            "error should mention dlq_replay_batch_size: {err}"
         );
     }
 

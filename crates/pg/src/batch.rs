@@ -71,6 +71,8 @@ pub async fn validate_id_column_uniqueness(
               AND c.relname = $2
               AND a.attname = $3
               AND i.indisunique
+              AND i.indisvalid
+              AND i.indpred IS NULL
               AND array_length(i.indkey, 1) = 1
         )
     "#;
@@ -88,13 +90,71 @@ pub async fn validate_id_column_uniqueness(
     let has_unique: bool = row.get(0);
     if !has_unique {
         return Err(PgError::QueryError(format!(
-            "id column '{}' on {}.{} must have a unique index or primary key constraint; \
-             cursor-based pagination requires unique id values",
+            "id column '{}' on {}.{} must have a non-partial unique index or primary key constraint; \
+             cursor-based pagination requires globally unique id values",
             config.id_column, config.schema, config.table
         )));
     }
 
     Ok(())
+}
+
+/// Query the actual PG column type and return the SQL cast suffix needed for
+/// cursor comparisons.  Returns e.g. `"::int8"`, `"::uuid"`, or `""` (no cast).
+///
+/// Domain types are recursively unwrapped to their base type so that domains
+/// over text, uuid, or integer columns work without an explicit allowlist entry.
+pub async fn resolve_cursor_cast(client: &Client, config: &BatchQueryConfig) -> Result<String> {
+    // Recursive CTE unwraps domain layers (typbasetype != 0) until we reach a
+    // concrete base type (typbasetype = 0).
+    let query = r#"
+        WITH RECURSIVE resolved(oid, base) AS (
+            SELECT a.atttypid, t.typbasetype
+            FROM pg_attribute a
+            JOIN pg_type t ON t.oid = a.atttypid
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relname = $2
+              AND a.attname = $3
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            UNION ALL
+            SELECT r.base, t.typbasetype
+            FROM resolved r
+            JOIN pg_type t ON t.oid = r.base
+            WHERE r.base != 0
+        )
+        SELECT oid::int FROM resolved WHERE base = 0 LIMIT 1
+    "#;
+
+    let row = client
+        .query_one(query, &[&config.schema, &config.table, &config.id_column])
+        .await
+        .map_err(|e| {
+            PgError::QueryError(format!(
+                "failed to resolve type of column '{}' on {}.{}: {}",
+                config.id_column, config.schema, config.table, e
+            ))
+        })?;
+
+    let type_oid: i32 = row.get(0);
+
+    // Well-known OIDs from pg_type (after domain unwrapping)
+    let cast = match type_oid {
+        21 | 23 | 20 => "::int8", // int2, int4, int8
+        2950 => "::uuid",         // uuid
+        25 | 1043 | 1042 => "",   // text, varchar, bpchar (char(n))
+        _ => {
+            return Err(PgError::QueryError(format!(
+                "unsupported id column type (OID {}) for cursor pagination on {}.{}.{}; \
+                 supported types: int2, int4, int8, uuid, text, varchar, char",
+                type_oid, config.schema, config.table, config.id_column,
+            )));
+        }
+    };
+
+    Ok(cast.to_string())
 }
 
 pub async fn count_rows(client: &Client, config: &BatchQueryConfig) -> Result<u64> {
