@@ -76,6 +76,7 @@ mod tests {
             otel_endpoint: None,
             otel_headers: None,
             state_db_path,
+            dlq_max_age_hours: None,
         }
     }
 
@@ -114,6 +115,45 @@ mod tests {
         assert!(
             err.to_string().contains("cannot read transform"),
             "expected unreadable transform error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_errors_on_modified_content_hash_for_applied_config() {
+        let (_dir, paths, state_db_path) = setup_project();
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+
+        let loader = ConfigLoader::new(&paths.configs);
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
+        let mut db = StateDb::open(&state_db_path).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+            namespace: cfg.namespace.clone(),
+            content_hash: "stale_content_hash".to_string(),
+            transform_hash: Some(transform_hash),
+            applied_at: Utc::now(),
+            tombstone_applied_at: None,
+        })
+        .unwrap();
+
+        let err = run(
+            &paths,
+            &dummy_env(state_db_path),
+            &ProjectConfig::default(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("has been modified since last apply"),
+            "expected modified content hash error, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("content hash"),
+            "expected content hash details in error, got: {err}"
         );
     }
 
@@ -202,12 +242,25 @@ async fn run_async(
         })?;
 
         if let Some(record) = db.get_config(&config.name)? {
+            let current_content_hash = config.content_hash().map_err(|e| {
+                CliError::Run(format!(
+                    "failed to compute content hash for config '{}': {e}",
+                    config.name,
+                ))
+            })?;
+            if record.content_hash != current_content_hash {
+                return Err(CliError::Run(format!(
+                    "config '{}' has been modified since last apply.\n  content hash: expected {}, got {}\n  Run 'puffgres apply' to apply the changes.",
+                    config.name, record.content_hash, current_content_hash,
+                )));
+            }
+
             if let Some(ref stored_hash) = record.transform_hash {
                 let current_hash = format!("{:x}", Sha256::digest(&transform_content));
                 if *stored_hash != current_hash {
                     return Err(CliError::Run(format!(
-                        "transform file was modified after config '{}' was applied",
-                        config.name,
+                        "config '{}' transform was modified since last apply.\n  transform hash: expected {}, got {}\n  Run 'puffgres apply' to apply the changes.",
+                        config.name, stored_hash, current_hash,
                     )));
                 }
             }
@@ -446,11 +499,14 @@ async fn run_async(
     tracing::info!("listening for changes");
 
     // Auto-clean stale permanent DLQ entries
-    let cleaned = db.clear_old_permanent_entries(project_config.dlq_permanent_max_age_hours())?;
+    let dlq_max_age_hours = env_config
+        .dlq_max_age_hours
+        .unwrap_or_else(|| project_config.dlq_permanent_max_age_hours());
+    let cleaned = db.clear_old_permanent_entries(dlq_max_age_hours)?;
     if cleaned > 0 {
         tracing::info!(
             entries_removed = cleaned,
-            max_age_hours = project_config.dlq_permanent_max_age_hours(),
+            max_age_hours = dlq_max_age_hours,
             "cleaned stale permanent DLQ entries",
         );
     }
@@ -566,11 +622,11 @@ async fn run_async(
             }
         }
 
-        for (config_name, _) in &config_events {
+        for (_, config) in &applied_configs {
             let checkpoint = StreamingCheckpoint {
-                config_name: config_name.to_string(),
+                config_name: config.name.clone(),
                 lsn: batch.ack_lsn,
-                events_processed: *events_processed.get(*config_name).unwrap_or(&0),
+                events_processed: *events_processed.get(&config.name).unwrap_or(&0),
                 updated_at: Utc::now(),
             };
             db.save_streaming_checkpoint(&checkpoint)?;

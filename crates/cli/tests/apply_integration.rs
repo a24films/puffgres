@@ -19,6 +19,7 @@ async fn start_postgres_env(state_db_path: PathBuf) -> (pg::test_utils::TestCont
         otel_endpoint: None,
         otel_headers: None,
         state_db_path,
+        dlq_max_age_hours: None,
     };
     (ctx, env_config)
 }
