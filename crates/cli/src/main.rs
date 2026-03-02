@@ -30,8 +30,6 @@ enum Command {
     Apply,
     /// Start the replication pipeline
     Run,
-    /// Show replication status
-    Status,
     /// Clear all state (configs and checkpoints)
     Reset,
     /// Tombstone a config (exclude from CDC, backfill, and DLQ replay)
@@ -83,7 +81,7 @@ fn run() -> (
     // These recovery/status commands only read environment_files from puffgres.toml
     // so they still work when runtime config fields (e.g. batch_size) are invalid.
     match cli.command {
-        Command::Setup | Command::Reset | Command::Status | Command::Tombstone { .. } => {
+        Command::Setup | Command::Reset | Command::Tombstone { .. } => {
             let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
                 Ok(c) => c,
                 Err(e) => return (Err(e), None),
@@ -98,7 +96,7 @@ fn run() -> (
             let result = match cli.command {
                 Command::Setup => puffgres_cli::setup::run(&state_db_path),
                 Command::Reset => puffgres_cli::reset::run(&state_db_path),
-                Command::Status => puffgres_cli::status::run(&state_db_path),
+
                 Command::Tombstone { ref name } => {
                     puffgres_cli::tombstone::run(&paths, &state_db_path, name)
                 }
@@ -136,7 +134,6 @@ fn run() -> (
         | Command::New { .. }
         | Command::Setup
         | Command::Reset
-        | Command::Status
         | Command::Tombstone { .. } => unreachable!(),
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
