@@ -1,7 +1,9 @@
 mod common;
 
 use common::setup_postgres;
-use pg::batch::{BatchQueryConfig, count_rows, fetch_batch, validate_id_column_uniqueness};
+use pg::batch::{
+    BatchQueryConfig, count_rows, fetch_batch, resolve_cursor_cast, validate_id_column_uniqueness,
+};
 use pg::connect::connect;
 
 fn default_config() -> BatchQueryConfig {
@@ -282,5 +284,165 @@ async fn test_validate_id_column_uniqueness_fails() {
     let err = validate_id_column_uniqueness(&client, &config)
         .await
         .expect_err("should fail for column without unique index");
-    assert!(err.to_string().contains("must have a unique index"));
+    assert!(
+        err.to_string()
+            .contains("must have a non-partial unique index")
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_cursor_cast_text() {
+    let (_ctx, client) = setup_test_table().await;
+    let cast = resolve_cursor_cast(&client, &default_config())
+        .await
+        .expect("text column should resolve");
+    assert_eq!(cast, "");
+}
+
+#[tokio::test]
+async fn test_resolve_cursor_cast_int() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE int_ids (id BIGINT PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let config = BatchQueryConfig {
+        table: "int_ids".to_string(),
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config)
+        .await
+        .expect("int8 column should resolve");
+    assert_eq!(cast, "::int8");
+}
+
+#[tokio::test]
+async fn test_resolve_cursor_cast_uuid() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE uuid_ids (id UUID PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let config = BatchQueryConfig {
+        table: "uuid_ids".to_string(),
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config)
+        .await
+        .expect("uuid column should resolve");
+    assert_eq!(cast, "::uuid");
+}
+
+#[tokio::test]
+async fn test_resolve_cursor_cast_bpchar() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE bpchar_ids (id CHAR(36) PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let config = BatchQueryConfig {
+        table: "bpchar_ids".to_string(),
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config)
+        .await
+        .expect("bpchar column should resolve");
+    assert_eq!(cast, "");
+}
+
+#[tokio::test]
+async fn test_resolve_cursor_cast_domain_over_uuid() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute("CREATE DOMAIN my_uuid AS UUID", &[])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "CREATE TABLE domain_uuid_ids (id my_uuid PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let config = BatchQueryConfig {
+        table: "domain_uuid_ids".to_string(),
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config)
+        .await
+        .expect("domain over uuid should unwrap to uuid");
+    assert_eq!(cast, "::uuid");
+}
+
+#[tokio::test]
+async fn test_resolve_cursor_cast_domain_over_int() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute("CREATE DOMAIN pos_int AS INTEGER CHECK (VALUE > 0)", &[])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "CREATE TABLE domain_int_ids (id pos_int PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let config = BatchQueryConfig {
+        table: "domain_int_ids".to_string(),
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config)
+        .await
+        .expect("domain over int should unwrap to int8");
+    assert_eq!(cast, "::int8");
+}
+
+#[tokio::test]
+async fn test_resolve_cursor_cast_nested_domain() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute("CREATE DOMAIN base_text AS TEXT", &[])
+        .await
+        .unwrap();
+    client
+        .execute("CREATE DOMAIN my_id AS base_text", &[])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "CREATE TABLE nested_domain_ids (id my_id PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let config = BatchQueryConfig {
+        table: "nested_domain_ids".to_string(),
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config)
+        .await
+        .expect("nested domain over text should unwrap to text");
+    assert_eq!(cast, "");
 }

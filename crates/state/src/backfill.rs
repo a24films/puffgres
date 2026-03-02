@@ -125,22 +125,28 @@ impl StateDb {
     }
 
     /// Lightweight cursor save for the backfill loop — saves cursor position as InProgress.
+    /// Preserves existing `watermark_lsn` and `started_at` so a resumed backfill
+    /// doesn't lose the original watermark.
     pub fn save_backfill_cursor(
         &mut self,
         config_name: &str,
         last_id: &str,
         processed_rows: u64,
     ) -> Result<(), StateError> {
+        let existing = self.get_backfill_progress(config_name)?;
         self.save_backfill_progress(&BackfillProgress {
             config_name: config_name.to_string(),
             last_id: Some(last_id.to_string()),
-            total_rows: None,
+            total_rows: existing.as_ref().and_then(|p| p.total_rows),
             processed_rows,
             status: BackfillStatus::InProgress,
-            started_at: Some(Utc::now()),
+            started_at: existing
+                .as_ref()
+                .and_then(|p| p.started_at)
+                .or_else(|| Some(Utc::now())),
             completed_at: None,
             error_message: None,
-            watermark_lsn: None,
+            watermark_lsn: existing.as_ref().and_then(|p| p.watermark_lsn),
         })
     }
 
@@ -341,6 +347,31 @@ mod tests {
         let (id, rows) = db.load_backfill_cursor("film").unwrap().unwrap();
         assert_eq!(id, "200");
         assert_eq!(rows, 100);
+    }
+
+    #[test]
+    fn save_backfill_cursor_preserves_watermark_lsn() {
+        let (_dir, mut db) = setup_backfill_db();
+        db.insert_config(&sample_config("film")).unwrap();
+
+        // Set initial progress with a watermark
+        let mut progress = sample_backfill_progress("film");
+        progress.watermark_lsn = Some(99_000);
+        progress.last_id = Some("100".to_string());
+        progress.processed_rows = 50;
+        db.save_backfill_progress(&progress).unwrap();
+
+        // save_backfill_cursor should NOT clear watermark_lsn
+        db.save_backfill_cursor("film", "200", 100).unwrap();
+
+        let p = db.get_backfill_progress("film").unwrap().unwrap();
+        assert_eq!(p.last_id, Some("200".to_string()));
+        assert_eq!(p.processed_rows, 100);
+        assert_eq!(
+            p.watermark_lsn,
+            Some(99_000),
+            "watermark_lsn must be preserved across cursor saves"
+        );
     }
 
     #[test]
