@@ -14,6 +14,8 @@ struct Cli {
 enum Command {
     /// Initialize a puffgres project
     Init,
+    /// Initialize the state database
+    Setup,
     /// Create a new table config
     New {
         /// Name for the config (e.g. "user", "film")
@@ -57,35 +59,64 @@ fn run() -> (
 ) {
     let cli = Cli::parse();
 
-    match cli.command {
-        Command::Init => return (puffgres_cli::init::run(), None),
-        Command::Reset => {
-            let paths = match ProjectPaths::from_current_dir() {
-                Ok(p) => p,
-                Err(e) => return (Err(e), None),
-            };
-            return (puffgres_cli::reset::run(&paths), None);
-        }
-        Command::Tombstone { ref name } => {
-            let paths = match ProjectPaths::from_current_dir() {
-                Ok(p) => p,
-                Err(e) => return (Err(e), None),
-            };
-            return (puffgres_cli::tombstone::run(&paths, name), None);
-        }
-        _ => {}
+    // Tier 1: no env needed
+    if let Command::Init = cli.command {
+        return (puffgres_cli::init::run(), None);
     }
 
+    // Tier 2: ProjectPaths only
+    if let Command::New { ref name } = cli.command {
+        let paths = match ProjectPaths::from_current_dir() {
+            Ok(p) => p,
+            Err(e) => return (Err(e), None),
+        };
+        return (puffgres_cli::new::run(&paths, name), None);
+    }
+
+    // All remaining commands need at least ProjectPaths
     let paths = match ProjectPaths::from_current_dir() {
         Ok(p) => p,
         Err(e) => return (Err(e), None),
     };
+
+    // Tier 3: ProjectPaths + state_db_path (no full ProjectConfig validation needed).
+    // These recovery/status commands only read environment_files from puffgres.toml
+    // so they still work when runtime config fields (e.g. batch_size) are invalid.
+    match cli.command {
+        Command::Setup | Command::Reset | Command::Status | Command::Tombstone { .. } => {
+            let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
+                Ok(c) => c,
+                Err(e) => return (Err(e), None),
+            };
+            let env_paths = project_config.resolve_env_paths(&paths.root);
+            let state_db_path =
+                match puffgres_cli::env::resolve_state_db_path(&env_paths, &paths.root) {
+                    Ok(p) => p,
+                    Err(e) => return (Err(e), None),
+                };
+
+            let result = match cli.command {
+                Command::Setup => puffgres_cli::setup::run(&state_db_path),
+                Command::Reset => puffgres_cli::reset::run(&state_db_path),
+                Command::Status => puffgres_cli::status::run(&state_db_path),
+                Command::Tombstone { ref name } => {
+                    puffgres_cli::tombstone::run(&paths, &state_db_path, name)
+                }
+                _ => unreachable!(),
+            };
+
+            return (result, None);
+        }
+        _ => {}
+    }
+
+    // Tier 4: full ProjectConfig + EnvConfig (DATABASE_URL, TURBOPUFFER_API_KEY, etc.)
     let project_config = match ProjectConfig::load(&paths.project_config) {
         Ok(c) => c,
         Err(e) => return (Err(e), None),
     };
     let env_paths = project_config.resolve_env_paths(&paths.root);
-    let env_config = match EnvConfig::load(&env_paths) {
+    let env_config = match EnvConfig::load(&env_paths, &paths.root) {
         Ok(c) => c,
         Err(e) => return (Err(e), None),
     };
@@ -101,8 +132,12 @@ fn run() -> (
     };
 
     let result = match cli.command {
-        Command::Init | Command::Reset | Command::Tombstone { .. } => unreachable!(),
-        Command::New { name } => puffgres_cli::new::run(&paths, &name),
+        Command::Init
+        | Command::New { .. }
+        | Command::Setup
+        | Command::Reset
+        | Command::Status
+        | Command::Tombstone { .. } => unreachable!(),
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
         }
@@ -110,7 +145,6 @@ fn run() -> (
         Command::Run => {
             puffgres_cli::run::run(&paths, &env_config, &project_config, metrics.as_ref())
         }
-        Command::Status => puffgres_cli::status::run(&paths),
     };
 
     (result, telemetry)

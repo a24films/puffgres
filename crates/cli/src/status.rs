@@ -1,11 +1,17 @@
+use std::path::Path;
+
 use pg::PgLsn;
 use state::StateDb;
 
 use crate::error::CliError;
-use crate::paths::ProjectPaths;
 
-pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
-    let mut db = StateDb::open(&paths.state_db)?;
+pub fn run(state_db_path: &Path) -> Result<(), CliError> {
+    if !state_db_path.exists() {
+        return Err(CliError::NotInitialized(
+            "state.db — run `puffgres setup` first".to_string(),
+        ));
+    }
+    let mut db = StateDb::open(state_db_path)?;
     let configs = db.list_active_configs()?;
 
     if configs.is_empty() {
@@ -76,38 +82,38 @@ mod tests {
 
     #[test]
     fn no_configs_succeeds() {
-        let (_dir, paths) = setup_project();
-        run(&paths).unwrap();
+        let (_dir, _paths, state_db_path) = setup_project();
+        run(&state_db_path).unwrap();
     }
 
     #[test]
     fn configs_without_checkpoints() {
-        let (_dir, paths) = setup_project();
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let (_dir, _paths, state_db_path) = setup_project();
+        let mut db = StateDb::open(&state_db_path).unwrap();
 
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
-        run(&paths).unwrap();
+        run(&state_db_path).unwrap();
     }
 
     #[test]
     fn configs_with_checkpoints() {
-        let (_dir, paths) = setup_project();
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let (_dir, _paths, state_db_path) = setup_project();
+        let mut db = StateDb::open(&state_db_path).unwrap();
 
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
         db.save_streaming_checkpoint(&sample_checkpoint("film", 0x016B_3740, 500))
             .unwrap();
 
-        run(&paths).unwrap();
+        run(&state_db_path).unwrap();
     }
 
     #[test]
     fn mixed_configs_some_with_checkpoints() {
-        let (_dir, paths) = setup_project();
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let (_dir, _paths, state_db_path) = setup_project();
+        let mut db = StateDb::open(&state_db_path).unwrap();
 
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
@@ -118,19 +124,19 @@ mod tests {
         db.save_streaming_checkpoint(&sample_checkpoint("genre", 0x0000_0002_ABCD_EF01, 1200))
             .unwrap();
 
-        run(&paths).unwrap();
+        run(&state_db_path).unwrap();
     }
 
     #[test]
     fn tombstoned_configs_hidden() {
-        let (_dir, paths) = setup_project();
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let (_dir, _paths, state_db_path) = setup_project();
+        let mut db = StateDb::open(&state_db_path).unwrap();
 
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
         db.tombstone_config("actor").unwrap();
 
         // Should succeed, only showing "film"
-        run(&paths).unwrap();
+        run(&state_db_path).unwrap();
     }
 }

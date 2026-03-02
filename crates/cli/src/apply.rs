@@ -18,7 +18,7 @@ pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError>
 }
 
 pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
-    let mut db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&env_config.state_db_path)?;
 
     let loader = config::ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;
@@ -159,7 +159,7 @@ mod tests {
 
     use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
 
-    fn dummy_env() -> EnvConfig {
+    fn dummy_env(state_db_path: PathBuf) -> EnvConfig {
         EnvConfig {
             database_url: "host=invalid".to_string(),
             turbopuffer_api_key: "fake".to_string(),
@@ -167,21 +167,22 @@ mod tests {
             turbopuffer_namespace_prefix: None,
             otel_endpoint: None,
             otel_headers: None,
+            state_db_path,
         }
     }
 
     #[test]
     fn test_no_configs_succeeds() {
-        let (_dir, paths) = setup_project();
-        run(&paths, &dummy_env()).unwrap();
+        let (_dir, paths, state_db_path) = setup_project();
+        run(&paths, &dummy_env(state_db_path)).unwrap();
     }
 
     #[test]
     fn test_errors_on_missing_transform() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         write_config(&paths, "user", "public", "users", "id", "uint");
 
-        let err = run(&paths, &dummy_env()).unwrap_err();
+        let err = run(&paths, &dummy_env(state_db_path)).unwrap_err();
         assert!(
             err.to_string().contains("had errors"),
             "expected missing transform error, got: {err}"
@@ -190,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_any_error_prevents_all_applies() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
 
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -198,15 +199,15 @@ mod tests {
         // So instead, create a config without a transform
         write_config(&paths, "bad", "public", "bad", "id", "uint");
 
-        run(&paths, &dummy_env()).unwrap_err();
+        run(&paths, &dummy_env(state_db_path.clone())).unwrap_err();
 
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         assert!(db.get_config("user").unwrap().is_none());
     }
 
     #[test]
     fn test_skips_already_applied_unchanged() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -216,7 +217,7 @@ mod tests {
         let (config_path, cfg) = &all[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -229,13 +230,13 @@ mod tests {
         .unwrap();
 
         // Config is unchanged → skipped, no PG validation needed
-        run(&paths, &dummy_env()).unwrap();
+        run(&paths, &dummy_env(state_db_path)).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 1);
     }
 
     #[test]
     fn test_skips_multiple_already_applied() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
         let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
@@ -243,7 +244,7 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let all = loader.load_all().unwrap();
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         for (config_path, cfg) in &all {
             let transform_bytes =
                 fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
@@ -260,19 +261,19 @@ mod tests {
             .unwrap();
         }
 
-        run(&paths, &dummy_env()).unwrap();
+        run(&paths, &dummy_env(state_db_path)).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 2);
     }
 
     #[test]
     fn test_errors_on_modified_config() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -300,7 +301,7 @@ type = "uint"
         );
         fs::write(config_path, content).unwrap();
 
-        let err = run(&paths, &dummy_env()).unwrap_err();
+        let err = run(&paths, &dummy_env(state_db_path)).unwrap_err();
         assert!(
             err.to_string().contains("had errors"),
             "expected immutability error, got: {err}"
@@ -309,7 +310,7 @@ type = "uint"
 
     #[test]
     fn test_errors_on_unreadable_transform_for_applied_config() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -317,7 +318,7 @@ type = "uint"
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -332,7 +333,7 @@ type = "uint"
         // Delete the transform file so it can't be read
         fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
-        let err = run(&paths, &dummy_env()).unwrap_err();
+        let err = run(&paths, &dummy_env(state_db_path)).unwrap_err();
         assert!(
             err.to_string().contains("had errors"),
             "expected unreadable transform error, got: {err}"
@@ -341,7 +342,7 @@ type = "uint"
 
     #[test]
     fn test_stored_record_fields() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
         write_transform(&film_dir, PASSTHROUGH_TRANSFORM);
 
@@ -349,7 +350,7 @@ type = "uint"
         let cfg = &loader.load_all().unwrap()[0].1;
         let content_hash = cfg.content_hash().unwrap();
 
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 

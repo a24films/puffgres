@@ -45,6 +45,7 @@ fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn prefixed_namespace_with_prefix() {
@@ -66,7 +67,7 @@ mod tests {
     use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
     use state::ConfigRecord;
 
-    fn dummy_env() -> EnvConfig {
+    fn dummy_env(state_db_path: PathBuf) -> EnvConfig {
         EnvConfig {
             database_url: "host=invalid".to_string(),
             turbopuffer_api_key: "fake".to_string(),
@@ -74,12 +75,13 @@ mod tests {
             turbopuffer_namespace_prefix: None,
             otel_endpoint: None,
             otel_headers: None,
+            state_db_path,
         }
     }
 
     #[test]
     fn test_errors_on_unreadable_transform_for_applied_config() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -87,7 +89,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -102,7 +104,13 @@ mod tests {
         // Delete the transform file so it can't be read
         fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
-        let err = run(&paths, &dummy_env(), &ProjectConfig::default(), None).unwrap_err();
+        let err = run(
+            &paths,
+            &dummy_env(state_db_path),
+            &ProjectConfig::default(),
+            None,
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("cannot read transform"),
             "expected unreadable transform error, got: {err}"
@@ -111,13 +119,13 @@ mod tests {
 
     #[test]
     fn test_errors_on_modified_transform_for_applied_config() {
-        let (_dir, paths) = setup_project();
+        let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
-        let mut db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -129,7 +137,13 @@ mod tests {
         })
         .unwrap();
 
-        let err = run(&paths, &dummy_env(), &ProjectConfig::default(), None).unwrap_err();
+        let err = run(
+            &paths,
+            &dummy_env(state_db_path),
+            &ProjectConfig::default(),
+            None,
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("was modified"),
             "expected modified transform error, got: {err}"
@@ -144,7 +158,7 @@ async fn run_async(
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
-    let mut db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&env_config.state_db_path)?;
 
     let loader = ConfigLoader::new(&paths.configs);
     let all_configs = loader.load_all()?;
