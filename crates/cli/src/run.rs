@@ -46,6 +46,77 @@ fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[tokio::test]
+    async fn retry_loop_succeeds_after_transient_failures() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 5,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                let n = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n < 2 {
+                        Err(CliError::Run("transient".into()))
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_loop_gives_up_after_max_retries() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 3,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err(CliError::Run("permanent".into())) }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        // 1 initial attempt + 3 retries = 4 total
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn retry_loop_returns_immediately_on_success() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 5,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn prefixed_namespace_with_prefix() {
@@ -80,6 +151,18 @@ mod tests {
         }
     }
 
+    /// Sync wrapper for run_cdc_inner (bypasses retry loop).
+    fn run_no_retry(
+        paths: &ProjectPaths,
+        env_config: &EnvConfig,
+        project_config: &ProjectConfig,
+        metrics: Option<&Metrics>,
+    ) -> Result<(), CliError> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| CliError::Run(format!("failed to create async runtime: {e}")))?;
+        rt.block_on(run_cdc_inner(paths, env_config, project_config, metrics))
+    }
+
     #[test]
     fn test_errors_on_unreadable_transform_for_applied_config() {
         let (_dir, paths, state_db_path) = setup_project();
@@ -99,13 +182,14 @@ mod tests {
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
 
         // Delete the transform file so it can't be read
         fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
-        let err = run(
+        let err = run_no_retry(
             &paths,
             &dummy_env(state_db_path),
             &ProjectConfig::default(),
@@ -136,10 +220,11 @@ mod tests {
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
 
-        let err = run(
+        let err = run_no_retry(
             &paths,
             &dummy_env(state_db_path),
             &ProjectConfig::default(),
@@ -174,10 +259,11 @@ mod tests {
             transform_hash: Some("stale_hash".to_string()),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
 
-        let err = run(
+        let err = run_no_retry(
             &paths,
             &dummy_env(state_db_path),
             &ProjectConfig::default(),
@@ -191,8 +277,60 @@ mod tests {
     }
 }
 
+/// Run `f` in a loop with exponential backoff on failure.
+///
+/// Non-retryable errors (e.g. config validation failures) bypass the loop and
+/// propagate immediately so the process fails fast for operator action.
+async fn retry_loop<F, Fut>(config: BackoffConfig, mut f: F) -> Result<(), CliError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), CliError>>,
+{
+    let mut backoff = Backoff::new(config);
+    loop {
+        match f().await {
+            Ok(()) => break Ok(()),
+            Err(e) if !e.is_retryable() => {
+                tracing::error!(error = %e, "CDC loop hit a non-retryable error, exiting");
+                break Err(e);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "CDC loop exited with error, restarting...");
+                if let Some(delay) = backoff.next_delay() {
+                    tracing::info!(
+                        delay_ms = delay.as_millis() as u64,
+                        "waiting before restart"
+                    );
+                    tokio::time::sleep(delay).await;
+                } else {
+                    break Err(e);
+                }
+            }
+        }
+    }
+}
+
+pub async fn run_async(
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    project_config: &ProjectConfig,
+    metrics: Option<&Metrics>,
+) -> Result<(), CliError> {
+    retry_loop(
+        BackoffConfig {
+            initial_delay_ms: 1_000,
+            max_delay_ms: 60_000,
+            max_retries: u32::MAX,
+            multiplier: 2.0,
+            jitter: true,
+        },
+        || run_cdc_inner(paths, env_config, project_config, metrics),
+    )
+    .await
+}
+
 #[tracing::instrument(name = "run", skip_all)]
-async fn run_async(
+async fn run_cdc_inner(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     project_config: &ProjectConfig,
@@ -218,6 +356,44 @@ async fn run_async(
         return Ok(());
     }
 
+    // Re-key: detect namespace prefix changes and reset state if needed
+    let current_prefix = env_config.turbopuffer_namespace_prefix.clone();
+    for (_, config) in &applied_configs {
+        let stored_prefix = db.get_namespace_prefix(&config.name)?;
+        match &stored_prefix {
+            None => {
+                // First run or legacy config — just store the current prefix
+                let prefix_to_store = current_prefix.as_deref().unwrap_or("");
+                db.set_namespace_prefix(&config.name, Some(prefix_to_store))?;
+            }
+            Some(stored) => {
+                let effective_current = current_prefix.as_deref().unwrap_or("");
+                if stored != effective_current {
+                    tracing::warn!(
+                        config = %config.name,
+                        old_prefix = %stored,
+                        new_prefix = %effective_current,
+                        "namespace prefix changed — resetting state, backfill will re-run",
+                    );
+                    db.delete_streaming_checkpoint(&config.name)?;
+                    db.clear_dlq(Some(&config.name))?;
+                    db.save_backfill_progress(&BackfillProgress {
+                        config_name: config.name.clone(),
+                        last_id: None,
+                        total_rows: None,
+                        processed_rows: 0,
+                        status: BackfillStatus::Pending,
+                        started_at: None,
+                        completed_at: None,
+                        error_message: None,
+                        watermark_lsn: None,
+                    })?;
+                    db.set_namespace_prefix(&config.name, Some(effective_current))?;
+                }
+            }
+        }
+    }
+
     let mut mappings = Vec::new();
     let mut transformers: HashMap<String, Box<dyn Transformer>> = HashMap::new();
     let mut namespaces: HashMap<String, String> = HashMap::new();
@@ -235,7 +411,7 @@ async fn run_async(
 
         // Verify transform file can be read and hasn't drifted from the applied hash
         let transform_content = fs::read(&transform_path).map_err(|e| {
-            CliError::Run(format!(
+            CliError::RunConfig(format!(
                 "cannot read transform file for config '{}': {e}",
                 config.name,
             ))
@@ -243,13 +419,13 @@ async fn run_async(
 
         if let Some(record) = db.get_config(&config.name)? {
             let current_content_hash = config.content_hash().map_err(|e| {
-                CliError::Run(format!(
+                CliError::RunConfig(format!(
                     "failed to compute content hash for config '{}': {e}",
                     config.name,
                 ))
             })?;
             if record.content_hash != current_content_hash {
-                return Err(CliError::Run(format!(
+                return Err(CliError::RunConfig(format!(
                     "config '{}' has been modified since last apply.\n  content hash: expected {}, got {}\n  Run 'puffgres apply' to apply the changes.",
                     config.name, record.content_hash, current_content_hash,
                 )));
@@ -258,7 +434,7 @@ async fn run_async(
             if let Some(ref stored_hash) = record.transform_hash {
                 let current_hash = format!("{:x}", Sha256::digest(&transform_content));
                 if *stored_hash != current_hash {
-                    return Err(CliError::Run(format!(
+                    return Err(CliError::RunConfig(format!(
                         "config '{}' transform was modified since last apply.\n  transform hash: expected {}, got {}\n  Run 'puffgres apply' to apply the changes.",
                         config.name, stored_hash, current_hash,
                     )));

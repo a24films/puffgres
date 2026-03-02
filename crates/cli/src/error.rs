@@ -36,6 +36,9 @@ pub enum CliError {
     Run(String),
 
     #[error("{0}")]
+    RunConfig(String),
+
+    #[error("{0}")]
     Reset(String),
 
     #[error("{0}")]
@@ -55,4 +58,13 @@ pub enum CliError {
 
     #[error("System time error: {0}")]
     SystemTime(#[from] SystemTimeError),
+}
+
+impl CliError {
+    /// Returns `true` for transient/runtime errors worth retrying (network
+    /// failures, replication stream drops, etc.) and `false` for deterministic
+    /// configuration errors that require operator action.
+    pub fn is_retryable(&self) -> bool {
+        !matches!(self, CliError::RunConfig(_) | CliError::State(_))
+    }
 }

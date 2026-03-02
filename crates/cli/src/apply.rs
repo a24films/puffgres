@@ -165,6 +165,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
                 transform_hash: Some(transform_hash.clone()),
                 applied_at: Utc::now(),
                 tombstone_applied_at: None,
+                namespace_prefix: None,
             };
 
             db.insert_config(&record)?;
@@ -252,6 +253,7 @@ mod tests {
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
 
@@ -283,6 +285,7 @@ mod tests {
                 transform_hash: Some(transform_hash),
                 applied_at: Utc::now(),
                 tombstone_applied_at: None,
+                namespace_prefix: None,
             })
             .unwrap();
         }
@@ -308,6 +311,7 @@ mod tests {
             transform_hash: Some("abc".into()),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
 
@@ -353,6 +357,7 @@ type = "uint"
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
 
@@ -385,6 +390,7 @@ type = "uint"
             transform_hash: Some("t_hash".into()),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
 

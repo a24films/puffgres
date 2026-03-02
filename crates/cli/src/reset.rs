@@ -34,6 +34,7 @@ mod tests {
             transform_hash: None,
             applied_at: Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         })
         .unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 1);

@@ -138,6 +138,7 @@ mod tests {
             transform_hash: None,
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         };
         db.insert_config(&config).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 1);
@@ -170,6 +171,7 @@ mod tests {
             transform_hash: None,
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,
+            namespace_prefix: None,
         };
         db.insert_config(&config).unwrap();
 
