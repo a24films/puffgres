@@ -34,7 +34,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     ensure_vitest_config(&paths)?;
     ensure_utils(&paths)?;
 
-    let db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&paths.state_db)?;
     db.initialize()?;
 
     println!("Initialized puffgres project at {}", paths.root.display());

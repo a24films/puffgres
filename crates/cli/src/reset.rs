@@ -7,7 +7,7 @@ pub fn run(paths: &ProjectPaths) -> Result<(), CliError> {
     if !paths.state_db.exists() {
         return Err(CliError::NotInitialized("state.db".to_string()));
     }
-    let db = StateDb::open(&paths.state_db)?;
+    let mut db = StateDb::open(&paths.state_db)?;
     db.reset()?;
     println!("Reset: cleared all configs and checkpoints");
     Ok(())
@@ -24,7 +24,7 @@ mod tests {
     fn reset_clears_configs() {
         let (_dir, paths) = setup_project();
 
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         db.insert_config(&ConfigRecord {
             name: "user_0001".to_string(),
             version: 1,
@@ -39,7 +39,7 @@ mod tests {
 
         run(&paths).unwrap();
 
-        let db = StateDb::open(&paths.state_db).unwrap();
+        let mut db = StateDb::open(&paths.state_db).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 0);
     }
 
