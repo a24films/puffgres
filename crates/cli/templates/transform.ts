@@ -2,9 +2,6 @@
 //
 // Reads a JSON array of events from stdin, writes a JSON array of actions to stdout.
 //
-// Each input event:
-//   { operation: "insert" | "update" | "delete", id: number | string, columns: (string | null)[] }
-//
 // Each output action (one of):
 //   { type: "upsert", id: number | string, document: object, vector?: number[], distance_metric?: string, schema?: object }
 //   { type: "delete", id: number | string }
@@ -16,6 +13,7 @@
 // See https://turbopuffer.com/docs/write#schema for all options.
 
 import { readFileSync } from "fs";
+import { parseRow, type Row } from "./schema";
 
 interface Event {
   operation: "insert" | "update" | "delete";
@@ -35,11 +33,14 @@ const output: Action[] = input.map((event) => {
     return { type: "delete", id: event.id };
   }
 
+  const row: Row = parseRow(event.columns);
+
   return {
     type: "upsert",
     id: event.id,
     document: {
-      // TODO: map columns to document fields
+      // TODO: map row fields to document fields
+      // e.g. name: row.name,
     },
     // Define a schema entry for each attribute in your document.
     // For all config options, see https://turbopuffer.com/docs/write#schema

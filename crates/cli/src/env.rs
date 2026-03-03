@@ -92,6 +92,16 @@ fn resolve_state_db(raw: Option<String>, project_root: &Path) -> Result<PathBuf,
     }
 }
 
+/// Resolve only `DATABASE_URL` from env files and process env.
+///
+/// Use this for commands (like `generate`) that need a database connection
+/// but not `TURBOPUFFER_API_KEY` or other runtime config.
+pub fn resolve_database_url(env_file_paths: &[impl AsRef<Path>]) -> Result<String, CliError> {
+    let file_vars = load_env_files(env_file_paths)?;
+    resolve_env_var("DATABASE_URL", &file_vars)
+        .ok_or_else(|| CliError::MissingEnvVar("DATABASE_URL".into()))
+}
+
 impl EnvConfig {
     /// Load environment config from multiple `.env` file paths.
     ///

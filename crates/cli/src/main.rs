@@ -40,6 +40,8 @@ enum Command {
         #[arg(long)]
         name: String,
     },
+    /// Generate typed schema.ts files for each config
+    Generate,
 }
 
 fn main() {
@@ -79,7 +81,21 @@ fn run() -> (
         Err(e) => return (Err(e), None),
     };
 
-    // Tier 3: ProjectPaths + state_db_path (no full ProjectConfig validation needed).
+    // Tier 3: Generate only needs DATABASE_URL (no state DB).
+    if let Command::Generate = cli.command {
+        let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
+            Ok(c) => c,
+            Err(e) => return (Err(e), None),
+        };
+        let env_paths = project_config.resolve_env_paths(&paths.root);
+        let database_url = match puffgres_cli::env::resolve_database_url(&env_paths) {
+            Ok(u) => u,
+            Err(e) => return (Err(e), None),
+        };
+        return (puffgres_cli::generate::run(&paths, &database_url), None);
+    }
+
+    // Tier 4: ProjectPaths + state_db_path (no full ProjectConfig validation needed).
     // These recovery/status commands only read environment_files from puffgres.toml
     // so they still work when runtime config fields (e.g. batch_size) are invalid.
     match cli.command {
@@ -98,7 +114,6 @@ fn run() -> (
             let result = match cli.command {
                 Command::Setup => puffgres_cli::setup::run(&state_db_path),
                 Command::Reset => puffgres_cli::reset::run(&state_db_path),
-
                 Command::Tombstone { ref name } => {
                     puffgres_cli::tombstone::run(&paths, &state_db_path, name)
                 }
@@ -110,7 +125,7 @@ fn run() -> (
         _ => {}
     }
 
-    // Tier 4: Check only needs DATABASE_URL + state_db_path (no TURBOPUFFER_API_KEY)
+    // Tier 5: Check only needs DATABASE_URL + state_db_path (no TURBOPUFFER_API_KEY)
     if let Command::Check = cli.command {
         let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
             Ok(c) => c,
@@ -142,7 +157,7 @@ fn run() -> (
         );
     }
 
-    // Tier 5: full ProjectConfig + EnvConfig (DATABASE_URL, TURBOPUFFER_API_KEY, etc.)
+    // Tier 6: full ProjectConfig + EnvConfig (DATABASE_URL, TURBOPUFFER_API_KEY, etc.)
     let project_config = match ProjectConfig::load(&paths.project_config) {
         Ok(c) => c,
         Err(e) => return (Err(e), None),
@@ -169,7 +184,8 @@ fn run() -> (
         | Command::Setup
         | Command::Reset
         | Command::Tombstone { .. }
-        | Command::Check => unreachable!(),
+        | Command::Check
+        | Command::Generate => unreachable!(),
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
         }
