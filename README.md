@@ -2,9 +2,14 @@ Puffgres is a logical replication service that keeps Postgres entities mirrored 
 
 ## Getting Started
 
-Install puffgres by cloning the repo. You can use the `Justfile` to install, by running `just install` in the directory. (If you don't already have `just`, you can install it [here](https://github.com/casey/just))
+Eventually, install logic will work with an install script, i.e. `curl https://labs.a24films.com/puffgres-install.sh | sh`, or a Docker image. 
 
-TODO: Upload to package registries and/or have install script, i.e. `curl https://labs.a24films.com/puffgres-install.sh | sh` 
+In the interim, or if you want to contribute to the Source, you should:
+- insall [Rust](https://rust-lang.org/tools/install/) 
+- install [Just](https://github.com/casey/just)
+- clone the repo
+- run `just install` on the repo. 
+
 
 ## Initializing
 
