@@ -11,6 +11,7 @@ pub struct ConfigRow {
     pub transform_hash: Option<String>,
     pub applied_at: String,
     pub tombstone_applied_at: Option<String>,
+    pub namespace_prefix: Option<String>,
 }
 
 #[derive(Insertable, Debug)]
@@ -22,4 +23,5 @@ pub struct NewConfig<'a> {
     pub transform_hash: Option<&'a str>,
     pub applied_at: &'a str,
     pub tombstone_applied_at: Option<&'a str>,
+    pub namespace_prefix: Option<&'a str>,
 }

@@ -22,6 +22,7 @@ diesel::table! {
         transform_hash -> Nullable<Text>,
         applied_at -> Text,
         tombstone_applied_at -> Nullable<Text>,
+        namespace_prefix -> Nullable<Text>,
     }
 }
 
