@@ -37,6 +37,7 @@ pub struct ReplicationStreamConfig {
 }
 
 /// All row events from a single committed transaction.
+#[derive(Debug)]
 pub struct StreamingBatch {
     pub events: Vec<RowEvent>,
     /// Commit LSN for this transaction — used for checkpointing and ack.
@@ -117,6 +118,21 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
 
                     match msg {
                         WalMessage::Relation(info) => {
+                            if self.relation_cache.schema_changed(&info) {
+                                let err = ReplicationError::SchemaChanged {
+                                    relation_id: info.id,
+                                    namespace: info.namespace.clone(),
+                                    name: info.name.clone(),
+                                };
+                                self.relation_cache.insert(info);
+                                // Return an error to signal the caller to tear down and
+                                // reconnect with a fresh stream. This is not a fatal error:
+                                // Postgres replication slots retain all un-acked WAL, so
+                                // when we reconnect from the last checkpointed LSN, we will
+                                // receive all events between the disconnect and the present
+                                // (including any from this transaction we haven't consumed).
+                                return Err(err);
+                            }
                             self.relation_cache.insert(info);
                         }
                         WalMessage::Insert(ins) => {
@@ -186,6 +202,8 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relation::ColumnInfo;
+    use bytes::{BufMut, BytesMut};
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -339,5 +357,158 @@ mod tests {
         stream.ack();
 
         assert_eq!(stream.client.acked_lsns(), vec![1000, 2000]);
+    }
+
+    /// Build raw pgoutput bytes for a Relation message.
+    fn encode_relation(
+        id: u32,
+        namespace: &str,
+        name: &str,
+        columns: &[ColumnInfo],
+    ) -> bytes::Bytes {
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'R'); // tag
+        buf.put_u32(id);
+        buf.put_slice(namespace.as_bytes());
+        buf.put_u8(0); // null terminator
+        buf.put_slice(name.as_bytes());
+        buf.put_u8(0); // null terminator
+        buf.put_u8(b'd'); // replica identity = Default
+        buf.put_u16(columns.len() as u16);
+        for col in columns {
+            buf.put_u8(if col.part_of_key { 1 } else { 0 });
+            buf.put_slice(col.name.as_bytes());
+            buf.put_u8(0);
+            buf.put_u32(col.type_oid);
+            buf.put_i32(col.type_modifier);
+        }
+        buf.freeze()
+    }
+
+    #[tokio::test]
+    async fn test_schema_change_returns_error() {
+        let col_id = ColumnInfo {
+            part_of_key: true,
+            name: "id".to_string(),
+            type_oid: 23,
+            type_modifier: -1,
+        };
+        let col_email = ColumnInfo {
+            part_of_key: false,
+            name: "email".to_string(),
+            type_oid: 25,
+            type_modifier: -1,
+        };
+
+        // First relation message: table with just "id"
+        let rel_v1 = encode_relation(1, "public", "users", &[col_id.clone()]);
+        // Second relation message: same table with "id" + "email" (schema change)
+        let rel_v2 = encode_relation(1, "public", "users", &[col_id, col_email]);
+
+        let mut stream = make_stream(vec![
+            // First transaction: establishes the relation in cache
+            Ok(Some(ReplicationEvent::Begin {
+                final_lsn: Lsn(0),
+                xid: 1,
+                commit_time_micros: 0,
+            })),
+            Ok(Some(ReplicationEvent::XLogData {
+                wal_start: Lsn(0),
+                wal_end: Lsn(0),
+                server_time_micros: 0,
+                data: rel_v1,
+            })),
+            Ok(Some(ReplicationEvent::Commit {
+                lsn: Lsn(100),
+                end_lsn: Lsn(200),
+                commit_time_micros: 0,
+            })),
+            // Second transaction: schema change on same relation
+            Ok(Some(ReplicationEvent::Begin {
+                final_lsn: Lsn(0),
+                xid: 2,
+                commit_time_micros: 0,
+            })),
+            Ok(Some(ReplicationEvent::XLogData {
+                wal_start: Lsn(200),
+                wal_end: Lsn(200),
+                server_time_micros: 0,
+                data: rel_v2,
+            })),
+        ]);
+
+        // First batch succeeds (relation cached)
+        let batch = stream.recv_batch().await.unwrap().unwrap();
+        assert_eq!(batch.ack_lsn, 200);
+
+        // Second batch returns SchemaChanged error
+        let result = stream.recv_batch().await;
+        assert!(
+            matches!(
+                result,
+                Err(ReplicationError::SchemaChanged { relation_id: 1, .. })
+            ),
+            "expected SchemaChanged error, got: {result:?}",
+        );
+
+        // Cache was still updated with the new schema
+        let cached = stream.relation_cache().get(1).unwrap();
+        assert_eq!(cached.columns.len(), 2);
+        assert_eq!(cached.columns[1].name, "email");
+    }
+
+    #[tokio::test]
+    async fn test_same_relation_no_schema_change() {
+        let col_id = ColumnInfo {
+            part_of_key: true,
+            name: "id".to_string(),
+            type_oid: 23,
+            type_modifier: -1,
+        };
+
+        // Same relation message sent twice (no schema change)
+        let rel = encode_relation(1, "public", "users", &[col_id.clone()]);
+        let rel2 = encode_relation(1, "public", "users", &[col_id]);
+
+        let mut stream = make_stream(vec![
+            Ok(Some(ReplicationEvent::Begin {
+                final_lsn: Lsn(0),
+                xid: 1,
+                commit_time_micros: 0,
+            })),
+            Ok(Some(ReplicationEvent::XLogData {
+                wal_start: Lsn(0),
+                wal_end: Lsn(0),
+                server_time_micros: 0,
+                data: rel,
+            })),
+            Ok(Some(ReplicationEvent::Commit {
+                lsn: Lsn(100),
+                end_lsn: Lsn(200),
+                commit_time_micros: 0,
+            })),
+            Ok(Some(ReplicationEvent::Begin {
+                final_lsn: Lsn(0),
+                xid: 2,
+                commit_time_micros: 0,
+            })),
+            Ok(Some(ReplicationEvent::XLogData {
+                wal_start: Lsn(200),
+                wal_end: Lsn(200),
+                server_time_micros: 0,
+                data: rel2,
+            })),
+            Ok(Some(ReplicationEvent::Commit {
+                lsn: Lsn(300),
+                end_lsn: Lsn(400),
+                commit_time_micros: 0,
+            })),
+        ]);
+
+        // Both batches should succeed — no schema change
+        let batch1 = stream.recv_batch().await.unwrap().unwrap();
+        assert_eq!(batch1.ack_lsn, 200);
+        let batch2 = stream.recv_batch().await.unwrap().unwrap();
+        assert_eq!(batch2.ack_lsn, 400);
     }
 }
