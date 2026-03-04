@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -35,6 +36,8 @@ enum JsAction {
         vector: Option<Vec<f32>>,
         #[serde(default)]
         distance_metric: Option<String>,
+        #[serde(default)]
+        schema: Option<HashMap<String, Value>>,
     },
     Delete {
         id: Value,
@@ -115,6 +118,7 @@ impl JsTransformer {
                     document,
                     vector,
                     distance_metric,
+                    schema,
                 } => {
                     let doc_id = DocumentId::from_value(&id, &self.id_type)?;
                     Ok(Action::Upsert {
@@ -122,6 +126,7 @@ impl JsTransformer {
                         document,
                         vector,
                         distance_metric,
+                        schema,
                     })
                 }
                 JsAction::Delete { id } => {

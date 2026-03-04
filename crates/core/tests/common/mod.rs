@@ -95,6 +95,7 @@ impl Transformer for PassthroughTransformer {
                     document: json!({}),
                     vector: None,
                     distance_metric: None,
+                    schema: None,
                 },
             })
             .collect())

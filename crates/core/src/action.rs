@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 
 use crate::DocumentId;
@@ -19,6 +21,7 @@ pub enum Action {
         document: Value,
         vector: Option<Vec<f32>>,
         distance_metric: Option<String>,
+        schema: Option<HashMap<String, Value>>,
     },
     /// Delete a document by its id.
     Delete { id: DocumentId },
@@ -38,6 +41,7 @@ mod tests {
             document: json!({"name": "test"}),
             vector: Some(vec![0.1, 0.2, 0.3]),
             distance_metric: Some("cosine_distance".to_string()),
+            schema: None,
         };
         assert!(matches!(action, Action::Upsert { .. }));
     }
@@ -49,6 +53,7 @@ mod tests {
             document: json!({"name": "test"}),
             vector: None,
             distance_metric: None,
+            schema: None,
         };
         if let Action::Upsert { vector, .. } = &action {
             assert!(vector.is_none());

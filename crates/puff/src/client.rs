@@ -31,6 +31,7 @@ impl TurbopufferClient {
         let mut upsert_rows: Vec<HashMap<String, Value>> = Vec::new();
         let mut deletes: Vec<Value> = Vec::new();
         let mut batch_distance_metric: Option<DistanceMetric> = None;
+        let mut batch_schema: Option<HashMap<String, Value>> = None;
 
         for action in actions {
             match action {
@@ -39,6 +40,7 @@ impl TurbopufferClient {
                     document,
                     vector,
                     distance_metric,
+                    schema,
                 } => {
                     let parsed = distance_metric.as_deref().and_then(parse_distance_metric);
                     match (&batch_distance_metric, &parsed) {
@@ -50,6 +52,17 @@ impl TurbopufferClient {
                             )));
                         }
                         _ => {}
+                    }
+                    if let Some(s) = schema {
+                        match &batch_schema {
+                            None => batch_schema = Some(s.clone()),
+                            Some(existing) if existing != s => {
+                                return Err(PuffError::Client(
+                                    "mixed schemas in batch".to_string(),
+                                ));
+                            }
+                            _ => {}
+                        }
                     }
                     let mut row = match document {
                         Value::Object(map) => map
@@ -90,6 +103,7 @@ impl TurbopufferClient {
                 Some(deletes)
             },
             distance_metric: batch_distance_metric,
+            schema: batch_schema,
             ..Default::default()
         };
 
@@ -198,12 +212,14 @@ mod tests {
                 document: json!({"title": "doc a"}),
                 vector: Some(vec![0.1, 0.2, 0.3]),
                 distance_metric: Some("cosine_distance".to_string()),
+                schema: None,
             },
             Action::Upsert {
                 id: DocumentId::Uint(2),
                 document: json!({"title": "doc b"}),
                 vector: Some(vec![0.4, 0.5, 0.6]),
                 distance_metric: Some("euclidean_squared".to_string()),
+                schema: None,
             },
         ];
         let result = client.send_batch("ns", &actions).await;
@@ -225,6 +241,7 @@ mod tests {
                 document: json!({"title": "test doc"}),
                 vector: Some(vec![0.1, 0.2, 0.3]),
                 distance_metric: Some("cosine_distance".to_string()),
+                schema: None,
             },
             Action::Delete {
                 id: DocumentId::Uint(2),
