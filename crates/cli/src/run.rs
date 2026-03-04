@@ -480,21 +480,14 @@ async fn run_cdc_inner(
         .await
         .map_err(|e| CliError::Run(format!("failed to connect to postgres: {e}")))?;
 
-    let mut table_refs: Vec<(&str, &str)> = applied_configs
-        .iter()
-        .map(|(_, c)| (c.source.schema.as_str(), c.source.table.as_str()))
-        .collect();
-    table_refs.sort();
-    table_refs.dedup();
-
-    pg::connect::validate_tables(&pg_client, &table_refs)
-        .await
-        .map_err(|e| match &e {
-            pg::PgError::TableNotFound { .. } => {
-                CliError::RunValidation(format!("table validation failed: {e}"))
-            }
-            _ => CliError::Run(format!("table validation failed: {e}")),
-        })?;
+    crate::validate::preflight_check(
+        &env_config.database_url,
+        &env_config.state_db_path,
+        &applied_configs,
+        Some(&pg_client),
+    )
+    .await
+    .map_err(|msg| CliError::Run(format!("pre-flight check failed: {msg}")))?;
 
     pg::slot::ensure_slot(&pg_client, SLOT_NAME)
         .await

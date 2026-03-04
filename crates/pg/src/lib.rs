@@ -10,6 +10,7 @@ pub mod slot;
 pub mod test_utils;
 
 pub use error::PgError;
+pub use tokio_postgres::Client;
 pub use tokio_postgres::types::PgLsn;
 
 pub type Result<T> = std::result::Result<T, PgError>;
