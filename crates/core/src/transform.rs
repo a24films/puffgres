@@ -48,6 +48,7 @@ mod tests {
                             document: json!({}),
                             vector: None,
                             distance_metric: None,
+                            schema: None,
                         },
                     }
                 })

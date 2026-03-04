@@ -7,4 +7,7 @@ table = "{{NAME}}"
 
 [id]
 column = "id"
+# The turbopuffer data type for the id.
+# Options: string, int, uint, uuid.
+# See https://turbopuffer.com/docs/write#schema for all turbopuffer types.
 type = "uint"
