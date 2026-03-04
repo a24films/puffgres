@@ -86,10 +86,10 @@ pub async fn validate_tables(client: &Client, tables: &[(&str, &str)]) -> Result
 
         let exists: bool = row.get(0);
         if !exists {
-            return Err(PgError::QueryError(format!(
-                "Table {}.{} does not exist",
-                schema, table
-            )));
+            return Err(PgError::TableNotFound {
+                schema: schema.to_string(),
+                table: table.to_string(),
+            });
         }
 
         let read_query = format!(

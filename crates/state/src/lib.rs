@@ -32,8 +32,12 @@ impl StateDb {
             .ok_or_else(|| StateError::InvalidState("database path is not valid UTF-8".into()))?;
         let mut conn = SqliteConnection::establish(url)?;
 
-        // Enable WAL mode and foreign keys, matching previous rusqlite behavior.
+        // Enable WAL mode, a busy timeout for concurrent access, and foreign
+        // keys, matching previous rusqlite behavior.
         diesel::sql_query("PRAGMA journal_mode = WAL")
+            .execute(&mut conn)
+            .ok();
+        diesel::sql_query("PRAGMA busy_timeout = 5000")
             .execute(&mut conn)
             .ok();
         diesel::sql_query("PRAGMA foreign_keys = ON")

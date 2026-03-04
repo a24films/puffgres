@@ -98,6 +98,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_loop_skips_non_retryable_errors() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 5,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err(CliError::RunValidation("config drift".into())) }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        // Should exit after the first attempt with no retries
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn retry_loop_returns_immediately_on_success() {
         let attempts = AtomicU32::new(0);
         let result = retry_loop(
@@ -291,7 +313,7 @@ where
         match f().await {
             Ok(()) => break Ok(()),
             Err(e) if !e.is_retryable() => {
-                tracing::error!(error = %e, "CDC loop hit a non-retryable error, exiting");
+                tracing::error!(error = %e, "non-recoverable error, exiting");
                 break Err(e);
             }
             Err(e) => {
@@ -411,7 +433,7 @@ async fn run_cdc_inner(
 
         // Verify transform file can be read and hasn't drifted from the applied hash
         let transform_content = fs::read(&transform_path).map_err(|e| {
-            CliError::RunConfig(format!(
+            CliError::RunValidation(format!(
                 "cannot read transform file for config '{}': {e}",
                 config.name,
             ))
@@ -419,13 +441,13 @@ async fn run_cdc_inner(
 
         if let Some(record) = db.get_config(&config.name)? {
             let current_content_hash = config.content_hash().map_err(|e| {
-                CliError::RunConfig(format!(
+                CliError::RunValidation(format!(
                     "failed to compute content hash for config '{}': {e}",
                     config.name,
                 ))
             })?;
             if record.content_hash != current_content_hash {
-                return Err(CliError::RunConfig(format!(
+                return Err(CliError::RunValidation(format!(
                     "config '{}' has been modified since last apply.\n  content hash: expected {}, got {}\n  Run 'puffgres apply' to apply the changes.",
                     config.name, record.content_hash, current_content_hash,
                 )));
@@ -434,7 +456,7 @@ async fn run_cdc_inner(
             if let Some(ref stored_hash) = record.transform_hash {
                 let current_hash = format!("{:x}", Sha256::digest(&transform_content));
                 if *stored_hash != current_hash {
-                    return Err(CliError::RunConfig(format!(
+                    return Err(CliError::RunValidation(format!(
                         "config '{}' transform was modified since last apply.\n  transform hash: expected {}, got {}\n  Run 'puffgres apply' to apply the changes.",
                         config.name, stored_hash, current_hash,
                     )));
@@ -467,7 +489,12 @@ async fn run_cdc_inner(
 
     pg::connect::validate_tables(&pg_client, &table_refs)
         .await
-        .map_err(|e| CliError::Run(format!("table validation failed: {e}")))?;
+        .map_err(|e| match &e {
+            pg::PgError::TableNotFound { .. } => {
+                CliError::RunValidation(format!("table validation failed: {e}"))
+            }
+            _ => CliError::Run(format!("table validation failed: {e}")),
+        })?;
 
     pg::slot::ensure_slot(&pg_client, SLOT_NAME)
         .await
