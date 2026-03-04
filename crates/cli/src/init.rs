@@ -273,7 +273,7 @@ mod tests {
 
         let dockerfile =
             fs::read_to_string(dir.path().join("puffgres").join("Dockerfile")).unwrap();
-        assert!(dockerfile.contains("mount=type=secret,id=github_token"));
+        assert!(dockerfile.contains("GITHUB_TOKEN"));
         assert!(dockerfile.contains("PUFFGRES_BRANCH_NAME"));
         assert!(dockerfile.contains("cargo install --path crates/cli"));
     }
