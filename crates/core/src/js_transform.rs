@@ -52,6 +52,10 @@ enum JsAction {
 pub struct JsTransformer {
     script_path: PathBuf,
     id_type: IdType,
+    /// When set, reindexes WAL tuple columns to match the generated schema order.
+    /// Each entry is a WAL column index; the output columns are emitted in this order.
+    /// Computed from config.columns + table column ordinals.
+    column_reindex: Option<Vec<usize>>,
 }
 
 impl JsTransformer {
@@ -59,6 +63,24 @@ impl JsTransformer {
         Self {
             script_path,
             id_type,
+            column_reindex: None,
+        }
+    }
+
+    /// Create a transformer with a column reindex mapping.
+    ///
+    /// `column_reindex` maps from schema.ts column order to WAL tuple positions.
+    /// For example, if config specifies `["name", "id"]` and the table has columns
+    /// `[id, name, email]` (ordinals 0, 1, 2), then `column_reindex = [1, 0]`.
+    pub fn with_column_reindex(
+        script_path: PathBuf,
+        id_type: IdType,
+        column_reindex: Vec<usize>,
+    ) -> Self {
+        Self {
+            script_path,
+            id_type,
+            column_reindex: Some(column_reindex),
         }
     }
 
@@ -81,16 +103,21 @@ impl JsTransformer {
 
                 // Prefer new_tuple (insert/update), fall back to old_tuple (delete).
                 let tuple = event.new_tuple.as_ref().or(event.old_tuple.as_ref());
-                let columns = tuple
+                let columns: Vec<Option<String>> = tuple
                     .map(|t| {
-                        t.columns
-                            .iter()
-                            .map(|col| {
-                                col.as_bytes()
-                                    .and_then(|b| std::str::from_utf8(b).ok())
-                                    .map(|s| s.to_string())
-                            })
-                            .collect()
+                        let col_to_string = |col: &replication::ColumnValue| {
+                            col.as_bytes()
+                                .and_then(|b| std::str::from_utf8(b).ok())
+                                .map(|s| s.to_string())
+                        };
+                        if let Some(reindex) = &self.column_reindex {
+                            reindex
+                                .iter()
+                                .map(|&i| t.columns.get(i).and_then(|col| col_to_string(col)))
+                                .collect()
+                        } else {
+                            t.columns.iter().map(|col| col_to_string(col)).collect()
+                        }
                     })
                     .unwrap_or_default();
 
@@ -440,5 +467,53 @@ mod tests {
             .parse_actions(r#"[{"type":"upsert","id":"not-a-number","document":{}}]"#)
             .unwrap_err();
         assert!(err.to_string().contains("cannot parse"));
+    }
+
+    // -- column reindex --
+
+    #[test]
+    fn serialize_with_column_reindex() {
+        // Table has columns [id, name, email] in WAL order (indices 0, 1, 2).
+        // Config specifies ["name", "id"], so reindex = [1, 0].
+        let t = JsTransformer::with_column_reindex(
+            PathBuf::from("transform.ts"),
+            IdType::Uint,
+            vec![1, 0],
+        );
+        let event = make_event(Operation::Insert, vec!["42", "alice", "alice@example.com"]);
+        let id = DocumentId::Uint(42);
+
+        let json_str = t.serialize_events(&[(&event, id)]).unwrap();
+        let parsed: Vec<Value> = serde_json::from_str(&json_str).unwrap();
+
+        // Should output columns in config order: [name, id]
+        assert_eq!(parsed[0]["columns"], json!(["alice", "42"]));
+    }
+
+    #[test]
+    fn serialize_with_column_reindex_handles_nulls() {
+        let t = JsTransformer::with_column_reindex(
+            PathBuf::from("transform.ts"),
+            IdType::Uint,
+            vec![2, 0],
+        );
+        let event = RowEvent {
+            relation_id: 1,
+            operation: Operation::Insert,
+            new_tuple: Some(TupleData {
+                columns: vec![
+                    ColumnValue::Text(Bytes::from("1")),
+                    ColumnValue::Null,
+                    ColumnValue::Null,
+                ],
+            }),
+            old_tuple: None,
+        };
+        let id = DocumentId::Uint(1);
+
+        let json_str = t.serialize_events(&[(&event, id)]).unwrap();
+        let parsed: Vec<Value> = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed[0]["columns"], json!([null, "1"]));
     }
 }

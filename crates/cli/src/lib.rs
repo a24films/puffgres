@@ -4,6 +4,7 @@ pub mod dry_run;
 pub mod dry_transform;
 pub mod env;
 pub mod error;
+pub mod generate;
 pub mod init;
 pub mod new;
 pub mod observability;

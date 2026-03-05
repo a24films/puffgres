@@ -417,9 +417,18 @@ async fn run_cdc_inner(
     }
 
     let mut mappings = Vec::new();
-    let mut transformers: HashMap<String, Box<dyn Transformer>> = HashMap::new();
     let mut namespaces: HashMap<String, String> = HashMap::new();
     let mut tables: BTreeSet<String> = BTreeSet::new();
+
+    // Collect config info and verify hashes before building transformers
+    struct ConfigInfo {
+        transform_path: std::path::PathBuf,
+        id_type: config::IdType,
+        columns: Option<Vec<String>>,
+        schema: String,
+        table: String,
+    }
+    let mut config_infos: HashMap<String, ConfigInfo> = HashMap::new();
 
     for (config_path, config) in &applied_configs {
         mappings.push(Mapping::from_config(config));
@@ -464,12 +473,15 @@ async fn run_cdc_inner(
             }
         }
 
-        transformers.insert(
+        config_infos.insert(
             config.name.clone(),
-            Box::new(JsTransformer::new(
+            ConfigInfo {
                 transform_path,
-                config.id.id_type.clone(),
-            )),
+                id_type: config.id.id_type.clone(),
+                columns: config.columns.clone(),
+                schema: config.source.schema.clone(),
+                table: config.source.table.clone(),
+            },
         );
     }
 
@@ -479,6 +491,52 @@ async fn run_cdc_inner(
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
         .map_err(|e| CliError::Run(format!("failed to connect to postgres: {e}")))?;
+
+    // Build transformers after PG connect so we can compute column reindex
+    // mappings for configs that specify a column subset/reorder.
+    let mut transformers: HashMap<String, Box<dyn Transformer>> = HashMap::new();
+    for (name, info) in &config_infos {
+        let transformer: Box<dyn Transformer> = if let Some(ref config_cols) = info.columns {
+            // Fetch table columns in their natural (WAL) order
+            let all_columns =
+                pg::column::resolve_column_info(&pg_client, &info.schema, &info.table)
+                    .await
+                    .map_err(|e| {
+                        CliError::Run(format!(
+                            "failed to resolve columns for {}.{}: {e}",
+                            info.schema, info.table
+                        ))
+                    })?;
+
+            // Build reindex: for each config column, find its position in the table
+            let reindex: Vec<usize> = config_cols
+                .iter()
+                .map(|col_name| {
+                    all_columns
+                        .iter()
+                        .position(|c| c.name == *col_name)
+                        .ok_or_else(|| {
+                            CliError::Run(format!(
+                                "config '{}': column '{}' not found in {}.{}",
+                                name, col_name, info.schema, info.table
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Box::new(JsTransformer::with_column_reindex(
+                info.transform_path.clone(),
+                info.id_type.clone(),
+                reindex,
+            ))
+        } else {
+            Box::new(JsTransformer::new(
+                info.transform_path.clone(),
+                info.id_type.clone(),
+            ))
+        };
+        transformers.insert(name.clone(), transformer);
+    }
 
     crate::validate::preflight_check(
         &env_config.database_url,

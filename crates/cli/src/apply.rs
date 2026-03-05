@@ -80,6 +80,16 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             }
         }
 
+        // New config: verify schema.ts exists
+        let schema_path = config_path.parent().unwrap().join("schema.ts");
+        if !schema_path.exists() {
+            errors.push(format!(
+                "{}: schema.ts is missing. Run `puffgres generate`",
+                config_path.display(),
+            ));
+            continue;
+        }
+
         // New config: read transform file and compute hash
         let transform_path = config_path.parent().unwrap().join("transform.ts");
         let transform_content = match fs::read(&transform_path) {
