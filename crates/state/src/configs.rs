@@ -167,30 +167,11 @@ impl StateDb {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    fn setup_configs_db() -> (tempfile::TempDir, StateDb) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let db = StateDb::open(&path).unwrap();
-        (dir, db)
-    }
-
-    fn sample_config(name: &str) -> ConfigRecord {
-        ConfigRecord {
-            name: name.to_string(),
-            namespace: name.to_string(),
-            content_hash: "abc123".to_string(),
-            transform_hash: None,
-            applied_at: Utc::now(),
-            tombstone_applied_at: None,
-            namespace_prefix: None,
-        }
-    }
+    use crate::test_helpers::{sample_config, setup_test_db};
 
     #[test]
     fn insert_and_retrieve_config() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
 
         db.insert_config(&config).unwrap();
@@ -205,7 +186,7 @@ mod tests {
 
     #[test]
     fn list_multiple_configs() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
 
         db.insert_config(&sample_config("alpha")).unwrap();
         db.insert_config(&sample_config("beta")).unwrap();
@@ -220,7 +201,7 @@ mod tests {
 
     #[test]
     fn duplicate_name_fails() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let dup = sample_config("film");
@@ -230,7 +211,7 @@ mod tests {
 
     #[test]
     fn duplicate_namespace_fails() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let mut dup = sample_config("movie");
@@ -242,13 +223,13 @@ mod tests {
 
     #[test]
     fn get_nonexistent_returns_none() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         assert!(db.get_config("nonexistent").unwrap().is_none());
     }
 
     #[test]
     fn config_with_transform_hash() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         let mut config = sample_config("film");
         config.transform_hash = Some("transform_abc".to_string());
 
@@ -260,7 +241,7 @@ mod tests {
 
     #[test]
     fn tombstone_config_sets_timestamp() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.tombstone_config("film").unwrap();
@@ -271,21 +252,21 @@ mod tests {
 
     #[test]
     fn tombstone_nonexistent_errors() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         let result = db.tombstone_config("nonexistent");
         assert!(result.is_err());
     }
 
     #[test]
     fn is_tombstoned_returns_false_for_active() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         assert!(!db.is_tombstoned("film").unwrap());
     }
 
     #[test]
     fn is_tombstoned_returns_true_after_tombstone() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.tombstone_config("film").unwrap();
         assert!(db.is_tombstoned("film").unwrap());
@@ -293,7 +274,7 @@ mod tests {
 
     #[test]
     fn list_active_excludes_tombstoned() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("alpha")).unwrap();
         db.insert_config(&sample_config("beta")).unwrap();
         db.insert_config(&sample_config("gamma")).unwrap();
@@ -308,7 +289,7 @@ mod tests {
 
     #[test]
     fn list_tombstoned_returns_only_tombstoned() {
-        let (_dir, mut db) = setup_configs_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("alpha")).unwrap();
         db.insert_config(&sample_config("beta")).unwrap();
 

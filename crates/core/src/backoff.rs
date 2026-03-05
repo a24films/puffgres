@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
+    fn default_config() {
         let cfg = BackoffConfig::default();
         assert_eq!(cfg.initial_delay_ms, 100);
         assert_eq!(cfg.max_delay_ms, 30_000);
@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn test_returns_none_when_exhausted() {
+    fn returns_none_when_exhausted() {
         let mut b = Backoff::new(BackoffConfig {
             max_retries: 2,
             ..BackoffConfig::default()
@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn test_no_jitter_exponential_increase() {
+    fn no_jitter_exponential_increase() {
         let mut b = Backoff::new(BackoffConfig {
             initial_delay_ms: 100,
             max_delay_ms: 100_000,
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn test_respects_max_delay() {
+    fn respects_max_delay() {
         let mut b = Backoff::new(BackoffConfig {
             initial_delay_ms: 1000,
             max_delay_ms: 2000,
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jitter_stays_within_bounds() {
+    fn jitter_stays_within_bounds() {
         for _ in 0..100 {
             let mut b = Backoff::new(BackoffConfig {
                 initial_delay_ms: 1000,
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reset_restarts_sequence() {
+    fn reset_restarts_sequence() {
         let mut b = Backoff::new(BackoffConfig {
             max_retries: 1,
             jitter: false,
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn test_attempt_tracks_calls() {
+    fn attempt_tracks_calls() {
         let mut b = Backoff::new(BackoffConfig {
             max_retries: 3,
             ..BackoffConfig::default()
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_retries_returns_none_immediately() {
+    fn zero_retries_returns_none_immediately() {
         let mut b = Backoff::new(BackoffConfig {
             max_retries: 0,
             ..BackoffConfig::default()
@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiplier_of_one_gives_constant_delay() {
+    fn multiplier_of_one_gives_constant_delay() {
         let mut b = Backoff::new(BackoffConfig {
             initial_delay_ms: 500,
             max_delay_ms: 100_000,

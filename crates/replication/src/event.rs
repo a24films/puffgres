@@ -94,7 +94,7 @@ mod tests {
     use serde_json;
 
     #[test]
-    fn test_row_event_serializes_to_json() {
+    fn row_event_serializes_to_json() {
         let event = RowEvent {
             relation_id: 16384,
             operation: Operation::Insert,
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn test_row_event_roundtrips_through_json() {
+    fn row_event_roundtrips_through_json() {
         let event = RowEvent {
             relation_id: 42,
             operation: Operation::Update,

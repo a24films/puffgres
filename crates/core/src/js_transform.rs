@@ -113,10 +113,10 @@ impl JsTransformer {
                         if let Some(reindex) = &self.column_reindex {
                             reindex
                                 .iter()
-                                .map(|&i| t.columns.get(i).and_then(|col| col_to_string(col)))
+                                .map(|&i| t.columns.get(i).and_then(&col_to_string))
                                 .collect()
                         } else {
-                            t.columns.iter().map(|col| col_to_string(col)).collect()
+                            t.columns.iter().map(col_to_string).collect()
                         }
                     })
                     .unwrap_or_default();

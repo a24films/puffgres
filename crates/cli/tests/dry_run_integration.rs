@@ -120,7 +120,7 @@ async fn start_postgres(state_db_path: PathBuf) -> (ContainerAsync<Postgres>, En
 }
 
 #[tokio::test]
-async fn test_rejects_vector_without_distance_metric() {
+async fn rejects_vector_without_distance_metric() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_container, env_config) = start_postgres(state_db_path).await;
 
@@ -150,7 +150,7 @@ async fn test_rejects_vector_without_distance_metric() {
 }
 
 #[tokio::test]
-async fn test_accepts_valid_transform() {
+async fn accepts_valid_transform() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_container, env_config) = start_postgres(state_db_path).await;
 
@@ -180,7 +180,7 @@ async fn test_accepts_valid_transform() {
 }
 
 #[tokio::test]
-async fn test_accepts_vector_with_distance_metric() {
+async fn accepts_vector_with_distance_metric() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_container, env_config) = start_postgres(state_db_path).await;
 
@@ -210,7 +210,7 @@ async fn test_accepts_vector_with_distance_metric() {
 }
 
 #[tokio::test]
-async fn test_skips_empty_table_gracefully() {
+async fn skips_empty_table_gracefully() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_container, env_config) = start_postgres(state_db_path).await;
 
@@ -236,7 +236,7 @@ async fn test_skips_empty_table_gracefully() {
 }
 
 #[tokio::test]
-async fn test_filters_by_config_name() {
+async fn filters_by_config_name() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_container, env_config) = start_postgres(state_db_path).await;
 

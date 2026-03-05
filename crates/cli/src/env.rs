@@ -36,7 +36,7 @@ pub fn load_env_files(paths: &[impl AsRef<Path>]) -> Result<HashMap<String, Stri
             Err(e) => {
                 return Err(CliError::EnvFile {
                     path: path.display().to_string(),
-                    source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    source: std::io::Error::other(e.to_string()),
                 });
             }
         }
@@ -113,11 +113,8 @@ impl EnvConfig {
     pub fn load(paths: &[impl AsRef<Path>], project_root: &Path) -> Result<Self, CliError> {
         let mut vars = load_env_files(paths)?;
 
-        let mut resolve = |key: &str| -> Option<String> {
-            std::env::var(key)
-                .ok()
-                .or_else(|| vars.remove(&key.to_string()))
-        };
+        let mut resolve =
+            |key: &str| -> Option<String> { std::env::var(key).ok().or_else(|| vars.remove(key)) };
 
         let database_url = resolve("DATABASE_URL")
             .ok_or_else(|| CliError::MissingEnvVar("DATABASE_URL".into()))?;

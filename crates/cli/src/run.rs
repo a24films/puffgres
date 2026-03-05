@@ -42,263 +42,6 @@ fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    #[tokio::test]
-    async fn retry_loop_succeeds_after_transient_failures() {
-        let attempts = AtomicU32::new(0);
-        let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 5,
-                multiplier: 1.0,
-                jitter: false,
-            },
-            || {
-                let n = attempts.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    if n < 2 {
-                        Err(CliError::Run("transient".into()))
-                    } else {
-                        Ok(())
-                    }
-                }
-            },
-        )
-        .await;
-        assert!(result.is_ok());
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_gives_up_after_max_retries() {
-        let attempts = AtomicU32::new(0);
-        let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 3,
-                multiplier: 1.0,
-                jitter: false,
-            },
-            || {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                async { Err(CliError::Run("permanent".into())) }
-            },
-        )
-        .await;
-        assert!(result.is_err());
-        // 1 initial attempt + 3 retries = 4 total
-        assert_eq!(attempts.load(Ordering::SeqCst), 4);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_skips_non_retryable_errors() {
-        let attempts = AtomicU32::new(0);
-        let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 5,
-                multiplier: 1.0,
-                jitter: false,
-            },
-            || {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                async { Err(CliError::RunValidation("config drift".into())) }
-            },
-        )
-        .await;
-        assert!(result.is_err());
-        // Should exit after the first attempt with no retries
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn retry_loop_returns_immediately_on_success() {
-        let attempts = AtomicU32::new(0);
-        let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 5,
-                multiplier: 1.0,
-                jitter: false,
-            },
-            || {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                async { Ok(()) }
-            },
-        )
-        .await;
-        assert!(result.is_ok());
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn prefixed_namespace_with_prefix() {
-        let prefix = Some("production".to_string());
-        assert_eq!(prefixed_namespace(&prefix, "user"), "production_user");
-    }
-
-    #[test]
-    fn prefixed_namespace_without_prefix() {
-        assert_eq!(prefixed_namespace(&None, "user"), "user");
-    }
-
-    #[test]
-    fn prefixed_namespace_empty_prefix_treated_as_none() {
-        let prefix = Some("".to_string());
-        assert_eq!(prefixed_namespace(&prefix, "user"), "user");
-    }
-
-    use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
-    use state::ConfigRecord;
-
-    fn dummy_env(state_db_path: PathBuf) -> EnvConfig {
-        EnvConfig {
-            database_url: "host=invalid".to_string(),
-            turbopuffer_api_key: "fake".to_string(),
-            turbopuffer_region: None,
-            turbopuffer_namespace_prefix: None,
-            otel_endpoint: None,
-            otel_headers: None,
-            state_db_path,
-            dlq_max_age_hours: None,
-        }
-    }
-
-    /// Sync wrapper for run_cdc_inner (bypasses retry loop).
-    fn run_no_retry(
-        paths: &ProjectPaths,
-        env_config: &EnvConfig,
-        project_config: &ProjectConfig,
-        metrics: Option<&Metrics>,
-    ) -> Result<(), CliError> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| CliError::Run(format!("failed to create async runtime: {e}")))?;
-        rt.block_on(run_cdc_inner(paths, env_config, project_config, metrics))
-    }
-
-    #[test]
-    fn test_errors_on_unreadable_transform_for_applied_config() {
-        let (_dir, paths, state_db_path) = setup_project();
-        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
-        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
-
-        let loader = ConfigLoader::new(&paths.configs);
-        let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
-        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&state_db_path).unwrap();
-        db.insert_config(&ConfigRecord {
-            name: cfg.name.clone(),
-
-            namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
-            transform_hash: Some(transform_hash),
-            applied_at: Utc::now(),
-            tombstone_applied_at: None,
-            namespace_prefix: None,
-        })
-        .unwrap();
-
-        // Delete the transform file so it can't be read
-        fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
-
-        let err = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path),
-            &ProjectConfig::default(),
-            None,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("cannot read transform"),
-            "expected unreadable transform error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn test_errors_on_modified_content_hash_for_applied_config() {
-        let (_dir, paths, state_db_path) = setup_project();
-        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
-        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
-
-        let loader = ConfigLoader::new(&paths.configs);
-        let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
-        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&state_db_path).unwrap();
-        db.insert_config(&ConfigRecord {
-            name: cfg.name.clone(),
-            namespace: cfg.namespace.clone(),
-            content_hash: "stale_content_hash".to_string(),
-            transform_hash: Some(transform_hash),
-            applied_at: Utc::now(),
-            tombstone_applied_at: None,
-            namespace_prefix: None,
-        })
-        .unwrap();
-
-        let err = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path),
-            &ProjectConfig::default(),
-            None,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("has been modified since last apply"),
-            "expected modified content hash error, got: {err}"
-        );
-        assert!(
-            err.to_string().contains("content hash"),
-            "expected content hash details in error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn test_errors_on_modified_transform_for_applied_config() {
-        let (_dir, paths, state_db_path) = setup_project();
-        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
-        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
-
-        let loader = ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
-        let mut db = StateDb::open(&state_db_path).unwrap();
-        db.insert_config(&ConfigRecord {
-            name: cfg.name.clone(),
-
-            namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
-            transform_hash: Some("stale_hash".to_string()),
-            applied_at: Utc::now(),
-            tombstone_applied_at: None,
-            namespace_prefix: None,
-        })
-        .unwrap();
-
-        let err = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path),
-            &ProjectConfig::default(),
-            None,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("was modified"),
-            "expected modified transform error, got: {err}"
-        );
-    }
-}
-
 /// Run `f` in a loop with exponential backoff on failure.
 ///
 /// Non-retryable errors (e.g. config validation failures) bypass the loop and
@@ -920,7 +663,7 @@ async fn run_cdc_inner(
             }
 
             batch_count += 1;
-            if batch_count % project_config.dlq_replay_interval() == 0 {
+            if batch_count.is_multiple_of(project_config.dlq_replay_interval()) {
                 replay_dlq(
                     &mut db,
                     &transformers,
@@ -1134,4 +877,261 @@ async fn replay_dlq(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[tokio::test]
+    async fn retry_loop_succeeds_after_transient_failures() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 5,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                let n = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n < 2 {
+                        Err(CliError::Run("transient".into()))
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_loop_gives_up_after_max_retries() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 3,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err(CliError::Run("permanent".into())) }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        // 1 initial attempt + 3 retries = 4 total
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn retry_loop_skips_non_retryable_errors() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 5,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err(CliError::RunValidation("config drift".into())) }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        // Should exit after the first attempt with no retries
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_loop_returns_immediately_on_success() {
+        let attempts = AtomicU32::new(0);
+        let result = retry_loop(
+            BackoffConfig {
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                max_retries: 5,
+                multiplier: 1.0,
+                jitter: false,
+            },
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn prefixed_namespace_with_prefix() {
+        let prefix = Some("production".to_string());
+        assert_eq!(prefixed_namespace(&prefix, "user"), "production_user");
+    }
+
+    #[test]
+    fn prefixed_namespace_without_prefix() {
+        assert_eq!(prefixed_namespace(&None, "user"), "user");
+    }
+
+    #[test]
+    fn prefixed_namespace_empty_prefix_treated_as_none() {
+        let prefix = Some("".to_string());
+        assert_eq!(prefixed_namespace(&prefix, "user"), "user");
+    }
+
+    use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
+    use state::ConfigRecord;
+
+    fn dummy_env(state_db_path: PathBuf) -> EnvConfig {
+        EnvConfig {
+            database_url: "host=invalid".to_string(),
+            turbopuffer_api_key: "fake".to_string(),
+            turbopuffer_region: None,
+            turbopuffer_namespace_prefix: None,
+            otel_endpoint: None,
+            otel_headers: None,
+            state_db_path,
+            dlq_max_age_hours: None,
+        }
+    }
+
+    /// Sync wrapper for run_cdc_inner (bypasses retry loop).
+    fn run_no_retry(
+        paths: &ProjectPaths,
+        env_config: &EnvConfig,
+        project_config: &ProjectConfig,
+        metrics: Option<&Metrics>,
+    ) -> Result<(), CliError> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| CliError::Run(format!("failed to create async runtime: {e}")))?;
+        rt.block_on(run_cdc_inner(paths, env_config, project_config, metrics))
+    }
+
+    #[test]
+    fn errors_on_unreadable_transform_for_applied_config() {
+        let (_dir, paths, state_db_path) = setup_project();
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+
+        let loader = ConfigLoader::new(&paths.configs);
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
+        let mut db = StateDb::open(&state_db_path).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+
+            namespace: cfg.namespace.clone(),
+            content_hash: cfg.content_hash().unwrap(),
+            transform_hash: Some(transform_hash),
+            applied_at: Utc::now(),
+            tombstone_applied_at: None,
+            namespace_prefix: None,
+        })
+        .unwrap();
+
+        // Delete the transform file so it can't be read
+        fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
+
+        let err = run_no_retry(
+            &paths,
+            &dummy_env(state_db_path),
+            &ProjectConfig::default(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("cannot read transform"),
+            "expected unreadable transform error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_on_modified_content_hash_for_applied_config() {
+        let (_dir, paths, state_db_path) = setup_project();
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+
+        let loader = ConfigLoader::new(&paths.configs);
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
+        let mut db = StateDb::open(&state_db_path).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+            namespace: cfg.namespace.clone(),
+            content_hash: "stale_content_hash".to_string(),
+            transform_hash: Some(transform_hash),
+            applied_at: Utc::now(),
+            tombstone_applied_at: None,
+            namespace_prefix: None,
+        })
+        .unwrap();
+
+        let err = run_no_retry(
+            &paths,
+            &dummy_env(state_db_path),
+            &ProjectConfig::default(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("has been modified since last apply"),
+            "expected modified content hash error, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("content hash"),
+            "expected content hash details in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_on_modified_transform_for_applied_config() {
+        let (_dir, paths, state_db_path) = setup_project();
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+
+        let loader = ConfigLoader::new(&paths.configs);
+        let cfg = &loader.load_all().unwrap()[0].1;
+        let mut db = StateDb::open(&state_db_path).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+
+            namespace: cfg.namespace.clone(),
+            content_hash: cfg.content_hash().unwrap(),
+            transform_hash: Some("stale_hash".to_string()),
+            applied_at: Utc::now(),
+            tombstone_applied_at: None,
+            namespace_prefix: None,
+        })
+        .unwrap();
+
+        let err = run_no_retry(
+            &paths,
+            &dummy_env(state_db_path),
+            &ProjectConfig::default(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("was modified"),
+            "expected modified transform error, got: {err}"
+        );
+    }
 }

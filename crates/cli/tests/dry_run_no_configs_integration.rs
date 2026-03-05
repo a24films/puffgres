@@ -1,11 +1,9 @@
-use std::path::PathBuf;
-
 use puffgres_cli::EnvConfig;
 use puffgres_cli::dry_run::run_async;
 use puffgres_cli::test_utils::setup_project;
 
 #[tokio::test]
-async fn test_named_dry_run_fails_with_no_configs() {
+async fn named_dry_run_fails_with_no_configs() {
     let (_dir, paths, state_db_path) = setup_project();
 
     // Use a dummy env_config; the error fires before any Postgres connection.

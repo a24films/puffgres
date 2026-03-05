@@ -30,12 +30,12 @@ pub async fn dry_run_transform(
             distance_metric,
             ..
         } = action
+            && vector.is_some()
+            && distance_metric.is_none()
         {
-            if vector.is_some() && distance_metric.is_none() {
-                return Err("transform returns a vector but no distance_metric — \
+            return Err("transform returns a vector but no distance_metric — \
                      turbopuffer requires distance_metric for namespaces with vectors"
-                    .to_string());
-            }
+                .to_string());
         }
     }
 

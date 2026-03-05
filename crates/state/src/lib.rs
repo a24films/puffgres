@@ -6,6 +6,9 @@ mod models;
 mod schema;
 mod streaming_checkpoint;
 
+#[cfg(test)]
+mod test_helpers;
+
 use std::path::{Path, PathBuf};
 
 use diesel::SqliteConnection;

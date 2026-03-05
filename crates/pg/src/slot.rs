@@ -166,7 +166,7 @@ pub async fn get_confirmed_flush_lsn(client: &Client, slot_name: &str) -> Result
     match rows.first() {
         Some(row) => {
             let lsn: Option<tokio_postgres::types::PgLsn> = row.get(0);
-            Ok(lsn.map(|l| u64::from(l)))
+            Ok(lsn.map(u64::from))
         }
         None => Ok(None),
     }

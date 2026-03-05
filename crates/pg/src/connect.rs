@@ -118,7 +118,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_quote_identifier() {
+    fn quotes_identifiers() {
         assert_eq!(quote_identifier("simple"), "\"simple\"");
         assert_eq!(quote_identifier("with\"quote"), "\"with\"\"quote\"");
         assert_eq!(quote_identifier("CamelCase"), "\"CamelCase\"");

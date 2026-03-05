@@ -6,20 +6,20 @@ use pg::connect::{connect, validate_tables};
 use pg::sample::fetch_sample_row;
 
 #[tokio::test]
-async fn test_connect_success() {
+async fn connect_success() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string).await;
     assert!(client.is_ok());
 }
 
 #[tokio::test]
-async fn test_connect_invalid_connection_string() {
+async fn connect_invalid_connection_string() {
     let result = connect("host=nonexistent user=invalid").await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
-async fn test_validate_tables_existing_table() {
+async fn validate_tables_existing_table() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -35,7 +35,7 @@ async fn test_validate_tables_existing_table() {
 }
 
 #[tokio::test]
-async fn test_validate_tables_nonexistent_table() {
+async fn validate_tables_nonexistent_table() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -46,7 +46,7 @@ async fn test_validate_tables_nonexistent_table() {
 }
 
 #[tokio::test]
-async fn test_validate_multiple_tables() {
+async fn validate_multiple_tables() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -67,7 +67,7 @@ async fn test_validate_multiple_tables() {
 }
 
 #[tokio::test]
-async fn test_validate_tables_mixed_exist_and_not_exist() {
+async fn validate_tables_mixed_exist_and_not_exist() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -87,7 +87,7 @@ async fn test_validate_tables_mixed_exist_and_not_exist() {
 }
 
 #[tokio::test]
-async fn test_validate_tables_with_data() {
+async fn validate_tables_with_data() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -111,7 +111,7 @@ async fn test_validate_tables_with_data() {
 }
 
 #[tokio::test]
-async fn test_validate_tables_special_characters() {
+async fn validate_tables_special_characters() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -130,7 +130,7 @@ async fn test_validate_tables_special_characters() {
 }
 
 #[tokio::test]
-async fn test_validate_existing_column() {
+async fn validate_existing_column() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -154,7 +154,7 @@ async fn test_validate_existing_column() {
 }
 
 #[tokio::test]
-async fn test_rejects_nonexistent_column() {
+async fn rejects_nonexistent_column() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -172,7 +172,7 @@ async fn test_rejects_nonexistent_column() {
 }
 
 #[tokio::test]
-async fn test_fetch_sample_row() {
+async fn fetches_sample_row() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -207,7 +207,7 @@ async fn test_fetch_sample_row() {
 }
 
 #[tokio::test]
-async fn test_sample_row_empty_table() {
+async fn sample_row_empty_table() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -228,7 +228,7 @@ async fn test_sample_row_empty_table() {
 }
 
 #[tokio::test]
-async fn test_sample_row_null_values() {
+async fn sample_row_null_values() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await

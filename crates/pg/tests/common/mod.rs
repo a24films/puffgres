@@ -1,6 +1,7 @@
 use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 
+#[allow(dead_code)]
 pub struct TestContext {
     pub _container: ContainerAsync<Postgres>,
     pub connection_string: String,

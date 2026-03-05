@@ -99,7 +99,7 @@ pub fn init(
 
     let span_exporter = SpanExporter::builder()
         .with_http()
-        .with_endpoint(&format!("{base}/v1/traces"))
+        .with_endpoint(format!("{base}/v1/traces"))
         .with_protocol(Protocol::HttpJson)
         .with_headers(headers.clone())
         .build()
@@ -115,7 +115,7 @@ pub fn init(
 
     let metric_exporter = MetricExporter::builder()
         .with_http()
-        .with_endpoint(&format!("{base}/v1/metrics"))
+        .with_endpoint(format!("{base}/v1/metrics"))
         .with_protocol(Protocol::HttpJson)
         .with_headers(headers.clone())
         .build()
@@ -132,7 +132,7 @@ pub fn init(
 
     let log_exporter = LogExporter::builder()
         .with_http()
-        .with_endpoint(&format!("{base}/v1/logs"))
+        .with_endpoint(format!("{base}/v1/logs"))
         .with_protocol(Protocol::HttpJson)
         .with_headers(headers)
         .build()

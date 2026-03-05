@@ -199,13 +199,13 @@ mod tests {
     }
 
     #[test]
-    fn test_no_configs_succeeds() {
+    fn no_configs_succeeds() {
         let (_dir, paths, state_db_path) = setup_project();
         run(&paths, &dummy_env(state_db_path)).unwrap();
     }
 
     #[test]
-    fn test_errors_on_missing_transform() {
+    fn errors_on_missing_transform() {
         let (_dir, paths, state_db_path) = setup_project();
         write_config(&paths, "user", "public", "users", "id", "uint");
 
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn test_any_error_prevents_all_applies() {
+    fn any_error_prevents_all_applies() {
         let (_dir, paths, state_db_path) = setup_project();
 
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn test_skips_already_applied_unchanged() {
+    fn skips_already_applied_unchanged() {
         let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_skips_multiple_already_applied() {
+    fn skips_multiple_already_applied() {
         let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn test_errors_on_modified_config() {
+    fn errors_on_modified_config() {
         let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -315,8 +315,7 @@ mod tests {
         .unwrap();
 
         // Mutate the config on disk
-        let content = format!(
-            r#"name = "user"
+        let content = r#"name = "user"
 namespace = "user"
 
 [source]
@@ -327,7 +326,7 @@ table = "accounts"
 column = "id"
 type = "uint"
 "#
-        );
+        .to_string();
         fs::write(config_path, content).unwrap();
 
         let err = run(&paths, &dummy_env(state_db_path)).unwrap_err();
@@ -338,7 +337,7 @@ type = "uint"
     }
 
     #[test]
-    fn test_errors_on_unreadable_transform_for_applied_config() {
+    fn errors_on_unreadable_transform_for_applied_config() {
         let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -371,7 +370,7 @@ type = "uint"
     }
 
     #[test]
-    fn test_stored_record_fields() {
+    fn stored_record_fields() {
         let (_dir, paths, state_db_path) = setup_project();
         let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
         write_transform(&film_dir, PASSTHROUGH_TRANSFORM);

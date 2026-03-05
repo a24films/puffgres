@@ -100,15 +100,15 @@ pub async fn preflight_check(
         let ns = config.namespace.clone();
         if applied_namespaces.contains(&ns) {
             let conflict = applied.iter().find(|r| r.namespace == ns);
-            if let Some(existing) = conflict {
-                if existing.name != config.name {
-                    namespace_errors.push(format!(
-                        "{}: namespace '{}' already used by applied config '{}'",
-                        path.display(),
-                        ns,
-                        existing.name,
-                    ));
-                }
+            if let Some(existing) = conflict
+                && existing.name != config.name
+            {
+                namespace_errors.push(format!(
+                    "{}: namespace '{}' already used by applied config '{}'",
+                    path.display(),
+                    ns,
+                    existing.name,
+                ));
             }
         }
     }
@@ -143,7 +143,7 @@ pub async fn preflight_check(
 
         // Table exists
         let table_refs = vec![(config.source.schema.as_str(), config.source.table.as_str())];
-        if let Err(e) = pg::connect::validate_tables(&pg_client, &table_refs).await {
+        if let Err(e) = pg::connect::validate_tables(pg_client, &table_refs).await {
             println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
             failed += 1;
             continue;
@@ -151,7 +151,7 @@ pub async fn preflight_check(
 
         // ID column exists + type compatibility
         let pg_type = match pg::column::validate_column(
-            &pg_client,
+            pg_client,
             &config.source.schema,
             &config.source.table,
             &config.id.column,
@@ -181,7 +181,7 @@ pub async fn preflight_check(
             batch_size: 1,
         };
 
-        if let Err(_e) = pg::batch::validate_id_column_uniqueness(&pg_client, &batch_config).await {
+        if let Err(_e) = pg::batch::validate_id_column_uniqueness(pg_client, &batch_config).await {
             println!(
                 "  {:<12} FAIL {} -- id column '{}' has no unique index",
                 config.name, qualified, config.id.column
@@ -195,7 +195,7 @@ pub async fn preflight_check(
         if let Some(columns) = &config.columns {
             for col in columns {
                 if let Err(e) = pg::column::validate_column(
-                    &pg_client,
+                    pg_client,
                     &config.source.schema,
                     &config.source.table,
                     col,
@@ -216,7 +216,7 @@ pub async fn preflight_check(
         // Dry-run transform with a sample row
         let mut transform_status = "no sample row";
         let sample = match pg::sample::fetch_sample_row(
-            &pg_client,
+            pg_client,
             &config.source.schema,
             &config.source.table,
         )
