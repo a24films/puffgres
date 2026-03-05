@@ -27,9 +27,10 @@ impl Config {
 }
 
 fn is_valid_identifier(s: &str) -> bool {
-    s.chars().next().map_or(false, |first| {
-        !first.is_numeric() && (first.is_alphanumeric() || first == '_')
-    }) && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+    s.chars()
+        .next()
+        .is_some_and(|first| !first.is_numeric() && (first.is_alphanumeric() || first == '_'))
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -42,13 +43,13 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_config_passes() {
+    fn valid_config_passes() {
         let config = load_fixture("valid");
         assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn test_invalid_name_fails() {
+    fn invalid_name_fails() {
         let config = load_fixture("invalid_name");
         let errors = config.validate().unwrap_err();
 
@@ -56,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_valid_identifier() {
+    fn validates_identifiers() {
         // Valid
         assert!(is_valid_identifier("user_0001"));
         assert!(is_valid_identifier("_private"));

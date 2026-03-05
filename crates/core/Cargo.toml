@@ -27,4 +27,4 @@ tempfile = "3.24.0"
 testcontainers = "0.26.0"
 testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
 tokio = { version = "1.49.0", features = ["macros", "rt", "rt-multi-thread"] }
-toml = "1.0.0+spec-1.1.0"
+toml = "1.0.0"

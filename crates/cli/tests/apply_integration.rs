@@ -46,7 +46,7 @@ async fn setup_pg(
 }
 
 #[tokio::test]
-async fn test_apply_and_idempotency() {
+async fn apply_and_idempotency() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = setup_pg(&["users", "films"], state_db_path.clone()).await;
 
@@ -75,7 +75,7 @@ async fn test_apply_and_idempotency() {
 }
 
 #[tokio::test]
-async fn test_rejects_modified_config() {
+async fn rejects_modified_config() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = setup_pg(&["users", "accounts"], state_db_path).await;
 
@@ -109,7 +109,7 @@ type = "uint"
 }
 
 #[tokio::test]
-async fn test_rejects_nonexistent_table() {
+async fn rejects_nonexistent_table() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
@@ -124,7 +124,7 @@ async fn test_rejects_nonexistent_table() {
 }
 
 #[tokio::test]
-async fn test_rejects_nonexistent_id_column() {
+async fn rejects_nonexistent_id_column() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
@@ -150,7 +150,7 @@ async fn test_rejects_nonexistent_id_column() {
 }
 
 #[tokio::test]
-async fn test_rejects_incompatible_id_type() {
+async fn rejects_incompatible_id_type() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
@@ -176,7 +176,7 @@ async fn test_rejects_incompatible_id_type() {
 }
 
 #[tokio::test]
-async fn test_rejects_vector_without_distance_metric() {
+async fn rejects_vector_without_distance_metric() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
@@ -206,7 +206,7 @@ async fn test_rejects_vector_without_distance_metric() {
 }
 
 #[tokio::test]
-async fn test_accepts_vector_with_distance_metric() {
+async fn accepts_vector_with_distance_metric() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
@@ -233,7 +233,7 @@ async fn test_accepts_vector_with_distance_metric() {
 }
 
 #[tokio::test]
-async fn test_accepts_empty_table_skips_dry_run() {
+async fn accepts_empty_table_skips_dry_run() {
     let (_dir, paths, state_db_path) = setup_project();
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 

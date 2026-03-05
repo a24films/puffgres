@@ -259,9 +259,9 @@ async fn reconnect_after_schema_change_resumes_streaming() {
 
     let bob_event = batch.events.iter().find(|e| {
         e.operation == Operation::Insert
-            && e.new_tuple.as_ref().map_or(false, |t| {
-                t.columns.first().and_then(|c| c.as_bytes()) == Some(b"2")
-            })
+            && e.new_tuple
+                .as_ref()
+                .is_some_and(|t| t.columns.first().and_then(|c| c.as_bytes()) == Some(b"2"))
     });
     assert!(
         bob_event.is_some(),

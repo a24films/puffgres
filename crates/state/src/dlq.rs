@@ -310,26 +310,7 @@ impl StateDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ConfigRecord;
-
-    fn setup_dlq_db() -> (tempfile::TempDir, StateDb) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let db = StateDb::open(&path).unwrap();
-        (dir, db)
-    }
-
-    fn sample_config(name: &str) -> ConfigRecord {
-        ConfigRecord {
-            name: name.to_string(),
-            namespace: name.to_string(),
-            content_hash: "abc123".to_string(),
-            transform_hash: None,
-            applied_at: Utc::now(),
-            tombstone_applied_at: None,
-            namespace_prefix: None,
-        }
-    }
+    use crate::test_helpers::{sample_config, setup_test_db};
 
     fn sample_dlq_entry(config_name: &str, lsn: u64, error_kind: ErrorKind) -> DlqEntry {
         let permanent_at = match error_kind {
@@ -353,7 +334,7 @@ mod tests {
 
     #[test]
     fn insert_and_retrieve_entry() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -371,7 +352,7 @@ mod tests {
 
     #[test]
     fn insert_and_retrieve_entry_without_doc_id() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -385,7 +366,7 @@ mod tests {
 
     #[test]
     fn list_with_config_filter() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -403,7 +384,7 @@ mod tests {
 
     #[test]
     fn list_without_config_filter() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -418,7 +399,7 @@ mod tests {
 
     #[test]
     fn increment_retry_count() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -439,7 +420,7 @@ mod tests {
 
     #[test]
     fn clear_by_config_name() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -460,7 +441,7 @@ mod tests {
 
     #[test]
     fn clear_all() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -478,7 +459,7 @@ mod tests {
 
     #[test]
     fn delete_dlq_entry_returns_true_when_exists() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -492,14 +473,14 @@ mod tests {
 
     #[test]
     fn delete_dlq_entry_returns_false_when_not_exists() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let deleted = db.delete_dlq_entry(999).unwrap();
         assert!(!deleted);
     }
 
     #[test]
     fn dlq_count_with_config_filter() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -516,7 +497,7 @@ mod tests {
 
     #[test]
     fn dlq_count_without_filter() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -530,7 +511,7 @@ mod tests {
 
     #[test]
     fn dlq_entry_deleted_when_config_deleted() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -550,7 +531,7 @@ mod tests {
 
     #[test]
     fn dlq_entry_requires_valid_config() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let entry = sample_dlq_entry("nonexistent_config", 1000, ErrorKind::Retryable);
 
         let result = db.insert_dlq_entry(&entry);
@@ -559,19 +540,19 @@ mod tests {
 
     #[test]
     fn get_nonexistent_dlq_entry_returns_none() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         assert!(db.get_dlq_entry(999).unwrap().is_none());
     }
 
     #[test]
     fn increment_retry_fails_for_nonexistent_entry() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         let result = db.increment_retry(999);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_dlq_entry_retryable_constructor() {
+    fn dlq_entry_retryable_constructor() {
         let entry = DlqEntry::retryable(
             "film",
             1000,
@@ -589,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dlq_entry_permanent_constructor() {
+    fn dlq_entry_permanent_constructor() {
         let entry = DlqEntry::permanent(
             "film",
             2000,
@@ -606,8 +587,8 @@ mod tests {
     }
 
     #[test]
-    fn test_list_retryable_entries() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn list_retryable_entries() {
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
@@ -627,8 +608,8 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_permanent() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn mark_permanent() {
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
@@ -644,22 +625,22 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_permanent_nonexistent_fails() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn mark_permanent_nonexistent_fails() {
+        let (_dir, mut db) = setup_test_db();
         assert!(db.mark_permanent(999, "error").is_err());
     }
 
     #[test]
-    fn test_dlq_count_by_kind_empty() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn dlq_count_by_kind_empty() {
+        let (_dir, mut db) = setup_test_db();
         let (r, p) = db.dlq_count_by_kind(None).unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
     }
 
     #[test]
-    fn test_dlq_count_by_kind_mixed() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn dlq_count_by_kind_mixed() {
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -686,16 +667,16 @@ mod tests {
     }
 
     #[test]
-    fn test_dlq_count_by_kind_nonexistent_config() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn dlq_count_by_kind_nonexistent_config() {
+        let (_dir, mut db) = setup_test_db();
         let (r, p) = db.dlq_count_by_kind(Some("nonexistent")).unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
     }
 
     #[test]
-    fn test_clear_old_permanent_entries_removes_old() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn clear_old_permanent_entries_removes_old() {
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let old_time = Utc::now() - chrono::Duration::hours(100);
@@ -734,8 +715,8 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_old_permanent_entries_leaves_recent() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn clear_old_permanent_entries_leaves_recent() {
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.insert_dlq_entry(&DlqEntry::permanent(
@@ -761,8 +742,8 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_old_permanent_entries_uses_permanent_at_not_created_at() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn clear_old_permanent_entries_uses_permanent_at_not_created_at() {
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let mut entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
@@ -776,15 +757,15 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_old_permanent_entries_empty_dlq() {
-        let (_dir, mut db) = setup_dlq_db();
+    fn clear_old_permanent_entries_empty_dlq() {
+        let (_dir, mut db) = setup_test_db();
         let cleaned = db.clear_old_permanent_entries(72).unwrap();
         assert_eq!(cleaned, 0);
     }
 
     #[test]
     fn list_respects_limit() {
-        let (_dir, mut db) = setup_dlq_db();
+        let (_dir, mut db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         for i in 0..10 {

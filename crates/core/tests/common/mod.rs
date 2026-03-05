@@ -14,10 +14,12 @@ use puffgres_core::{
 };
 use replication::{Operation, RelationCache, ReplicationStream, RowEvent};
 
+#[allow(dead_code)]
 pub struct CollectingSink {
     pub writes: Arc<Mutex<Vec<Vec<Action>>>>,
 }
 
+#[allow(dead_code)]
 impl CollectingSink {
     pub fn new() -> Self {
         Self {
@@ -47,13 +49,13 @@ impl BackfillSink for CollectingSink {
 }
 
 /// A sink that succeeds for the first `max_writes` calls, then fails.
-/// Useful for simulating a crash mid-backfill so `run_backfill`'s own
-/// checkpointing is exercised.
+#[allow(dead_code)]
 pub struct FailingAfterSink {
     pub inner: CollectingSink,
     writes_remaining: std::sync::atomic::AtomicUsize,
 }
 
+#[allow(dead_code)]
 impl FailingAfterSink {
     pub fn new(max_writes: usize) -> Self {
         Self {

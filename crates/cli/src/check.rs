@@ -1,15 +1,11 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::error::CliError;
 use crate::generate;
 use crate::paths::ProjectPaths;
 use crate::validate::preflight_check;
 
-pub fn run(
-    paths: &ProjectPaths,
-    database_url: &str,
-    state_db_path: &PathBuf,
-) -> Result<(), CliError> {
+pub fn run(paths: &ProjectPaths, database_url: &str, state_db_path: &Path) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::Check(format!("failed to create async runtime: {e}")))?;
     rt.block_on(run_async(paths, database_url, state_db_path))
@@ -18,7 +14,7 @@ pub fn run(
 pub async fn run_async(
     paths: &ProjectPaths,
     database_url: &str,
-    state_db_path: &PathBuf,
+    state_db_path: &Path,
 ) -> Result<(), CliError> {
     let loader = config::ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;

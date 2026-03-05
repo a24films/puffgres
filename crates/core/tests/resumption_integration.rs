@@ -34,9 +34,9 @@ fn create_state_db() -> (tempfile::TempDir, StateDb) {
 /// Re-open the state db from the same directory (simulates restart).
 fn reopen_state_db(dir: &tempfile::TempDir) -> StateDb {
     let path = dir.path().join("state.db");
-    let db = StateDb::open(&path).expect("failed to reopen state db");
+
     // No need to reinitialize -- tables already exist from first open.
-    db
+    StateDb::open(&path).expect("failed to reopen state db")
 }
 
 /// Backfill resumption after simulated crash.

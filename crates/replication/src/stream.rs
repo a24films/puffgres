@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_construction() {
+    fn config_construction() {
         let config = ReplicationStreamConfig {
             connection_string: "postgresql://localhost/mydb".to_string(),
             slot_name: "my_slot".to_string(),
@@ -401,7 +401,7 @@ mod tests {
         };
 
         // First relation message: table with just "id"
-        let rel_v1 = encode_relation(1, "public", "users", &[col_id.clone()]);
+        let rel_v1 = encode_relation(1, "public", "users", std::slice::from_ref(&col_id));
         // Second relation message: same table with "id" + "email" (schema change)
         let rel_v2 = encode_relation(1, "public", "users", &[col_id, col_email]);
 
@@ -467,8 +467,8 @@ mod tests {
         };
 
         // Same relation message sent twice (no schema change)
-        let rel = encode_relation(1, "public", "users", &[col_id.clone()]);
-        let rel2 = encode_relation(1, "public", "users", &[col_id]);
+        let rel = encode_relation(1, "public", "users", std::slice::from_ref(&col_id));
+        let rel2 = encode_relation(1, "public", "users", std::slice::from_ref(&col_id));
 
         let mut stream = make_stream(vec![
             Ok(Some(ReplicationEvent::Begin {

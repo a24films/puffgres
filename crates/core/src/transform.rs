@@ -57,7 +57,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transform_batch() {
+    async fn transform_batch() {
         let transformer: Box<dyn Transformer> = Box::new(NoopTransformer);
 
         let event = RowEvent {
@@ -74,7 +74,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bad_event_skips_without_failing_batch() {
+    async fn bad_event_skips_without_failing_batch() {
         let transformer: Box<dyn Transformer> = Box::new(NoopTransformer);
 
         let good_event = RowEvent {

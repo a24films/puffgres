@@ -5,10 +5,10 @@ use state::StateDb;
 use crate::error::CliError;
 
 pub fn run(state_db_path: &Path) -> Result<(), CliError> {
-    if let Some(parent) = state_db_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = state_db_path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     StateDb::open(state_db_path)?;

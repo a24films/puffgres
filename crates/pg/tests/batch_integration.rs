@@ -50,7 +50,7 @@ async fn setup_test_table() -> (common::TestContext, tokio_postgres::Client) {
 }
 
 #[tokio::test]
-async fn test_count_rows_empty_table() {
+async fn count_rows_empty_table() {
     let (_ctx, client) = setup_test_table().await;
 
     let count = count_rows(&client, &default_config())
@@ -60,7 +60,7 @@ async fn test_count_rows_empty_table() {
 }
 
 #[tokio::test]
-async fn test_count_rows_with_data() {
+async fn count_rows_with_data() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 5).await;
 
@@ -71,7 +71,7 @@ async fn test_count_rows_with_data() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_from_beginning() {
+async fn fetch_batch_from_beginning() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 5).await;
 
@@ -85,7 +85,7 @@ async fn test_fetch_batch_from_beginning() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_with_cursor() {
+async fn fetch_batch_with_cursor() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 5).await;
 
@@ -99,7 +99,7 @@ async fn test_fetch_batch_with_cursor() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_empty_table() {
+async fn fetch_batch_empty_table() {
     let (_ctx, client) = setup_test_table().await;
 
     let result = fetch_batch(&client, &default_config(), None, "")
@@ -112,7 +112,7 @@ async fn test_fetch_batch_empty_table() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_exact_batch_size() {
+async fn fetch_batch_exact_batch_size() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 3).await;
 
@@ -126,7 +126,7 @@ async fn test_fetch_batch_exact_batch_size() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_paginate_all_rows() {
+async fn fetch_batch_paginate_all_rows() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 7).await;
 
@@ -158,7 +158,7 @@ async fn test_fetch_batch_paginate_all_rows() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_with_specific_columns() {
+async fn fetch_batch_with_specific_columns() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 2).await;
 
@@ -179,7 +179,7 @@ async fn test_fetch_batch_with_specific_columns() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_zero_batch_size() {
+async fn fetch_batch_zero_batch_size() {
     let (_ctx, client) = setup_test_table().await;
 
     let config = BatchQueryConfig {
@@ -197,7 +197,7 @@ async fn test_fetch_batch_zero_batch_size() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_empty_columns() {
+async fn fetch_batch_empty_columns() {
     let (_ctx, client) = setup_test_table().await;
 
     let config = BatchQueryConfig {
@@ -212,7 +212,7 @@ async fn test_fetch_batch_empty_columns() {
 }
 
 #[tokio::test]
-async fn test_fetch_batch_columns_without_id() {
+async fn fetch_batch_columns_without_id() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 2).await;
 
@@ -232,7 +232,7 @@ async fn test_fetch_batch_columns_without_id() {
 }
 
 #[tokio::test]
-async fn test_count_rows_excludes_null_ids() {
+async fn count_rows_excludes_null_ids() {
     let (_ctx, client) = setup_test_table().await;
     insert_rows(&client, 3).await;
 
@@ -242,7 +242,7 @@ async fn test_count_rows_excludes_null_ids() {
             &[],
         )
         .await
-        .unwrap_or_else(|_| {
+        .unwrap_or({
             // Table has PRIMARY KEY so NULL insert may fail; that's fine
             0
         });
@@ -256,7 +256,7 @@ async fn test_count_rows_excludes_null_ids() {
 }
 
 #[tokio::test]
-async fn test_validate_id_column_uniqueness_passes() {
+async fn validate_id_column_uniqueness_passes() {
     let (_ctx, client) = setup_test_table().await;
 
     validate_id_column_uniqueness(&client, &default_config())
@@ -265,7 +265,7 @@ async fn test_validate_id_column_uniqueness_passes() {
 }
 
 #[tokio::test]
-async fn test_validate_id_column_uniqueness_fails() {
+async fn validate_id_column_uniqueness_fails() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -291,7 +291,7 @@ async fn test_validate_id_column_uniqueness_fails() {
 }
 
 #[tokio::test]
-async fn test_resolve_cursor_cast_text() {
+async fn resolve_cursor_cast_text() {
     let (_ctx, client) = setup_test_table().await;
     let cast = resolve_cursor_cast(&client, &default_config())
         .await
@@ -300,7 +300,7 @@ async fn test_resolve_cursor_cast_text() {
 }
 
 #[tokio::test]
-async fn test_resolve_cursor_cast_int() {
+async fn resolve_cursor_cast_int() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     client
@@ -322,7 +322,7 @@ async fn test_resolve_cursor_cast_int() {
 }
 
 #[tokio::test]
-async fn test_resolve_cursor_cast_uuid() {
+async fn resolve_cursor_cast_uuid() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     client
@@ -344,7 +344,7 @@ async fn test_resolve_cursor_cast_uuid() {
 }
 
 #[tokio::test]
-async fn test_resolve_cursor_cast_bpchar() {
+async fn resolve_cursor_cast_bpchar() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     client
@@ -366,7 +366,7 @@ async fn test_resolve_cursor_cast_bpchar() {
 }
 
 #[tokio::test]
-async fn test_resolve_cursor_cast_domain_over_uuid() {
+async fn resolve_cursor_cast_domain_over_uuid() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     client
@@ -392,7 +392,7 @@ async fn test_resolve_cursor_cast_domain_over_uuid() {
 }
 
 #[tokio::test]
-async fn test_resolve_cursor_cast_domain_over_int() {
+async fn resolve_cursor_cast_domain_over_int() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     client
@@ -418,7 +418,7 @@ async fn test_resolve_cursor_cast_domain_over_int() {
 }
 
 #[tokio::test]
-async fn test_resolve_cursor_cast_nested_domain() {
+async fn resolve_cursor_cast_nested_domain() {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string).await.unwrap();
     client

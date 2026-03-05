@@ -84,26 +84,7 @@ impl StateDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ConfigRecord;
-
-    fn setup_streaming_checkpoints_db() -> (tempfile::TempDir, StateDb) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let db = StateDb::open(&path).unwrap();
-        (dir, db)
-    }
-
-    fn sample_config(name: &str) -> ConfigRecord {
-        ConfigRecord {
-            name: name.to_string(),
-            namespace: name.to_string(),
-            content_hash: "abc123".to_string(),
-            transform_hash: None,
-            applied_at: Utc::now(),
-            tombstone_applied_at: None,
-            namespace_prefix: None,
-        }
-    }
+    use crate::test_helpers::{sample_config, setup_test_db};
 
     fn sample_streaming_checkpoint(
         config_name: &str,
@@ -120,7 +101,7 @@ mod tests {
 
     #[test]
     fn save_and_retrieve_streaming_checkpoint() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -135,7 +116,7 @@ mod tests {
 
     #[test]
     fn update_existing_streaming_checkpoint() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -155,7 +136,7 @@ mod tests {
 
     #[test]
     fn streaming_checkpoint_deleted_when_config_deleted() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -175,7 +156,7 @@ mod tests {
 
     #[test]
     fn delete_streaming_checkpoint_returns_true_when_exists() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -189,14 +170,14 @@ mod tests {
 
     #[test]
     fn delete_streaming_checkpoint_returns_false_when_not_exists() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         let deleted = db.delete_streaming_checkpoint("nonexistent").unwrap();
         assert!(!deleted);
     }
 
     #[test]
     fn list_multiple_streaming_checkpoints() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
 
         db.insert_config(&sample_config("alpha")).unwrap();
         db.insert_config(&sample_config("beta")).unwrap();
@@ -221,7 +202,7 @@ mod tests {
 
     #[test]
     fn get_nonexistent_streaming_checkpoint_returns_none() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         assert!(
             db.get_streaming_checkpoint("nonexistent")
                 .unwrap()
@@ -231,7 +212,7 @@ mod tests {
 
     #[test]
     fn lsn_above_i32_max_roundtrips() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -247,7 +228,7 @@ mod tests {
 
     #[test]
     fn streaming_checkpoint_requires_valid_config() {
-        let (_dir, mut db) = setup_streaming_checkpoints_db();
+        let (_dir, mut db) = setup_test_db();
         let checkpoint = sample_streaming_checkpoint("nonexistent_config", 1000, 50);
 
         let result = db.save_streaming_checkpoint(&checkpoint);
