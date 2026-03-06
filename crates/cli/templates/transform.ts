@@ -13,7 +13,7 @@
 // See https://turbopuffer.com/docs/write#schema for all options.
 
 import { readFileSync } from "fs";
-import { parseRow, type Row } from "./schema";
+import { columns, parseRow } from "./schema";
 
 interface Event {
   operation: "insert" | "update" | "delete";
@@ -33,7 +33,7 @@ const output: Action[] = input.map((event) => {
     return { type: "delete", id: event.id };
   }
 
-  const row: Row = parseRow(event.columns);
+  const row = parseRow(event.columns);
 
   return {
     type: "upsert",
@@ -42,11 +42,10 @@ const output: Action[] = input.map((event) => {
       // TODO: map row fields to document fields
       // e.g. name: row.name,
     },
-    // Define a schema entry for each attribute in your document.
-    // For all config options, see https://turbopuffer.com/docs/write#schema
+    // Build schema from columns for just the fields in your document.
+    // Each column has .name and .type (PrimitiveType). Add overrides as needed.
     // schema: {
-    //   name: { type: "string", full_text_search: true },
-    //   title: { type: "string" },
+    //   name: { type: columns.find(c => c.name === "name")!.type, full_text_search: true },
     // },
   };
 });

@@ -63,12 +63,9 @@ async fn generate_check_lifecycle() {
 
     let content = std::fs::read_to_string(&schema_path).unwrap();
     assert!(content.contains("// Source: public.users"));
-    assert!(content.contains(r#""id""#));
-    assert!(content.contains(r#""name""#));
-    assert!(content.contains(r#""email""#));
-    assert!(content.contains("id: 0,"));
-    assert!(content.contains("name: 1,"));
-    assert!(content.contains("email: 2,"));
+    assert!(content.contains(r#"name: "id""#));
+    assert!(content.contains(r#"name: "name""#));
+    assert!(content.contains(r#"name: "email""#));
     assert!(content.contains("parseRow"));
 
     // 2. Check should succeed
@@ -177,9 +174,8 @@ async fn config_columns_filtering() {
     let content = std::fs::read_to_string(prod_dir.join("schema.ts")).unwrap();
 
     // Should have only name and id, in config order (name first, then id)
-    assert!(content.contains(r#"export const columns = ["name", "id"] as const;"#));
-    assert!(content.contains("name: 0,"));
-    assert!(content.contains("id: 1,"));
+    assert!(content.contains(r#"{ name: "name", type: "string" },"#));
+    assert!(content.contains(r#"{ name: "id", type: "int" },"#));
     // Should NOT contain price or description
     assert!(!content.contains("price"));
     assert!(!content.contains("description"));
