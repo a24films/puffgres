@@ -157,7 +157,7 @@ From here you can run
 
 `puffgres backfill` to run the backfill, or `puffgres run` which runs the whole change data capture loop, beginning with the backfill. 
 
-If you mess up your local SQLite DB and want to start from scratch, you can use `puffgres reset`. A common workflow is to run `puffgres reset && puffgres setup && puffgres apply && puffgres run` which will start the CDC loop. 
+If you mess up your local SQLite DB and want to start from scratch, you can use `puffgres reset`. A common workflow is to run `puffgres reset && puffgres apply && puffgres run` which will start the CDC loop.
 
 
 ## Deploying
