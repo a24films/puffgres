@@ -146,6 +146,24 @@ impl StateDb {
         }
     }
 
+    pub fn delete_config(&mut self, name: &str) -> Result<bool, StateError> {
+        let rows_affected = diesel::delete(configs::table.filter(configs::name.eq(name)))
+            .execute(&mut self.conn)?;
+        Ok(rows_affected > 0)
+    }
+
+    pub fn get_last_applied_config(&mut self) -> Result<Option<ConfigRecord>, StateError> {
+        let row = configs::table
+            .order(configs::applied_at.desc())
+            .first::<ConfigRow>(&mut self.conn)
+            .optional()?;
+
+        match row {
+            Some(r) => Ok(Some(ConfigRecord::from_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
     pub fn set_namespace_prefix(
         &mut self,
         config_name: &str,
@@ -298,5 +316,70 @@ mod tests {
         let tombstoned = db.list_tombstoned_configs().unwrap();
         assert_eq!(tombstoned.len(), 1);
         assert_eq!(tombstoned[0].name, "alpha");
+    }
+
+    #[test]
+    fn delete_config_removes_row() {
+        let (_dir, mut db) = setup_test_db();
+        db.insert_config(&sample_config("film")).unwrap();
+        assert!(db.get_config("film").unwrap().is_some());
+
+        let deleted = db.delete_config("film").unwrap();
+        assert!(deleted);
+        assert!(db.get_config("film").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_config_nonexistent_returns_false() {
+        let (_dir, mut db) = setup_test_db();
+        let deleted = db.delete_config("nonexistent").unwrap();
+        assert!(!deleted);
+    }
+
+    #[test]
+    fn delete_config_does_not_affect_others() {
+        let (_dir, mut db) = setup_test_db();
+        db.insert_config(&sample_config("alpha")).unwrap();
+        db.insert_config(&sample_config("beta")).unwrap();
+
+        db.delete_config("alpha").unwrap();
+
+        assert!(db.get_config("alpha").unwrap().is_none());
+        assert!(db.get_config("beta").unwrap().is_some());
+    }
+
+    #[test]
+    fn get_last_applied_config_returns_most_recent() {
+        let (_dir, mut db) = setup_test_db();
+
+        let mut c1 = sample_config("alpha");
+        c1.applied_at = chrono::Utc::now() - chrono::Duration::hours(2);
+        db.insert_config(&c1).unwrap();
+
+        let mut c2 = sample_config("beta");
+        c2.applied_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        db.insert_config(&c2).unwrap();
+
+        let mut c3 = sample_config("gamma");
+        c3.applied_at = chrono::Utc::now();
+        db.insert_config(&c3).unwrap();
+
+        let last = db.get_last_applied_config().unwrap().unwrap();
+        assert_eq!(last.name, "gamma");
+    }
+
+    #[test]
+    fn get_last_applied_config_empty_returns_none() {
+        let (_dir, mut db) = setup_test_db();
+        assert!(db.get_last_applied_config().unwrap().is_none());
+    }
+
+    #[test]
+    fn get_last_applied_config_single() {
+        let (_dir, mut db) = setup_test_db();
+        db.insert_config(&sample_config("only")).unwrap();
+
+        let last = db.get_last_applied_config().unwrap().unwrap();
+        assert_eq!(last.name, "only");
     }
 }

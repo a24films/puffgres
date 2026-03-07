@@ -38,6 +38,14 @@ enum Command {
         #[arg(long)]
         name: String,
     },
+    /// Remove a config entirely (deletes namespace, state, and files)
+    Remove {
+        /// Name of the config to remove
+        name: Option<String>,
+        /// Remove the most recently applied config
+        #[arg(long)]
+        last: bool,
+    },
     /// Generate typed schema.ts files for each config
     Generate,
     /// Launch a light UI to see the contents of turbopuffer namespaces
@@ -267,6 +275,9 @@ fn run() -> (
         | Command::Check
         | Command::Generate
         | Command::Debug { .. } => unreachable!(),
+        Command::Remove { ref name, last } => {
+            puffgres_cli::remove::run(&paths, &env_config, name.as_deref(), last)
+        }
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
         }
