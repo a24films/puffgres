@@ -9,6 +9,10 @@ use puffgres_core::{Action, BackfillSink, CoreError, DocumentId};
 
 use crate::PuffError;
 
+pub use rs_puff::params::{IncludeAttributes, QueryParams};
+pub use rs_puff::responses::{NamespaceSummary, NamespacesResponse, QueryResponse};
+pub use rs_puff::{Order, RankBy};
+
 pub struct TurbopufferClient {
     inner: rs_puff::Client,
 }
@@ -109,6 +113,29 @@ impl TurbopufferClient {
 
         self.inner.namespace(namespace).write(params).await?;
         Ok(())
+    }
+
+    pub async fn query(
+        &self,
+        namespace: &str,
+        params: QueryParams,
+    ) -> Result<QueryResponse, PuffError> {
+        let result = self.inner.namespace(namespace).query(params).await?;
+        Ok(result)
+    }
+
+    pub async fn list_namespaces(
+        &self,
+        prefix: Option<String>,
+        cursor: Option<String>,
+    ) -> Result<NamespacesResponse, PuffError> {
+        let params = rs_puff::NamespacesParams {
+            prefix,
+            cursor,
+            ..Default::default()
+        };
+        let result = self.inner.namespaces(params).await?;
+        Ok(result)
     }
 
     pub async fn delete_namespace(&self, namespace: &str) -> Result<(), PuffError> {
