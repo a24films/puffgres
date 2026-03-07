@@ -45,6 +45,12 @@ enum Command {
         /// Port to serve on
         #[arg(long, default_value = "3333")]
         port: u16,
+        /// Replication slot name (defaults to puffgres_debug)
+        #[arg(long, default_value = "puffgres_debug")]
+        slot: String,
+        /// Publication name (defaults to puffgres)
+        #[arg(long, default_value = "puffgres")]
+        publication: String,
     },
 }
 
@@ -99,8 +105,12 @@ fn run() -> (
         return (puffgres_cli::generate::run(&paths, &database_url), None);
     }
 
-    // Tier 3b: Debug only needs TURBOPUFFER_API_KEY (+ optional region).
-    if let Command::Debug { port } = cli.command {
+    if let Command::Debug {
+        port,
+        ref slot,
+        ref publication,
+    } = cli.command
+    {
         let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
             Ok(c) => c,
             Err(e) => return (Err(e), None),
@@ -126,8 +136,44 @@ fn run() -> (
             Ok(c) => c,
             Err(e) => return (Err(CliError::Debug(e.to_string())), None),
         };
+
+        let database_url = puffgres_cli::env::resolve_env_var("DATABASE_URL", &file_vars);
+        let replication_config = if let Some(url) = database_url {
+            let rt_temp = tokio::runtime::Runtime::new().unwrap();
+            match rt_temp.block_on(async {
+                let pg_client = pg::connect::connect(&url)
+                    .await
+                    .map_err(|e| CliError::Debug(format!("Failed to connect to Postgres: {e}")))?;
+                pg::slot::ensure_slot(&pg_client, slot).await.map_err(|e| {
+                    CliError::Debug(format!("Failed to ensure replication slot: {e}"))
+                })?;
+                Ok::<_, CliError>(())
+            }) {
+                Ok(()) => {
+                    eprintln!(
+                        "Replication enabled (slot={}, publication={})",
+                        slot, publication
+                    );
+                    Some(replication::ReplicationStreamConfig {
+                        connection_string: url,
+                        slot_name: slot.clone(),
+                        publication_name: publication.clone(),
+                        start_lsn: None,
+                        status_interval: std::time::Duration::from_secs(10),
+                    })
+                }
+                Err(e) => {
+                    eprintln!("Replication disabled: {e}");
+                    None
+                }
+            }
+        } else {
+            eprintln!("Replication disabled (DATABASE_URL not set)");
+            None
+        };
+
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(puffgres_debug::run(client, port));
+        let result = rt.block_on(puffgres_debug::run(client, port, replication_config));
         return (result.map_err(|e| CliError::Debug(e.to_string())), None);
     }
 

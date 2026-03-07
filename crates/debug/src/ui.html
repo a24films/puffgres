@@ -10,7 +10,8 @@
     h1 { margin-bottom: 20px; font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
     .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid #000; }
     .tab { padding: 8px 16px; cursor: pointer; background: none; color: #888; border: 1px solid transparent; font-size: 13px; font-weight: 500; font-family: inherit; border-radius: 0; margin-bottom: -1px; }
-    .tab:hover { color: #000; }
+    .tab:hover:not(:disabled) { color: #000; }
+    .tab:disabled { color: #ccc; cursor: not-allowed; }
     .tab.active { color: #000; border: 1px solid #000; border-bottom: 1px solid #fff; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
@@ -33,7 +34,8 @@
     td { word-break: break-word; max-width: 400px; }
     pre { background: #f5f5f5; padding: 10px; overflow-x: auto; font-size: 11px; font-family: inherit; border: 1px solid #ddd; }
     .count { color: #888; margin-bottom: 10px; font-size: 12px; }
-    .namespace-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .namespace-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid #eee; height: 31px; }
+    #ns-list { min-height: 310px; }
     .namespace-row:hover { background: #f5f5f5; }
     .namespace-left { display: flex; align-items: center; gap: 8px; }
     .namespace-left input[type="checkbox"] { margin: 0; width: 12px; height: 12px; accent-color: #000; }
@@ -54,14 +56,33 @@
     .clipboard-btn { background: none; border: none; cursor: pointer; padding: 2px 4px; margin: 0; font-size: 13px; color: #888; text-transform: none; letter-spacing: normal; }
     .clipboard-btn:hover { color: #000; background: none; }
     .clipboard-btn.copied { color: #000; }
+    .repl-event { padding: 4px 8px; border-bottom: 1px solid #eee; line-height: 1.6; }
+    .repl-event:hover { background: #fafafa; }
+    .repl-badge { display: inline-block; min-width: 64px; text-align: center; padding: 1px 6px; font-size: 10px; font-weight: 600; border: 1px solid #ccc; margin-right: 8px; letter-spacing: 0.03em; }
+    .repl-begin, .repl-commit { background: #f5f5f5; color: #888; border-color: #ccc; }
+    .repl-insert { background: #e8f5e9; border-color: #81c784; color: #2e7d32; }
+    .repl-update { background: #e3f2fd; border-color: #64b5f6; color: #1565c0; }
+    .repl-delete { background: #fce4ec; border-color: #e57373; color: #c62828; }
+    .repl-relation { background: #fff3e0; border-color: #ffb74d; color: #e65100; }
+    .repl-truncate { background: #fce4ec; border-color: #e57373; color: #c62828; }
+    .repl-error { background: #f44336; color: #fff; border-color: #f44336; }
+    .repl-status { background: #e8eaf6; border-color: #7986cb; color: #283593; }
+    .repl-other { background: #f5f5f5; color: #888; border-color: #ccc; }
+    .repl-meta { color: #888; font-size: 11px; }
+    .repl-col-name { color: #888; }
+    .repl-col-value { color: #000; }
+    .repl-table { font-weight: 600; }
+    .repl-toolbar { display: flex; align-items: center; gap: 8px; margin-top: 15px; margin-bottom: 10px; }
+    .repl-scroll { max-height: 600px; overflow-y: auto; border: 1px solid #000; }
   </style>
 </head>
 <body>
   <h1>Puffgres Debug UI</h1>
 
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('documents')">Documents</button>
-    <button class="tab" onclick="switchTab('namespaces')">Namespaces</button>
+    <button class="tab active" data-tab="documents" onclick="switchTab('documents')">Documents</button>
+    <button class="tab" data-tab="namespaces" onclick="switchTab('namespaces')">Namespaces</button>
+    <button class="tab" data-tab="replication" id="repl-tab-btn" disabled title="Add your database URL to the environment in order to view the replication log.">Replication Events</button>
   </div>
 
   <div id="documents-tab" class="tab-content active">
@@ -112,13 +133,25 @@
     <div id="ns-env-info" class="env-info" style="display: none;"></div>
   </div>
 
+  <div id="replication-tab" class="tab-content">
+    <div id="repl-status" class="status">Waiting to connect...</div>
+    <div id="repl-error" class="error" style="display: none;"></div>
+    <div class="repl-toolbar">
+      <button id="repl-toggle" onclick="toggleReplication()">Pause</button>
+      <button onclick="clearReplicationEvents()">Clear</button>
+      <span id="repl-count" class="count" style="margin: 0;">0 events</span>
+    </div>
+    <div id="repl-events" class="repl-scroll"></div>
+  </div>
+
   <script>
     function switchTab(tab) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      document.querySelector(`.tab:nth-child(${tab === 'documents' ? 1 : 2})`).classList.add('active');
+      document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
       document.getElementById(`${tab}-tab`).classList.add('active');
       if (tab === 'namespaces' && !namespacesLoaded) fetchNamespaces();
+      if (tab === 'replication' && !replSource) connectReplication();
     }
 
     const savedNamespace = localStorage.getItem('debug-ui-namespace');
@@ -304,7 +337,6 @@
       });
       listEl.innerHTML = html;
 
-      // Pagination controls
       if (totalPages > 1) {
         let pgHtml = `<button onclick="goToNsPage(0)" ${nsPage === 0 ? 'disabled' : ''}>&laquo;</button>`;
         pgHtml += `<button onclick="goToNsPage(${nsPage - 1})" ${nsPage === 0 ? 'disabled' : ''}>&lsaquo;</button>`;
@@ -364,7 +396,6 @@
       });
     }
 
-    // Fetch and display env info
     async function fetchEnvInfo() {
       try {
         const response = await fetch('/api/env');
@@ -374,6 +405,12 @@
         if (prefix) {
           el.innerHTML = `From env: <code>TURBOPUFFER_NAMESPACE_PREFIX = ${esc(prefix)}</code>`;
           el.style.display = 'block';
+        }
+        if (data.replication_enabled) {
+          const btn = document.getElementById('repl-tab-btn');
+          btn.disabled = false;
+          btn.title = '';
+          btn.onclick = () => switchTab('replication');
         }
       } catch (err) { /* ignore */ }
     }
@@ -417,8 +454,106 @@
       statusEl.textContent = `Deleted ${deleted} namespace(s) at ${new Date().toLocaleTimeString()}`;
     }
 
+    let replSource = null;
+    let replPaused = false;
+    let replEventCount = 0;
+
+    function connectReplication() {
+      if (replSource) replSource.close();
+      const statusEl = document.getElementById('repl-status');
+      const errorEl = document.getElementById('repl-error');
+      statusEl.textContent = 'Connecting...';
+      errorEl.style.display = 'none';
+
+      replSource = new EventSource('/api/replication/events');
+
+      replSource.onopen = () => {
+        statusEl.textContent = 'Connected — streaming events';
+      };
+
+      replSource.onmessage = (e) => {
+        if (replPaused) return;
+        try {
+          const event = JSON.parse(e.data);
+          addReplicationEvent(event);
+        } catch (err) { /* ignore parse errors */ }
+      };
+
+      replSource.onerror = () => {
+        statusEl.textContent = 'Disconnected — retrying...';
+      };
+    }
+
+    function addReplicationEvent(event) {
+      replEventCount++;
+      const container = document.getElementById('repl-events');
+      const el = document.createElement('div');
+      el.className = 'repl-event';
+      el.innerHTML = formatReplicationEvent(event);
+      container.appendChild(el);
+      container.scrollTop = container.scrollHeight;
+
+      while (container.children.length > 1000) {
+        container.removeChild(container.firstChild);
+      }
+
+      document.getElementById('repl-count').textContent = `${replEventCount} events`;
+    }
+
+    function formatReplicationEvent(event) {
+      const t = event.type || 'unknown';
+      const badge = `<span class="repl-badge repl-${t}">${t.toUpperCase()}</span>`;
+
+      switch (t) {
+        case 'begin':
+          return `${badge} <span class="repl-meta">xid=${event.xid} lsn=${event.lsn}</span>`;
+        case 'commit':
+          return `${badge} <span class="repl-meta">lsn=${event.lsn}</span>`;
+        case 'relation':
+          return `${badge} <span class="repl-table">${esc(event.table)}</span> <span class="repl-meta">(${event.columns.map(c => esc(c)).join(', ')})</span>`;
+        case 'insert':
+          return `${badge} <span class="repl-table">${esc(event.table || '?')}</span> ${formatCols(event.new)}`;
+        case 'update': {
+          let s = `${badge} <span class="repl-table">${esc(event.table || '?')}</span> ${formatCols(event.new)}`;
+          if (event.old) s += ` <span class="repl-meta">&larr;</span> ${formatCols(event.old)}`;
+          return s;
+        }
+        case 'delete':
+          return `${badge} <span class="repl-table">${esc(event.table || '?')}</span> ${formatCols(event.old)}`;
+        case 'truncate':
+          return `${badge} ${(event.tables || []).map(t => '<span class="repl-table">' + esc(t) + '</span>').join(', ')}`;
+        case 'error':
+          return `${badge} ${esc(event.message || '')}`;
+        case 'status':
+          return `${badge} ${esc(event.message || '')}`;
+        default:
+          return `${badge} <span class="repl-meta">${esc(JSON.stringify(event))}</span>`;
+      }
+    }
+
+    function formatCols(cols) {
+      if (!cols || !Array.isArray(cols)) return '';
+      return cols.map(c =>
+        `<span class="repl-col-name">${esc(c.name)}=</span><span class="repl-col-value">${esc(c.value)}</span>`
+      ).join(' ');
+    }
+
+    function toggleReplication() {
+      replPaused = !replPaused;
+      document.getElementById('repl-toggle').textContent = replPaused ? 'Resume' : 'Pause';
+      document.getElementById('repl-status').textContent = replPaused
+        ? 'Paused (events still buffered)'
+        : 'Connected — streaming events';
+    }
+
+    function clearReplicationEvents() {
+      replEventCount = 0;
+      document.getElementById('repl-events').innerHTML = '';
+      document.getElementById('repl-count').textContent = '0 events';
+    }
+
     function esc(str) {
-      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
   </script>
 </body>
