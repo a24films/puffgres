@@ -10,6 +10,7 @@ pub mod new;
 pub mod observability;
 pub mod paths;
 pub mod project_config;
+pub mod remove;
 pub mod reset;
 pub mod run;
 pub mod tombstone;
