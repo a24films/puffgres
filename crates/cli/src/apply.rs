@@ -18,6 +18,11 @@ pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError>
 }
 
 pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
+    if let Some(parent) = env_config.state_db_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     let mut db = StateDb::open(&env_config.state_db_path)?;
 
     let loader = config::ConfigLoader::new(&paths.configs);

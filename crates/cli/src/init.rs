@@ -71,7 +71,6 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     }
 
     println!();
-    println!("Next, run `puffgres setup` to create the state database.");
 
     Ok(())
 }
@@ -376,7 +375,7 @@ mod tests {
         // Should create files directly in cwd
         assert!(dir.path().join("configs").is_dir());
         assert!(dir.path().join("transforms").is_dir());
-        // Should NOT create state.db (handled by `puffgres setup`)
+        // Should NOT create state.db (created on first run/apply)
         assert!(!dir.path().join("state.db").exists());
     }
 

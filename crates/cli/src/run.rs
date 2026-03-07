@@ -101,6 +101,11 @@ async fn run_cdc_inner(
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
+    if let Some(parent) = env_config.state_db_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+    }
     let mut db = StateDb::open(&env_config.state_db_path)?;
 
     let loader = ConfigLoader::new(&paths.configs);
