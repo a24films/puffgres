@@ -169,6 +169,14 @@ fn ensure_utils(paths: &ProjectPaths) -> Result<(), CliError> {
         ),
         ("embed.ts", include_str!("../templates/utils/embed.ts")),
         (
+            "embed-zeroentropy.ts",
+            include_str!("../templates/utils/embed-zeroentropy.ts"),
+        ),
+        (
+            "embed-baseten.ts",
+            include_str!("../templates/utils/embed-baseten.ts"),
+        ),
+        (
             "tokenize.ts",
             include_str!("../templates/utils/tokenize.ts"),
         ),
@@ -417,6 +425,7 @@ mod tests {
         let package_json =
             fs::read_to_string(dir.path().join("puffgres").join("package.json")).unwrap();
         assert!(package_json.contains("together-ai"));
+        assert!(package_json.contains("openai"));
         assert!(package_json.contains("@huggingface/transformers"));
         assert!(package_json.contains("vitest"));
     }
@@ -469,6 +478,8 @@ mod tests {
         assert!(sub.join("utils").is_dir());
         assert!(sub.join("utils/load-env.ts").exists());
         assert!(sub.join("utils/embed.ts").exists());
+        assert!(sub.join("utils/embed-zeroentropy.ts").exists());
+        assert!(sub.join("utils/embed-baseten.ts").exists());
         assert!(sub.join("utils/tokenize.ts").exists());
         assert!(sub.join("utils/puffgres.ts").exists());
     }

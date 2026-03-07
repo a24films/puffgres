@@ -1,0 +1,10 @@
+name = "buyer_name"
+namespace = "buyer_name"
+
+[source]
+schema = "public"
+table = "smart_buyer"
+
+[id]
+column = "id"
+type = "string"
