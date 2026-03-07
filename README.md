@@ -131,6 +131,8 @@ export const parseRows = (rows: (string | null)[][]) => parseRowsInternal(column
 
 In essence, `puffgres` takes all of the changed database rows, pipes them via `stdin` / `stdout` to the TypeScript process, and then we manipulate them. In many cases, this will mean generating embeddings, but it also might just be passing data through, filtering, or doing other transformations. The programmming model is left deliberately flexible; in the future, we may add typing or deliberately restrict it someway.
 
+There's a full working example in `examples/buyer_name/` that embeds buyer names using ZeroEntropy and upserts them to turbopuffer with cosine distance search.
+
 We structure configs/transforms to be immutable, because we don't want to developers to accidentally change a config midway through replication, leaving a turbopuffer namespace that doesn't reflect the code they have live. To enforce this, we hash the transform / config code, so that we'll throw an error and fail if we try to deploy different logic, much like a database migration. 
 
 
@@ -158,6 +160,12 @@ From here you can run
 `puffgres backfill` to run the backfill, or `puffgres run` which runs the whole change data capture loop, beginning with the backfill. 
 
 If you mess up your local SQLite DB and want to start from scratch, you can use `puffgres reset`. A common workflow is to run `puffgres reset && puffgres apply && puffgres run` which will start the CDC loop.
+
+
+`puffgres debug` launches a lightweight web UI for inspecting the contents of your turbopuffer namespaces and viewing the live Postgres replication stream. It starts a local web server (default port 3333) that lets you browse namespace data.
+
+
+`puffgres remove` fully removes a config — it deletes the turbopuffer namespace, clears all state (config record, backfill progress, streaming checkpoints, DLQ entries) from the SQLite database, and removes the config directory from the filesystem. You should run it like `puffgres remove my_config` or `puffgres remove --last` to remove the mosty recently applied config. 
 
 
 ## Deploying
