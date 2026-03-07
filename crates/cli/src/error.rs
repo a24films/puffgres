@@ -50,6 +50,9 @@ pub enum CliError {
     #[error("{0}")]
     Generate(String),
 
+    #[error("{0}")]
+    Debug(String),
+
     #[error("A config with {field} \"{name}\" already exists")]
     DuplicateConfig { name: String, field: String },
 

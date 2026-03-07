@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Puffgres Debug UI</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'IBM Plex Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; max-width: 1200px; margin: 0 auto; padding: 20px; background: #fff; color: #000; font-size: 13px; }
+    h1 { margin-bottom: 20px; font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+    .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid #000; }
+    .tab { padding: 8px 16px; cursor: pointer; background: none; color: #888; border: 1px solid transparent; font-size: 13px; font-weight: 500; font-family: inherit; border-radius: 0; margin-bottom: -1px; }
+    .tab:hover { color: #000; }
+    .tab.active { color: #000; border: 1px solid #000; border-bottom: 1px solid #fff; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .form-row { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+    input { padding: 6px 10px; font-size: 13px; font-family: inherit; border: 1px solid #000; border-radius: 0; width: 300px; background: #fff; color: #000; }
+    input:focus { outline: 2px solid #000; outline-offset: -2px; }
+    button { padding: 8px 16px; font-size: 12px; font-family: inherit; background: #000; color: #fff; border: 1px solid #000; border-radius: 0; cursor: pointer; margin-right: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+    button:hover { background: #333; }
+    button:disabled { background: #ccc; border-color: #ccc; color: #888; cursor: not-allowed; }
+    button.danger { background: #000; border-color: #000; }
+    button.danger:hover { background: #333; }
+    button.small { padding: 4px 8px; font-size: 11px; }
+    .results { margin-top: 20px; background: #fff; border: 1px solid #000; padding: 15px; }
+    .error { color: #000; background: #eee; padding: 10px; border: 1px solid #000; margin-top: 10px; font-size: 12px; }
+    .status { color: #888; margin-top: 10px; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+    th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #ddd; }
+    th { background: #f5f5f5; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+    td { word-break: break-word; max-width: 400px; }
+    pre { background: #f5f5f5; padding: 10px; overflow-x: auto; font-size: 11px; font-family: inherit; border: 1px solid #ddd; }
+    .count { color: #888; margin-bottom: 10px; font-size: 12px; }
+    .namespace-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .namespace-row:hover { background: #f5f5f5; }
+    .namespace-left { display: flex; align-items: center; gap: 8px; }
+    .namespace-left input[type="checkbox"] { margin: 0; width: 12px; height: 12px; accent-color: #000; }
+    .namespace-name { font-size: 13px; cursor: pointer; color: #000; text-decoration: underline; text-underline-offset: 2px; }
+    .namespace-name:hover { color: #555; }
+    .namespace-info { display: flex; gap: 15px; align-items: center; color: #888; font-size: 11px; }
+    .load-more { margin-top: 15px; text-align: center; }
+    .bulk-actions { display: flex; align-items: center; gap: 15px; margin-bottom: 10px; padding: 8px; background: #f5f5f5; border: 1px solid #ddd; }
+    .bulk-actions label { margin: 0; font-weight: normal; display: flex; align-items: center; gap: 5px; font-size: 12px; text-transform: none; letter-spacing: normal; }
+    .bulk-actions input[type="checkbox"] { width: 12px; height: 12px; accent-color: #000; }
+    .selected-count { color: #888; font-size: 12px; }
+    .pagination { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee; font-size: 12px; }
+    .pagination button { padding: 4px 10px; margin: 0; min-width: 32px; }
+    .pagination button.active { background: #fff; color: #000; border: 1px solid #000; font-weight: 700; }
+    .pagination span { color: #888; padding: 0 4px; }
+    .env-info { margin-top: 15px; padding: 8px 10px; background: #f5f5f5; border: 1px solid #ddd; font-size: 12px; color: #555; }
+    .env-info code { color: #000; font-weight: 600; }
+    .clipboard-btn { background: none; border: none; cursor: pointer; padding: 2px 4px; margin: 0; font-size: 13px; color: #888; text-transform: none; letter-spacing: normal; }
+    .clipboard-btn:hover { color: #000; background: none; }
+    .clipboard-btn.copied { color: #000; }
+  </style>
+</head>
+<body>
+  <h1>Puffgres Debug UI</h1>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('documents')">Documents</button>
+    <button class="tab" onclick="switchTab('namespaces')">Namespaces</button>
+  </div>
+
+  <div id="documents-tab" class="tab-content active">
+    <div class="form-row">
+      <label for="namespace">Namespace</label>
+      <input type="text" id="namespace" placeholder="e.g. my-namespace" value="">
+    </div>
+    <div class="form-row">
+      <label for="limit">Number of documents</label>
+      <input type="number" id="limit" placeholder="10" value="10" min="1" max="10000">
+    </div>
+    <div>
+      <button id="fetch-btn" onclick="fetchDocuments()">Fetch Documents</button>
+      <button id="reload-btn" onclick="fetchDocuments()">Reload</button>
+    </div>
+    <div id="status" class="status"></div>
+    <div id="error" class="error" style="display: none;"></div>
+    <div id="results" class="results" style="display: none;">
+      <div id="count" class="count"></div>
+      <div id="table-container"></div>
+    </div>
+  </div>
+
+  <div id="namespaces-tab" class="tab-content">
+    <div class="form-row">
+      <label for="ns-prefix">Filter by prefix (optional)</label>
+      <input type="text" id="ns-prefix" placeholder="e.g. prod-">
+    </div>
+    <div>
+      <button id="ns-fetch-btn" onclick="fetchNamespaces()">Load Namespaces</button>
+      <button id="ns-reload-btn" onclick="fetchNamespaces(true)">Refresh</button>
+    </div>
+    <div id="ns-status" class="status"></div>
+    <div id="ns-error" class="error" style="display: none;"></div>
+    <div id="ns-results" class="results" style="display: none;">
+      <div id="ns-count" class="count"></div>
+      <div id="ns-bulk-actions" class="bulk-actions" style="display: none;">
+        <label><input type="checkbox" id="ns-select-all" onchange="toggleSelectAll()"> Select All</label>
+        <span id="ns-selected-count" class="selected-count"></span>
+        <button class="small danger" id="ns-delete-selected" onclick="requestBulkDelete()" disabled>Delete Selected</button>
+      </div>
+      <div id="ns-list"></div>
+      <div id="ns-pagination" class="pagination" style="display: none;"></div>
+      <div id="ns-load-more" class="load-more" style="display: none;">
+        <button onclick="fetchNamespaces(false, true)">Load More</button>
+      </div>
+    </div>
+    <div id="ns-env-info" class="env-info" style="display: none;"></div>
+  </div>
+
+  <script>
+    function switchTab(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.querySelector(`.tab:nth-child(${tab === 'documents' ? 1 : 2})`).classList.add('active');
+      document.getElementById(`${tab}-tab`).classList.add('active');
+      if (tab === 'namespaces' && !namespacesLoaded) fetchNamespaces();
+    }
+
+    const savedNamespace = localStorage.getItem('debug-ui-namespace');
+    if (savedNamespace) document.getElementById('namespace').value = savedNamespace;
+
+    let namespacesLoaded = false;
+    let namespacesCursor = null;
+    let allNamespaces = [];
+    let pendingBulkDelete = [];
+    let nsPage = 0;
+    const NS_PER_PAGE = 10;
+
+    async function fetchDocuments() {
+      const namespace = document.getElementById('namespace').value.trim();
+      const limit = parseInt(document.getElementById('limit').value) || 10;
+      if (!namespace) { showError('Please enter a namespace'); return; }
+      localStorage.setItem('debug-ui-namespace', namespace);
+
+      const statusEl = document.getElementById('status');
+      const errorEl = document.getElementById('error');
+      const resultsEl = document.getElementById('results');
+      errorEl.style.display = 'none';
+      resultsEl.style.display = 'none';
+      statusEl.textContent = 'Fetching...';
+      document.getElementById('fetch-btn').disabled = true;
+      document.getElementById('reload-btn').disabled = true;
+
+      try {
+        const response = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ namespace, limit })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        displayResults(data);
+        statusEl.textContent = `Fetched at ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        showError(err.message);
+        statusEl.textContent = '';
+      } finally {
+        document.getElementById('fetch-btn').disabled = false;
+        document.getElementById('reload-btn').disabled = false;
+      }
+    }
+
+    function showError(msg) {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+
+    function displayResults(data) {
+      const resultsEl = document.getElementById('results');
+      const countEl = document.getElementById('count');
+      const tableEl = document.getElementById('table-container');
+      const rows = data.rows || [];
+      countEl.textContent = `Found ${rows.length} document(s)`;
+
+      if (rows.length === 0) {
+        tableEl.innerHTML = '<p>No documents found in this namespace.</p>';
+        resultsEl.style.display = 'block';
+        return;
+      }
+
+      const allKeys = new Set(['id']);
+      rows.forEach(row => {
+        Object.keys(row).forEach(k => { if (k !== '_dist') allKeys.add(k); });
+      });
+      const keys = Array.from(allKeys);
+
+      let html = '<table><thead><tr>';
+      keys.forEach(k => html += `<th>${esc(k)}</th>`);
+      html += '</tr></thead><tbody>';
+
+      rows.forEach(row => {
+        html += '<tr>';
+        keys.forEach(k => {
+          const val = row[k];
+          let display = '';
+          if (val === undefined || val === null) {
+            display = '<span style="color:#999">-</span>';
+          } else if (k === 'vector' && Array.isArray(val)) {
+            const preview = val.slice(0, 3).map(v => v.toFixed(4)).join(', ');
+            display = `<span style="color:#666;font-family:monospace;font-size:11px">[${preview}, ...] (${val.length}d)</span>`;
+          } else if (typeof val === 'object') {
+            display = `<pre>${esc(JSON.stringify(val, null, 2))}</pre>`;
+          } else {
+            display = esc(String(val));
+          }
+          html += `<td>${display}</td>`;
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      tableEl.innerHTML = html;
+      resultsEl.style.display = 'block';
+    }
+
+    async function fetchNamespaces(refresh = false, loadMore = false) {
+      const prefix = document.getElementById('ns-prefix').value.trim();
+      const statusEl = document.getElementById('ns-status');
+      const errorEl = document.getElementById('ns-error');
+      const resultsEl = document.getElementById('ns-results');
+
+      if (refresh) { namespacesCursor = null; allNamespaces = []; }
+      errorEl.style.display = 'none';
+      statusEl.textContent = 'Loading namespaces...';
+      document.getElementById('ns-fetch-btn').disabled = true;
+      document.getElementById('ns-reload-btn').disabled = true;
+
+      try {
+        let url = '/api/namespaces';
+        const params = [];
+        if (namespacesCursor && loadMore) params.push(`cursor=${encodeURIComponent(namespacesCursor)}`);
+        if (prefix) params.push(`prefix=${encodeURIComponent(prefix)}`);
+        if (params.length) url += '?' + params.join('&');
+
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+
+        namespacesLoaded = true;
+        namespacesCursor = data.next_cursor || null;
+        const newNs = data.namespaces || [];
+        allNamespaces = loadMore ? [...allNamespaces, ...newNs] : newNs;
+        displayNamespaces();
+        statusEl.textContent = `Loaded at ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        showNsError(err.message);
+        statusEl.textContent = '';
+      } finally {
+        document.getElementById('ns-fetch-btn').disabled = false;
+        document.getElementById('ns-reload-btn').disabled = false;
+      }
+    }
+
+    function showNsError(msg) {
+      const el = document.getElementById('ns-error');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function displayNamespaces() {
+      const resultsEl = document.getElementById('ns-results');
+      const countEl = document.getElementById('ns-count');
+      const listEl = document.getElementById('ns-list');
+      const loadMoreEl = document.getElementById('ns-load-more');
+      const bulkEl = document.getElementById('ns-bulk-actions');
+      const paginationEl = document.getElementById('ns-pagination');
+
+      const totalPages = Math.max(1, Math.ceil(allNamespaces.length / NS_PER_PAGE));
+      if (nsPage >= totalPages) nsPage = totalPages - 1;
+      const start = nsPage * NS_PER_PAGE;
+      const pageItems = allNamespaces.slice(start, start + NS_PER_PAGE);
+
+      countEl.textContent = `Found ${allNamespaces.length} namespace(s)${namespacesCursor ? ' (more available)' : ''}`;
+
+      if (allNamespaces.length === 0) {
+        listEl.innerHTML = '<p>No namespaces found.</p>';
+        loadMoreEl.style.display = 'none';
+        bulkEl.style.display = 'none';
+        paginationEl.style.display = 'none';
+        resultsEl.style.display = 'block';
+        return;
+      }
+
+      bulkEl.style.display = 'flex';
+      document.getElementById('ns-select-all').checked = false;
+      updateSelectedCount();
+
+      let html = '';
+      pageItems.forEach(ns => {
+        const name = ns.id || ns.name || ns;
+        html += `
+          <div id="ns-row-${esc(name)}" class="namespace-row">
+            <div class="namespace-left">
+              <input type="checkbox" class="ns-checkbox" data-name="${esc(name)}" onchange="updateSelectedCount()">
+              <span class="namespace-name" onclick="viewNamespace('${esc(name)}')">${esc(name)}</span>
+              <button class="clipboard-btn" onclick="copyToClipboard('${esc(name)}', this)" title="Copy namespace to clipboard">&#x29C9;</button>
+            </div>
+          </div>`;
+      });
+      listEl.innerHTML = html;
+
+      // Pagination controls
+      if (totalPages > 1) {
+        let pgHtml = `<button onclick="goToNsPage(0)" ${nsPage === 0 ? 'disabled' : ''}>&laquo;</button>`;
+        pgHtml += `<button onclick="goToNsPage(${nsPage - 1})" ${nsPage === 0 ? 'disabled' : ''}>&lsaquo;</button>`;
+        for (let i = 0; i < totalPages; i++) {
+          if (totalPages <= 7 || Math.abs(i - nsPage) <= 2 || i === 0 || i === totalPages - 1) {
+            pgHtml += `<button class="${i === nsPage ? 'active' : ''}" onclick="goToNsPage(${i})">${i + 1}</button>`;
+          } else if (i === 1 || i === totalPages - 2) {
+            pgHtml += '<span>...</span>';
+          }
+        }
+        pgHtml += `<button onclick="goToNsPage(${nsPage + 1})" ${nsPage === totalPages - 1 ? 'disabled' : ''}>&rsaquo;</button>`;
+        pgHtml += `<button onclick="goToNsPage(${totalPages - 1})" ${nsPage === totalPages - 1 ? 'disabled' : ''}>&raquo;</button>`;
+        paginationEl.innerHTML = pgHtml;
+        paginationEl.style.display = 'flex';
+      } else {
+        paginationEl.style.display = 'none';
+      }
+
+      loadMoreEl.style.display = namespacesCursor ? 'block' : 'none';
+      resultsEl.style.display = 'block';
+    }
+
+    function goToNsPage(page) {
+      const totalPages = Math.ceil(allNamespaces.length / NS_PER_PAGE);
+      nsPage = Math.max(0, Math.min(page, totalPages - 1));
+      displayNamespaces();
+    }
+
+    function viewNamespace(name) {
+      document.getElementById('namespace').value = name;
+      switchTab('documents');
+      fetchDocuments();
+    }
+
+    function toggleSelectAll() {
+      const checked = document.getElementById('ns-select-all').checked;
+      document.querySelectorAll('.ns-checkbox').forEach(cb => cb.checked = checked);
+      updateSelectedCount();
+    }
+
+    function getSelectedNamespaces() {
+      return Array.from(document.querySelectorAll('.ns-checkbox:checked')).map(cb => cb.dataset.name);
+    }
+
+    function updateSelectedCount() {
+      const selected = getSelectedNamespaces();
+      const text = selected.length > 0 ? `${selected.length} selected` : '';
+      document.getElementById('ns-selected-count').textContent = text;
+      document.getElementById('ns-delete-selected').disabled = selected.length === 0;
+    }
+
+    function copyToClipboard(text, btn) {
+      navigator.clipboard.writeText(text).then(() => {
+        btn.classList.add('copied');
+        btn.textContent = '\u2713';
+        setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '\u29C9'; }, 1500);
+      });
+    }
+
+    // Fetch and display env info
+    async function fetchEnvInfo() {
+      try {
+        const response = await fetch('/api/env');
+        const data = await response.json();
+        const el = document.getElementById('ns-env-info');
+        const prefix = data.turbopuffer_namespace_prefix;
+        if (prefix) {
+          el.innerHTML = `From env: <code>TURBOPUFFER_NAMESPACE_PREFIX = ${esc(prefix)}</code>`;
+          el.style.display = 'block';
+        }
+      } catch (err) { /* ignore */ }
+    }
+    fetchEnvInfo();
+
+    function requestBulkDelete() {
+      const names = getSelectedNamespaces();
+      if (names.length === 0) return;
+      pendingBulkDelete = names;
+      const msg = `Are you sure you want to delete ${names.length} namespace(s)?\n\n${names.join('\n')}\n\nThis cannot be undone.`;
+      if (!confirm(msg)) { pendingBulkDelete = []; return; }
+      executeBulkDelete();
+    }
+
+    async function executeBulkDelete() {
+      const names = pendingBulkDelete;
+      if (names.length === 0) return;
+      const statusEl = document.getElementById('ns-status');
+      statusEl.textContent = `Deleting ${names.length} namespace(s)...`;
+      let deleted = 0;
+      let errors = [];
+
+      for (const name of names) {
+        try {
+          const response = await fetch(`/api/namespaces/${encodeURIComponent(name)}`, { method: 'DELETE' });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+          allNamespaces = allNamespaces.filter(ns => (ns.id || ns.name || ns) !== name);
+          deleted++;
+          statusEl.textContent = `Deleting... (${deleted}/${names.length})`;
+        } catch (err) {
+          errors.push(`${name}: ${err.message}`);
+        }
+      }
+
+      pendingBulkDelete = [];
+      displayNamespaces();
+      if (errors.length > 0) {
+        showNsError(`Failed to delete ${errors.length} namespace(s):\n${errors.join('\n')}`);
+      }
+      statusEl.textContent = `Deleted ${deleted} namespace(s) at ${new Date().toLocaleTimeString()}`;
+    }
+
+    function esc(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+  </script>
+</body>
+</html>
