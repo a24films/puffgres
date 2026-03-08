@@ -1,12 +1,57 @@
+use std::ops::Deref;
 use std::sync::Arc;
 
 use rustls::ClientConfig;
+use tokio::task::JoinHandle;
 use tokio_postgres::Client;
 use tokio_postgres_rustls_improved::MakeRustlsConnect;
 
 use crate::{PgError, Result};
 
-pub async fn connect(connection_string: &str) -> Result<Client> {
+/// A Postgres connection that owns both the client and the background task
+/// driving the connection. When dropped, the background task is aborted so
+/// the connection is cleaned up instead of being left dangling.
+pub struct PgConnection {
+    client: Client,
+    _handle: JoinHandle<()>,
+}
+
+impl Deref for PgConnection {
+    type Target = Client;
+    fn deref(&self) -> &Client {
+        &self.client
+    }
+}
+
+impl PgConnection {
+    fn new<S, T>(client: Client, connection: tokio_postgres::Connection<S, T>) -> Self
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let handle = tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::error!(
+                    error = %e,
+                    error_debug = ?e,
+                    "postgres connection error",
+                );
+            }
+        });
+        PgConnection {
+            client,
+            _handle: handle,
+        }
+    }
+}
+
+impl Drop for PgConnection {
+    fn drop(&mut self) {
+        self._handle.abort();
+    }
+}
+
+pub async fn connect(connection_string: &str) -> Result<PgConnection> {
     if requires_tls(connection_string) {
         let config =
             ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
@@ -16,39 +61,18 @@ pub async fn connect(connection_string: &str) -> Result<Client> {
                 .with_no_client_auth();
 
         let connector = MakeRustlsConnect::new(config);
-
         let (client, connection) = tokio_postgres::connect(connection_string, connector)
             .await
             .map_err(|e| PgError::ConnectionError(format!("Failed to connect: {}", e)))?;
 
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!(
-                    error = %e,
-                    error_debug = ?e,
-                    "postgres connection error",
-                );
-            }
-        });
-
-        Ok(client)
+        Ok(PgConnection::new(client, connection))
     } else {
         let (client, connection) =
             tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
                 .await
                 .map_err(|e| PgError::ConnectionError(format!("Failed to connect: {}", e)))?;
 
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!(
-                    error = %e,
-                    error_debug = ?e,
-                    "postgres connection error",
-                );
-            }
-        });
-
-        Ok(client)
+        Ok(PgConnection::new(client, connection))
     }
 }
 

@@ -9,6 +9,7 @@ pub mod slot;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
+pub use connect::PgConnection;
 pub use error::PgError;
 pub use tokio_postgres::Client;
 pub use tokio_postgres::types::PgLsn;
