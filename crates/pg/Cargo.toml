@@ -4,19 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio-postgres = "0.7.16"
-tokio-postgres-rustls-improved = { version = "0.16", default-features = false, features = ["ring"] }
-rustls = { version = "0.23", features = ["ring"] }
-webpki-roots = "1.0"
-thiserror = "2.0.18"
-tokio = { version = "1.43", features = ["full"] }
-tracing = { workspace = true }
-testcontainers = { version = "0.26.3", optional = true }
-testcontainers-modules = { version = "0.14.0", features = ["postgres"], optional = true }
+tokio-postgres.workspace = true
+tokio-postgres-rustls-improved.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+testcontainers = { workspace = true, optional = true }
+testcontainers-modules = { workspace = true, optional = true }
 
 [features]
 test-utils = ["dep:testcontainers", "dep:testcontainers-modules"]
 
 [dev-dependencies]
 pg = { path = ".", features = ["test-utils"] }
-replication = { path = "../replication" }
+replication.workspace = true

@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chrono = { version = "0.4.44", features = ["serde"] }
-diesel = { workspace = true, features = ["sqlite"] }
-diesel_migrations = { workspace = true }
-libsqlite3-sys = { workspace = true }
-strum = { version = "0.27.2", features = ["derive"] }
-thiserror = "2.0.18"
+chrono = { workspace = true, features = ["serde"] }
+diesel.workspace = true
+diesel_migrations.workspace = true
+libsqlite3-sys.workspace = true
+strum.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-tempfile = "3.24.0"
+tempfile.workspace = true

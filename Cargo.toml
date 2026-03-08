@@ -3,6 +3,24 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "1.0.6"
+thiserror = "2.0.18"
+tokio = { version = "1.50.0" }
+async-trait = "0.1.89"
+tokio-postgres = "0.7.16"
+sha2 = "0.10.9"
+base64 = "0.22.1"
+bytes = "1.11.1"
+chrono = { version = "0.4.44" }
+uuid = { version = "1.22.0" }
+url = "2.5.8"
+strum = { version = "0.27.2", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+axum = "0.8"
+reqwest = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-opentelemetry = "0.32"
@@ -12,4 +30,23 @@ opentelemetry-otlp = { version = "0.31", features = ["http-proto", "http-json", 
 opentelemetry-appender-tracing = "0.31"
 diesel = { version = "2.3", features = ["sqlite"] }
 diesel_migrations = "2.3"
-libsqlite3-sys = { version = ">=0.17.2, <0.36.0", features = ["bundled"] }
+libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
+rand = "0.10.0"
+derive_more = { version = "2.1.1", features = ["display"] }
+config = { path = "crates/config" }
+pg = { path = "crates/pg" }
+puff = { path = "crates/puff" }
+puffgres-core = { path = "crates/core" }
+puffgres-debug = { path = "crates/debug" }
+replication = { path = "crates/replication" }
+state = { path = "crates/state" }
+pgwire-replication = "0.2"
+rs-puff = { version = "0.1.1", default-features = false, features = ["rustls-tls"] }
+tokio-postgres-rustls-improved = { version = "0.16", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", features = ["ring"] }
+webpki-roots = "1.0"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tempfile = "3.26.0"
+temp-env = "0.3.6"
+testcontainers = "0.26.3"
+testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
