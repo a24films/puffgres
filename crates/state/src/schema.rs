@@ -7,8 +7,8 @@ diesel::table! {
         total_rows -> Nullable<BigInt>,
         processed_rows -> BigInt,
         status -> Text,
-        started_at -> Nullable<Text>,
-        completed_at -> Nullable<Text>,
+        started_at -> Nullable<BigInt>,
+        completed_at -> Nullable<BigInt>,
         error_message -> Nullable<Text>,
         watermark_lsn -> Nullable<BigInt>,
     }
@@ -20,8 +20,8 @@ diesel::table! {
         namespace -> Text,
         content_hash -> Text,
         transform_hash -> Nullable<Text>,
-        applied_at -> Text,
-        tombstone_applied_at -> Nullable<Text>,
+        applied_at -> BigInt,
+        tombstone_applied_at -> Nullable<BigInt>,
         namespace_prefix -> Nullable<Text>,
     }
 }
@@ -36,9 +36,9 @@ diesel::table! {
         error_message -> Text,
         error_kind -> Text,
         retry_count -> Integer,
-        created_at -> Text,
-        last_retry_at -> Nullable<Text>,
-        permanent_at -> Nullable<Text>,
+        created_at -> BigInt,
+        last_retry_at -> Nullable<BigInt>,
+        permanent_at -> Nullable<BigInt>,
     }
 }
 
@@ -47,7 +47,7 @@ diesel::table! {
         config_name -> Text,
         lsn -> BigInt,
         events_processed -> BigInt,
-        updated_at -> Text,
+        updated_at -> BigInt,
     }
 }
 

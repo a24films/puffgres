@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 
+use crate::epoch;
 use crate::models::{NewStreamingCheckpoint, StreamingCheckpointRow};
 use crate::schema::streaming_checkpoints;
 use crate::{StateDb, StateError};
@@ -15,9 +16,9 @@ pub struct StreamingCheckpoint {
 
 impl StreamingCheckpoint {
     fn from_row(row: &StreamingCheckpointRow) -> Result<Self, StateError> {
-        let updated_at = DateTime::parse_from_rfc3339(&row.updated_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| StateError::InvalidState(format!("invalid updated_at: {e}")))?;
+        let updated_at = epoch::from_millis(row.updated_at).ok_or_else(|| {
+            StateError::InvalidState(format!("invalid updated_at millis: {}", row.updated_at))
+        })?;
 
         Ok(Self {
             config_name: row.config_name.clone(),
@@ -33,12 +34,12 @@ impl StateDb {
         &self,
         checkpoint: &StreamingCheckpoint,
     ) -> Result<(), StateError> {
-        let updated_at_str = checkpoint.updated_at.to_rfc3339();
         let new = NewStreamingCheckpoint {
             config_name: &checkpoint.config_name,
-            lsn: i64::from_ne_bytes(checkpoint.lsn.to_ne_bytes()),
-            events_processed: i64::from_ne_bytes(checkpoint.events_processed.to_ne_bytes()),
-            updated_at: &updated_at_str,
+            lsn: i64::try_from(checkpoint.lsn).expect("lsn exceeds i64::MAX"),
+            events_processed: i64::try_from(checkpoint.events_processed)
+                .expect("events_processed exceeds i64::MAX"),
+            updated_at: epoch::to_millis(&checkpoint.updated_at),
         };
 
         let mut conn = self.lock()?;

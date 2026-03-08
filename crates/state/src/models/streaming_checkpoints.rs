@@ -8,7 +8,7 @@ pub struct StreamingCheckpointRow {
     pub config_name: String,
     pub lsn: i64,
     pub events_processed: i64,
-    pub updated_at: String,
+    pub updated_at: i64,
 }
 
 #[derive(Insertable, AsChangeset, Debug)]
@@ -17,5 +17,5 @@ pub struct NewStreamingCheckpoint<'a> {
     pub config_name: &'a str,
     pub lsn: i64,
     pub events_processed: i64,
-    pub updated_at: &'a str,
+    pub updated_at: i64,
 }
