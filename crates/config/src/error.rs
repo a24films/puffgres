@@ -30,6 +30,12 @@ pub enum ConfigError {
     },
 }
 
+impl ConfigError {
+    pub fn is_transient(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +71,12 @@ mod tests {
         let toml_err = toml::from_str::<toml::Value>(toml_str).unwrap_err();
         let err = ConfigError::from(toml_err);
         assert!(err.to_string().contains("TOML parse error"));
+    }
+
+    #[test]
+    fn config_errors_are_never_transient() {
+        assert!(!ConfigError::ParseError("bad".into()).is_transient());
+        assert!(!ConfigError::ValidationError("missing".into()).is_transient());
+        assert!(!ConfigError::NotFound("config.toml".into()).is_transient());
     }
 }
