@@ -291,8 +291,13 @@ async fn run() -> (
         }
         Command::Apply => puffgres_cli::apply::run_async(&paths, &env_config).await,
         Command::Run => {
-            puffgres_cli::run::run_async(&paths, &env_config, &project_config, metrics.as_ref())
-                .await
+            puffgres_cli::pipeline::run_async(
+                &paths,
+                &env_config,
+                &project_config,
+                metrics.as_ref(),
+            )
+            .await
         }
     };
 

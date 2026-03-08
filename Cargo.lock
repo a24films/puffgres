@@ -2101,6 +2101,7 @@ dependencies = [
  "testcontainers-modules",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-opentelemetry",
