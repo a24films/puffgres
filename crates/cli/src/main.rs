@@ -62,8 +62,9 @@ enum Command {
     },
 }
 
-fn main() {
-    let (result, telemetry) = run();
+#[tokio::main]
+async fn main() {
+    let (result, telemetry) = run().await;
     if let Some(t) = telemetry {
         t.shutdown();
     }
@@ -73,7 +74,7 @@ fn main() {
     }
 }
 
-fn run() -> (
+async fn run() -> (
     Result<(), CliError>,
     Option<puffgres_cli::observability::Telemetry>,
 ) {
@@ -110,7 +111,10 @@ fn run() -> (
             Ok(u) => u,
             Err(e) => return (Err(e), None),
         };
-        return (puffgres_cli::generate::run(&paths, &database_url), None);
+        return (
+            puffgres_cli::generate::run_async(&paths, &database_url).await,
+            None,
+        );
     }
 
     if let Command::Debug {
@@ -147,8 +151,7 @@ fn run() -> (
 
         let database_url = puffgres_cli::env::resolve_env_var("DATABASE_URL", &file_vars);
         let replication_config = if let Some(url) = database_url {
-            let rt_temp = tokio::runtime::Runtime::new().unwrap();
-            match rt_temp.block_on(async {
+            match async {
                 let pg_client = pg::connect::connect(&url)
                     .await
                     .map_err(|e| CliError::Debug(format!("Failed to connect to Postgres: {e}")))?;
@@ -156,7 +159,9 @@ fn run() -> (
                     CliError::Debug(format!("Failed to ensure replication slot: {e}"))
                 })?;
                 Ok::<_, CliError>(())
-            }) {
+            }
+            .await
+            {
                 Ok(()) => {
                     eprintln!(
                         "Replication enabled (slot={}, publication={})",
@@ -180,8 +185,7 @@ fn run() -> (
             None
         };
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(puffgres_debug::run(client, port, replication_config));
+        let result = puffgres_debug::run(client, port, replication_config).await;
         return (result.map_err(|e| CliError::Debug(e.to_string())), None);
     }
 
@@ -241,7 +245,7 @@ fn run() -> (
         };
 
         return (
-            puffgres_cli::check::run(&paths, &database_url, &state_db_path),
+            puffgres_cli::check::run_async(&paths, &database_url, &state_db_path).await,
             None,
         );
     }
@@ -276,14 +280,15 @@ fn run() -> (
         | Command::Generate
         | Command::Debug { .. } => unreachable!(),
         Command::Remove { ref name, last } => {
-            puffgres_cli::remove::run(&paths, &env_config, name.as_deref(), last)
+            puffgres_cli::remove::run_async(&paths, &env_config, name.as_deref(), last).await
         }
         Command::DryRun { name } => {
-            puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
+            puffgres_cli::dry_run::run_async(&paths, &env_config, name.as_deref()).await
         }
-        Command::Apply => puffgres_cli::apply::run(&paths, &env_config),
+        Command::Apply => puffgres_cli::apply::run_async(&paths, &env_config).await,
         Command::Run => {
-            puffgres_cli::run::run(&paths, &env_config, &project_config, metrics.as_ref())
+            puffgres_cli::run::run_async(&paths, &env_config, &project_config, metrics.as_ref())
+                .await
         }
     };
 
