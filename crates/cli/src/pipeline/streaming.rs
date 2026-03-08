@@ -101,19 +101,20 @@ pub(crate) async fn run_streaming_loop(
         // This is fine because Turbopuffer upserts are idempotent.
         let should_reconnect;
         loop {
-            if token.is_cancelled() {
-                tracing::info!("shutdown requested, finishing current batch loop");
-                return Ok(());
-            }
-
-            let batch_result = match stream.recv_batch().await {
-                Ok(Some(result)) => result,
-                Ok(None) => {
-                    tracing::info!("replication stream ended");
+            let batch_result = tokio::select! {
+                _ = token.cancelled() => {
+                    tracing::info!("shutdown requested, finishing current batch loop");
                     return Ok(());
                 }
-                Err(e) => {
-                    return Err(e.into());
+                result = stream.recv_batch() => match result {
+                    Ok(Some(result)) => result,
+                    Ok(None) => {
+                        tracing::info!("replication stream ended");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        return Err(e.into());
+                    }
                 }
             };
 
@@ -139,6 +140,22 @@ pub(crate) async fn run_streaming_loop(
                     );
                     // Ack to advance past the oversized transaction
                     stream.ack();
+
+                    // Still count toward DLQ replay cadence so oversized-only
+                    // runs don't starve retryable DLQ entries.
+                    batch_count += 1;
+                    if batch_count.is_multiple_of(project_config.dlq_replay_interval()) {
+                        super::dlq::replay_dlq(
+                            db,
+                            transformers,
+                            namespaces,
+                            puff_client,
+                            project_config,
+                            metrics,
+                            &token,
+                        )
+                        .await?;
+                    }
                     continue;
                 }
                 replication::BatchResult::Batch(batch) => batch,

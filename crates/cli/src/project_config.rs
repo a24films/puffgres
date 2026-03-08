@@ -59,6 +59,11 @@ impl ProjectConfig {
                 "dlq_replay_batch_size must be at least 1 in puffgres.toml".to_string(),
             ));
         }
+        if self.max_transaction_events == Some(0) {
+            return Err(CliError::RunValidation(
+                "max_transaction_events must be at least 1 in puffgres.toml".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -256,6 +261,25 @@ dlq_permanent_max_age_hours = 48
         assert!(
             err.contains("dlq_replay_batch_size"),
             "error should mention dlq_replay_batch_size: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_max_transaction_events_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("puffgres.toml");
+        std::fs::write(
+            &path,
+            "environment_files = [\".env\"]\nmax_transaction_events = 0\n",
+        )
+        .unwrap();
+
+        let result = ProjectConfig::load(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("max_transaction_events"),
+            "error should mention max_transaction_events: {err}"
         );
     }
 
