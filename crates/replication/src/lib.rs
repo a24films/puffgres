@@ -8,11 +8,11 @@ pub mod stream;
 pub use decoder::{
     BeginInfo, CommitInfo, DeleteInfo, InsertInfo, TruncateInfo, UpdateInfo, WalMessage,
 };
-pub use error::ReplicationError;
+pub use error::{ReplicationError, SchemaChanged};
 pub use event::{ColumnValue, Operation, RowEvent, TupleData};
 pub use relation::{ColumnInfo, RelationCache, RelationInfo, ReplicaIdentity};
 pub use stream::{
-    ReplicationStream, ReplicationStreamConfig, ReplicationTransport, StreamingBatch,
+    BatchResult, ReplicationStream, ReplicationStreamConfig, ReplicationTransport, StreamingBatch,
 };
 
 pub type Result<T> = std::result::Result<T, ReplicationError>;
