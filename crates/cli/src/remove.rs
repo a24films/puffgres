@@ -21,25 +21,55 @@ pub async fn run_async(
 
     let config_name = resolve_config_name(&db, name, last)?;
 
-    let config = db.get_config(&config_name)?.ok_or_else(|| {
-        CliError::Remove(format!(
-            "config '{}' not found in state database",
-            config_name
-        ))
-    })?;
+    let config = db.get_config(&config_name)?;
 
-    let full_namespace = match &config.namespace_prefix {
-        Some(prefix) => format!("{}_{}", prefix, config.namespace),
-        None => match &env_config.turbopuffer_namespace_prefix {
-            Some(prefix) => format!("{}_{}", prefix, config.namespace),
-            None => config.namespace.clone(),
-        },
-    };
+    match config {
+        Some(config) => {
+            let full_namespace = match config.namespace_prefix.as_deref() {
+                Some(prefix) if !prefix.is_empty() => {
+                    format!("{}_{}", prefix, config.namespace)
+                }
+                _ => match &env_config.turbopuffer_namespace_prefix {
+                    Some(prefix) if !prefix.is_empty() => {
+                        format!("{}_{}", prefix, config.namespace)
+                    }
+                    _ => config.namespace.clone(),
+                },
+            };
 
-    println!("Removing config '{}'...", config_name);
-    println!("  Namespace: {}", full_namespace);
+            println!("Removing config '{}'...", config_name);
+            println!("  Namespace: {}", full_namespace);
 
-    run_remove_saga(&db, paths, env_config, &config_name, &full_namespace).await
+            run_remove_saga(&db, paths, env_config, &config_name, &full_namespace).await
+        }
+        None => {
+            // State record already deleted — but only treat as idempotent success
+            // if there's evidence this config existed (e.g. config dir still on disk
+            // from a partial previous removal). Otherwise, the name is likely a typo.
+            let loader = ConfigLoader::new(&paths.configs);
+            let has_config_dir = loader
+                .load_all()
+                .map(|all| all.iter().any(|(_, cfg)| cfg.name == config_name))
+                .unwrap_or(false);
+
+            if has_config_dir {
+                // Partial previous removal: step 3 (DB delete) completed but step 2
+                // (dir delete) didn't. Clean up the remaining directory.
+                println!(
+                    "Config '{}' already removed from state DB, cleaning up remaining files...",
+                    config_name
+                );
+                cleanup_config_dir(&loader, &config_name)?;
+                println!("Removed config '{}'", config_name);
+                Ok(())
+            } else {
+                Err(CliError::Remove(format!(
+                    "config '{}' not found in state database or on disk",
+                    config_name
+                )))
+            }
+        }
+    }
 }
 
 /// Idempotent saga: each step tolerates the resource already being gone.
@@ -68,20 +98,17 @@ async fn run_remove_saga(
         Ok(()) => {
             println!("  Deleted turbopuffer namespace '{}'", full_namespace);
         }
+        Err(puff::PuffError::Api { status: 404, .. }) => {
+            println!(
+                "  Turbopuffer namespace '{}' already deleted (not found)",
+                full_namespace
+            );
+        }
         Err(e) => {
-            // Treat not-found as success (namespace already deleted or never existed)
-            let msg = e.to_string();
-            if msg.contains("404") || msg.contains("not found") || msg.contains("Not Found") {
-                println!(
-                    "  Turbopuffer namespace '{}' already deleted (not found)",
-                    full_namespace
-                );
-            } else {
-                return Err(CliError::Remove(format!(
-                    "failed to delete namespace '{}': {e}",
-                    full_namespace
-                )));
-            }
+            return Err(CliError::Remove(format!(
+                "failed to delete namespace '{}': {e}",
+                full_namespace
+            )));
         }
     }
 
@@ -114,9 +141,37 @@ async fn run_remove_saga(
                 println!("  No config directory found on disk (already removed)");
             }
         }
-        Err(_) => {
-            // Config loader failed (e.g. configs dir doesn't exist) — that's fine
+        Err(config::ConfigError::IoError(ref e)) if e.kind() == io::ErrorKind::NotFound => {
+            // configs dir doesn't exist — that's fine
             println!("  No config directory found on disk");
+        }
+        Err(config::ConfigError::FileError {
+            ref path,
+            ref source,
+        }) if matches!(
+            source.as_ref(),
+            config::ConfigError::IoError(e) if e.kind() == io::ErrorKind::NotFound
+        ) =>
+        {
+            // Only treat as idempotent success if the missing file belongs to the
+            // config we're removing. A different config's missing file is a real error.
+            let belongs_to_target = path
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str())
+                .is_some_and(|dir_name| dir_name.ends_with(&format!("_{config_name}")));
+
+            if belongs_to_target {
+                println!("  Config directory partially deleted (config.toml missing), continuing");
+            } else {
+                return Err(CliError::Remove(format!(
+                    "failed to load configs: {}: {source}",
+                    path.display()
+                )));
+            }
+        }
+        Err(e) => {
+            return Err(CliError::Remove(format!("failed to load configs: {e}")));
         }
     }
 
@@ -132,6 +187,36 @@ async fn run_remove_saga(
 
     println!("Removed config '{}'", config_name);
     Ok(())
+}
+
+/// Delete the config directory for the given config name, if it exists on disk.
+fn cleanup_config_dir(loader: &ConfigLoader, config_name: &str) -> Result<(), CliError> {
+    match loader.load_all() {
+        Ok(all_configs) => {
+            for (config_path, cfg) in &all_configs {
+                if cfg.name == config_name {
+                    let config_dir = config_path.parent().unwrap();
+                    match std::fs::remove_dir_all(config_dir) {
+                        Ok(()) => {
+                            println!("  Deleted config directory: {}", config_dir.display());
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                            println!("  Config directory already deleted");
+                        }
+                        Err(e) => {
+                            return Err(CliError::Remove(format!(
+                                "failed to delete config directory: {e}"
+                            )));
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+            println!("  No config directory found on disk (already removed)");
+            Ok(())
+        }
+        Err(e) => Err(CliError::Remove(format!("failed to load configs: {e}"))),
+    }
 }
 
 fn resolve_config_name(db: &StateDb, name: Option<&str>, last: bool) -> Result<String, CliError> {
