@@ -4,27 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-trait = "0.1.89"
-bytes = "1.11.1"
-config = { path = "../config" }
-derive_more = { version = "2.1.1", features = ["display"] }
-pg = { path = "../pg" }
-rand = "0.10.0"
-replication = { path = "../replication" }
-serde = { version = "1.0.228", features = ["derive"] }
-state = { path = "../state" }
-serde_json = "1.0.149"
-thiserror = "2.0.18"
-tracing = { workspace = true }
-tokio = { version = "1.49.0", features = ["process", "io-util"] }
-tokio-postgres = "0.7.16"
-uuid = { version = "1.20.0", features = ["v4", "serde"] }
+async-trait.workspace = true
+bytes.workspace = true
+config.workspace = true
+derive_more.workspace = true
+pg.workspace = true
+rand.workspace = true
+replication.workspace = true
+serde.workspace = true
+state.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+tokio-postgres.workspace = true
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
-chrono = "0.4.44"
-pg = { path = "../pg", features = ["test-utils"] }
-tempfile = "3.24.0"
-testcontainers = "0.26.0"
-testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
-tokio = { version = "1.49.0", features = ["macros", "rt", "rt-multi-thread"] }
-toml = "1.0.0"
+chrono.workspace = true
+pg = { workspace = true, features = ["test-utils"] }
+tempfile.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+toml.workspace = true
