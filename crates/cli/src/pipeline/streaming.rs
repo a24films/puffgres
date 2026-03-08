@@ -33,8 +33,17 @@ pub(crate) async fn run_streaming_loop(
 ) -> Result<(), CliError> {
     let mut events_processed: HashMap<String, u64> = HashMap::new();
     // Build watched columns map: schema.table → columns referenced by any config.
-    // Schema changes that only add columns NOT in this set are silently accepted.
+    // Schema changes that only touch columns outside this set are silently accepted.
+    // Tables where ANY config has columns = None get no entry, so all changes are breaking.
     let mut watched_columns: HashMap<String, Vec<String>> = HashMap::new();
+
+    // Tables with at least one columns = None config must watch everything.
+    let watch_all: std::collections::HashSet<String> = applied_configs
+        .iter()
+        .filter(|(_, c)| c.columns.is_none())
+        .map(|(_, c)| format!("{}.{}", c.source.schema, c.source.table))
+        .collect();
+
     for (_, config) in applied_configs {
         let count = db
             .get_streaming_checkpoint(&config.name)?
@@ -43,13 +52,14 @@ pub(crate) async fn run_streaming_loop(
         events_processed.insert(config.name.clone(), count);
 
         let key = format!("{}.{}", config.source.schema, config.source.table);
-        let entry = watched_columns.entry(key).or_default();
-        // Always watch the id column
-        if !entry.contains(&config.id.column) {
-            entry.push(config.id.column.clone());
+        if watch_all.contains(&key) {
+            continue;
         }
-        // Watch explicitly referenced columns
         if let Some(ref cols) = config.columns {
+            let entry = watched_columns.entry(key).or_default();
+            if !entry.contains(&config.id.column) {
+                entry.push(config.id.column.clone());
+            }
             for col in cols {
                 if !entry.contains(col) {
                     entry.push(col.clone());
