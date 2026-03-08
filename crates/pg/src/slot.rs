@@ -5,20 +5,6 @@ use crate::{PgError, Result};
 
 const PGOUTPUT: &str = "pgoutput";
 
-async fn slot_exists(client: &Client, slot_name: &str) -> Result<bool> {
-    let row = client
-        .query_one(
-            "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
-            &[&slot_name],
-        )
-        .await
-        .map_err(|e| {
-            PgError::ReplicationError(format!("Failed to check slot '{}': {}", slot_name, e))
-        })?;
-
-    Ok(row.get(0))
-}
-
 async fn get_slot_plugin(client: &Client, slot_name: &str) -> Result<Option<String>> {
     let rows = client
         .query(
@@ -68,30 +54,22 @@ async fn create_slot(client: &Client, slot_name: &str) -> Result<()> {
     }
 }
 
+/// Ensure a logical replication slot exists with the `pgoutput` plugin.
+///
+/// Uses create-and-catch-duplicate instead of check-then-create to avoid a
+/// TOCTOU race where another process creates the slot between our check and
+/// our create call.
 pub async fn ensure_slot(client: &Client, slot_name: &str) -> Result<()> {
-    if slot_exists(client, slot_name).await? {
-        let plugin = get_slot_plugin(client, slot_name).await?;
-        match plugin.as_deref() {
-            Some(PGOUTPUT) => return Ok(()),
-            Some(other) => {
-                return Err(PgError::ReplicationError(format!(
-                    "Slot '{}' exists but uses plugin '{}', expected '{}'",
-                    slot_name, other, PGOUTPUT
-                )));
-            }
-            None => {
-                return Err(PgError::ReplicationError(format!(
-                    "Slot '{}' exists but has no plugin",
-                    slot_name
-                )));
-            }
-        }
-    }
-
     create_slot(client, slot_name).await
 }
 
 /// Kill any stale backend still holding the replication slot from a previous run.
+///
+/// Note on PID recycling: between reading `active_pid` and calling
+/// `pg_terminate_backend`, the PID could theoretically be recycled to a
+/// different backend. In practice this is extremely unlikely on short
+/// timescales, and the worst case is terminating an unrelated connection
+/// (which that client would reconnect from). The PID is parameterized ($1).
 pub async fn terminate_active_slot_backend(client: &Client, slot_name: &str) -> Result<()> {
     let row = client
         .query_one(
@@ -138,6 +116,22 @@ pub async fn get_active_pid(client: &Client, slot_name: &str) -> Result<Option<i
         })?;
 
     Ok(row.get(0))
+}
+
+/// Drop a logical replication slot. Returns Ok if the slot was dropped or
+/// didn't exist.
+pub async fn drop_slot(client: &Client, slot_name: &str) -> Result<()> {
+    match client
+        .execute("SELECT pg_drop_replication_slot($1)", &[&slot_name])
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.code() == Some(&SqlState::UNDEFINED_OBJECT) => Ok(()),
+        Err(e) => Err(PgError::ReplicationError(format!(
+            "Failed to drop slot '{}': {}",
+            slot_name, e
+        ))),
+    }
 }
 
 pub async fn get_current_wal_lsn(client: &Client) -> Result<u64> {
