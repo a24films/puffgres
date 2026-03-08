@@ -86,12 +86,13 @@ impl StateDb {
     }
 
     pub fn reset(&self) -> Result<(), StateError> {
-        let mut conn = self.lock()?;
-        diesel::delete(schema::dlq::table).execute(&mut *conn)?;
-        diesel::delete(schema::backfill_progress::table).execute(&mut *conn)?;
-        diesel::delete(schema::streaming_checkpoints::table).execute(&mut *conn)?;
-        diesel::delete(schema::configs::table).execute(&mut *conn)?;
-        Ok(())
+        self.transaction(|conn| {
+            diesel::delete(schema::dlq::table).execute(conn)?;
+            diesel::delete(schema::backfill_progress::table).execute(conn)?;
+            diesel::delete(schema::streaming_checkpoints::table).execute(conn)?;
+            diesel::delete(schema::configs::table).execute(conn)?;
+            Ok(())
+        })
     }
 }
 

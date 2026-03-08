@@ -67,6 +67,28 @@ impl StateDb {
         Ok(())
     }
 
+    /// Insert multiple configs atomically in a single transaction.
+    pub fn insert_configs(&self, configs: &[ConfigRecord]) -> Result<(), StateError> {
+        self.transaction(|conn| {
+            for config in configs {
+                let applied_at_str = config.applied_at.to_rfc3339();
+                let new = NewConfig {
+                    name: &config.name,
+                    namespace: &config.namespace,
+                    content_hash: &config.content_hash,
+                    transform_hash: config.transform_hash.as_deref(),
+                    applied_at: &applied_at_str,
+                    tombstone_applied_at: None,
+                    namespace_prefix: config.namespace_prefix.as_deref(),
+                };
+                diesel::insert_into(crate::schema::configs::table)
+                    .values(&new)
+                    .execute(conn)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn get_config(&self, name: &str) -> Result<Option<ConfigRecord>, StateError> {
         let mut conn = self.lock()?;
         let row = configs::table
@@ -389,5 +411,30 @@ mod tests {
 
         let last = db.get_last_applied_config().unwrap().unwrap();
         assert_eq!(last.name, "only");
+    }
+
+    #[test]
+    fn insert_configs_batch_is_atomic() {
+        let (_dir, db) = setup_test_db();
+        let configs = vec![
+            sample_config("alpha"),
+            sample_config("beta"),
+            sample_config("gamma"),
+        ];
+        db.insert_configs(&configs).unwrap();
+        assert_eq!(db.list_configs().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn insert_configs_rolls_back_on_duplicate() {
+        let (_dir, db) = setup_test_db();
+        db.insert_config(&sample_config("alpha")).unwrap();
+
+        // Second batch includes "alpha" again — should fail and roll back "beta"
+        let configs = vec![sample_config("beta"), sample_config("alpha")];
+        assert!(db.insert_configs(&configs).is_err());
+        // Only the original "alpha" should exist
+        assert_eq!(db.list_configs().unwrap().len(), 1);
+        assert!(db.get_config("beta").unwrap().is_none());
     }
 }
