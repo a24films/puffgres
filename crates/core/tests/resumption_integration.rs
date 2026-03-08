@@ -1,5 +1,6 @@
 mod common;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -215,6 +216,7 @@ async fn cdc_resumption_after_crash() {
         start_lsn: None,
         status_interval: Duration::from_secs(1),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .expect("failed to connect replication stream");
@@ -279,6 +281,7 @@ async fn cdc_resumption_after_crash() {
         start_lsn: Some(checkpoint.lsn),
         status_interval: Duration::from_secs(1),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .expect("failed to reconnect replication stream");
@@ -376,6 +379,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(1),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .expect("failed to connect replication stream");
@@ -452,6 +456,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         start_lsn: Some(streaming_ckpt.lsn),
         status_interval: Duration::from_secs(1),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .expect("failed to reconnect replication stream");

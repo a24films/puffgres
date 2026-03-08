@@ -32,12 +32,30 @@ pub(crate) async fn run_streaming_loop(
     mut start_lsn: Option<u64>,
 ) -> Result<(), CliError> {
     let mut events_processed: HashMap<String, u64> = HashMap::new();
+    // Build watched columns map: schema.table → columns referenced by any config.
+    // Schema changes that only add columns NOT in this set are silently accepted.
+    let mut watched_columns: HashMap<String, Vec<String>> = HashMap::new();
     for (_, config) in applied_configs {
         let count = db
             .get_streaming_checkpoint(&config.name)?
             .map(|c| c.events_processed)
             .unwrap_or(0);
         events_processed.insert(config.name.clone(), count);
+
+        let key = format!("{}.{}", config.source.schema, config.source.table);
+        let entry = watched_columns.entry(key).or_default();
+        // Always watch the id column
+        if !entry.contains(&config.id.column) {
+            entry.push(config.id.column.clone());
+        }
+        // Watch explicitly referenced columns
+        if let Some(ref cols) = config.columns {
+            for col in cols {
+                if !entry.contains(col) {
+                    entry.push(col.clone());
+                }
+            }
+        }
     }
 
     // Auto-clean stale permanent DLQ entries
@@ -85,6 +103,7 @@ pub(crate) async fn run_streaming_loop(
             start_lsn,
             status_interval: STATUS_INTERVAL,
             max_transaction_events: project_config.max_transaction_events(),
+            watched_columns: watched_columns.clone(),
         };
 
         let mut stream = ReplicationStream::connect(stream_config).await?;

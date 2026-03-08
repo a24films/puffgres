@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use clap::{Parser, Subcommand};
 
 use puffgres_cli::{CliError, EnvConfig, ProjectConfig, ProjectPaths};
@@ -178,6 +180,7 @@ async fn run() -> (
                         start_lsn: None,
                         status_interval: std::time::Duration::from_secs(10),
                         max_transaction_events: None,
+                        watched_columns: HashMap::new(),
                     })
                 }
                 Err(e) => {
