@@ -18,6 +18,18 @@ pub enum CoreError {
     Pipeline(String),
 }
 
+impl CoreError {
+    pub fn is_transient(&self) -> bool {
+        match self {
+            CoreError::Config(e) => e.is_transient(),
+            CoreError::Pg(e) => e.is_transient(),
+            CoreError::Replication(e) => e.is_transient(),
+            CoreError::State(e) => e.is_transient(),
+            CoreError::Pipeline(_) => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,5 +59,24 @@ mod tests {
         let repl_err = replication::ReplicationError::Stream("disconnected".to_string());
         let err = CoreError::from(repl_err);
         assert!(err.to_string().contains("replication error"));
+    }
+
+    #[test]
+    fn transient_pg_error_propagates() {
+        let pg_err = pg::PgError::ConnectionError("timeout".into());
+        let err = CoreError::from(pg_err);
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn permanent_config_error_propagates() {
+        let config_err = config::ConfigError::NotFound("missing".into());
+        let err = CoreError::from(config_err);
+        assert!(!err.is_transient());
+    }
+
+    #[test]
+    fn pipeline_error_is_permanent() {
+        assert!(!CoreError::Pipeline("failed".into()).is_transient());
     }
 }

@@ -15,7 +15,7 @@ pub enum StateError {
 }
 
 impl StateError {
-    pub fn is_retryable(&self) -> bool {
+    pub fn is_transient(&self) -> bool {
         match self {
             StateError::Database(diesel::result::Error::DatabaseError(_, info)) => {
                 let msg = info.message().to_lowercase();
@@ -23,5 +23,25 @@ impl StateError {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_found_is_permanent() {
+        assert!(!StateError::NotFound("missing".into()).is_transient());
+    }
+
+    #[test]
+    fn invalid_state_is_permanent() {
+        assert!(!StateError::InvalidState("corrupt".into()).is_transient());
+    }
+
+    #[test]
+    fn migration_is_permanent() {
+        assert!(!StateError::Migration("failed".into()).is_transient());
     }
 }
