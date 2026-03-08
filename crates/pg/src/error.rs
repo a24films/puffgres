@@ -29,7 +29,6 @@ impl PgError {
         }
     }
 
-    /// Create an error from a failed query, routing it properly based on the Postgres error.
     pub fn from_query_err(msg: String, source: &tokio_postgres::Error) -> Self {
         if is_connection_error(source) {
             PgError::ConnectionError(msg)

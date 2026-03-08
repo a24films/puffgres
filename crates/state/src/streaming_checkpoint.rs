@@ -30,7 +30,7 @@ impl StreamingCheckpoint {
 
 impl StateDb {
     pub fn save_streaming_checkpoint(
-        &mut self,
+        &self,
         checkpoint: &StreamingCheckpoint,
     ) -> Result<(), StateError> {
         let updated_at_str = checkpoint.updated_at.to_rfc3339();
@@ -41,20 +41,22 @@ impl StateDb {
             updated_at: &updated_at_str,
         };
 
+        let mut conn = self.lock()?;
         diesel::replace_into(streaming_checkpoints::table)
             .values(&new)
-            .execute(&mut self.conn)?;
+            .execute(&mut *conn)?;
 
         Ok(())
     }
 
     pub fn get_streaming_checkpoint(
-        &mut self,
+        &self,
         config_name: &str,
     ) -> Result<Option<StreamingCheckpoint>, StateError> {
+        let mut conn = self.lock()?;
         let row = streaming_checkpoints::table
             .filter(streaming_checkpoints::config_name.eq(config_name))
-            .first::<StreamingCheckpointRow>(&mut self.conn)
+            .first::<StreamingCheckpointRow>(&mut *conn)
             .optional()?;
 
         match row {
@@ -63,19 +65,21 @@ impl StateDb {
         }
     }
 
-    pub fn delete_streaming_checkpoint(&mut self, config_name: &str) -> Result<bool, StateError> {
+    pub fn delete_streaming_checkpoint(&self, config_name: &str) -> Result<bool, StateError> {
+        let mut conn = self.lock()?;
         let rows_affected = diesel::delete(
             streaming_checkpoints::table.filter(streaming_checkpoints::config_name.eq(config_name)),
         )
-        .execute(&mut self.conn)?;
+        .execute(&mut *conn)?;
 
         Ok(rows_affected > 0)
     }
 
-    pub fn list_streaming_checkpoints(&mut self) -> Result<Vec<StreamingCheckpoint>, StateError> {
+    pub fn list_streaming_checkpoints(&self) -> Result<Vec<StreamingCheckpoint>, StateError> {
+        let mut conn = self.lock()?;
         let rows = streaming_checkpoints::table
             .order(streaming_checkpoints::config_name.asc())
-            .load::<StreamingCheckpointRow>(&mut self.conn)?;
+            .load::<StreamingCheckpointRow>(&mut *conn)?;
 
         rows.iter().map(StreamingCheckpoint::from_row).collect()
     }
@@ -101,7 +105,7 @@ mod tests {
 
     #[test]
     fn save_and_retrieve_streaming_checkpoint() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -116,7 +120,7 @@ mod tests {
 
     #[test]
     fn update_existing_streaming_checkpoint() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -136,7 +140,7 @@ mod tests {
 
     #[test]
     fn streaming_checkpoint_deleted_when_config_deleted() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -145,18 +149,21 @@ mod tests {
 
         assert!(db.get_streaming_checkpoint("film").unwrap().is_some());
 
-        diesel::delete(
-            crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
-        )
-        .execute(&mut db.conn)
-        .unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            diesel::delete(
+                crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
+            )
+            .execute(&mut *conn)
+            .unwrap();
+        }
 
         assert!(db.get_streaming_checkpoint("film").unwrap().is_none());
     }
 
     #[test]
     fn delete_streaming_checkpoint_returns_true_when_exists() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -170,14 +177,14 @@ mod tests {
 
     #[test]
     fn delete_streaming_checkpoint_returns_false_when_not_exists() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let deleted = db.delete_streaming_checkpoint("nonexistent").unwrap();
         assert!(!deleted);
     }
 
     #[test]
     fn list_multiple_streaming_checkpoints() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
 
         db.insert_config(&sample_config("alpha")).unwrap();
         db.insert_config(&sample_config("beta")).unwrap();
@@ -202,7 +209,7 @@ mod tests {
 
     #[test]
     fn get_nonexistent_streaming_checkpoint_returns_none() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         assert!(
             db.get_streaming_checkpoint("nonexistent")
                 .unwrap()
@@ -212,7 +219,7 @@ mod tests {
 
     #[test]
     fn lsn_above_i32_max_roundtrips() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -228,7 +235,7 @@ mod tests {
 
     #[test]
     fn streaming_checkpoint_requires_valid_config() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let checkpoint = sample_streaming_checkpoint("nonexistent_config", 1000, 50);
 
         let result = db.save_streaming_checkpoint(&checkpoint);

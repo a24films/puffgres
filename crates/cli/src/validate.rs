@@ -90,7 +90,7 @@ pub async fn preflight_check(
     }
 
     // Check against state DB for namespace conflicts
-    let mut db =
+    let db =
         StateDb::open(state_db_path).map_err(|e| format!("failed to open state database: {e}"))?;
     let applied = db
         .list_configs()
