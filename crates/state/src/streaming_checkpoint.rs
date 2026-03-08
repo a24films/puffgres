@@ -36,9 +36,8 @@ impl StateDb {
     ) -> Result<(), StateError> {
         let new = NewStreamingCheckpoint {
             config_name: &checkpoint.config_name,
-            lsn: i64::try_from(checkpoint.lsn).expect("lsn exceeds i64::MAX"),
-            events_processed: i64::try_from(checkpoint.events_processed)
-                .expect("events_processed exceeds i64::MAX"),
+            lsn: i64::from_ne_bytes(checkpoint.lsn.to_ne_bytes()),
+            events_processed: i64::from_ne_bytes(checkpoint.events_processed.to_ne_bytes()),
             updated_at: epoch::to_millis(&checkpoint.updated_at),
         };
 
