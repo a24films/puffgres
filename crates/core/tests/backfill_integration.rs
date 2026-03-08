@@ -1,9 +1,9 @@
 mod common;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
-
-use async_trait::async_trait;
 
 use pg::connect::connect;
 use pg::publication::ensure_publication;
@@ -60,24 +60,32 @@ impl NotifyingSink {
     }
 }
 
-#[async_trait]
 impl BackfillSink for NotifyingSink {
-    async fn write(&self, namespace: &str, actions: &[Action]) -> Result<(), CoreError> {
-        self.inner.write(namespace, actions).await?;
-        if let Some(tx) = self.first_write_tx.lock().unwrap().take() {
-            let _ = tx.send(());
-        }
-        Ok(())
+    fn write<'a>(
+        &'a self,
+        namespace: &'a str,
+        actions: &'a [Action],
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.inner.write(namespace, actions).await?;
+            if let Some(tx) = self.first_write_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            Ok(())
+        })
     }
 }
 
 // Always returns Err, used to verify the engine handles write failures correctly.
 struct FailingSink;
 
-#[async_trait]
 impl BackfillSink for FailingSink {
-    async fn write(&self, _namespace: &str, _actions: &[Action]) -> Result<(), CoreError> {
-        Err(CoreError::pipeline("sink failure".to_string()))
+    fn write<'a>(
+        &'a self,
+        _namespace: &'a str,
+        _actions: &'a [Action],
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoreError>> + Send + 'a>> {
+        Box::pin(async move { Err(CoreError::pipeline("sink failure".to_string())) })
     }
 }
 
