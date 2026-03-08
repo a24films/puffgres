@@ -4,6 +4,7 @@ use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationE
 
 use crate::connection::parse_connection_string;
 use crate::decoder::{self, WalMessage};
+use crate::error::SchemaChanged;
 use crate::event::{Operation, RowEvent};
 use crate::relation::RelationCache;
 use crate::{ReplicationError, Result};
@@ -42,6 +43,18 @@ pub struct StreamingBatch {
     pub events: Vec<RowEvent>,
     /// Commit LSN for this transaction — used for checkpointing and ack.
     pub ack_lsn: u64,
+}
+
+/// The result of receiving the next batch from the replication stream.
+/// Schema changes are signaled here rather than as errors, since they
+/// are not failures — just signals to reconnect with fresh metadata.
+#[derive(Debug)]
+pub enum BatchResult {
+    /// A committed transaction batch.
+    Batch(StreamingBatch),
+    /// A tracked relation's schema changed. The caller should tear down
+    /// and reconnect with fresh schema metadata.
+    SchemaChanged(SchemaChanged),
 }
 
 struct TransactionState {
@@ -100,7 +113,10 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
     /// Returns the next committed transaction as a batch, or `None` on stream end.
     /// This function itself does **not** ack the batch to Postgres, because it may fail.
     /// Instead, the `ack` function is called by the parent afterwards.
-    pub async fn recv_batch(&mut self) -> Result<Option<StreamingBatch>> {
+    ///
+    /// If a tracked relation's schema changes, returns `BatchResult::SchemaChanged`
+    /// instead of an error, since schema changes are not failures.
+    pub async fn recv_batch(&mut self) -> Result<Option<BatchResult>> {
         loop {
             let event = match self.client.recv().await {
                 Ok(Some(event)) => event,
@@ -119,19 +135,16 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                     match msg {
                         WalMessage::Relation(info) => {
                             if self.relation_cache.schema_changed(&info) {
-                                let err = ReplicationError::SchemaChanged {
+                                let signal = SchemaChanged {
                                     relation_id: info.id,
                                     namespace: info.namespace.clone(),
                                     name: info.name.clone(),
                                 };
                                 self.relation_cache.insert(info);
-                                // Return an error to signal the caller to tear down and
-                                // reconnect with a fresh stream. This is not a fatal error:
-                                // Postgres replication slots retain all un-acked WAL, so
-                                // when we reconnect from the last checkpointed LSN, we will
-                                // receive all events between the disconnect and the present
-                                // (including any from this transaction we haven't consumed).
-                                return Err(err);
+                                // Signal the caller to tear down and reconnect with a
+                                // fresh stream. Postgres replication slots retain all
+                                // un-acked WAL, so no messages are lost on reconnect.
+                                return Ok(Some(BatchResult::SchemaChanged(signal)));
                             }
                             self.relation_cache.insert(info);
                         }
@@ -172,10 +185,10 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                 ReplicationEvent::Commit { end_lsn, .. } => {
                     if let Some(txn) = self.current_txn.take() {
                         self.pending_lsn = Some(end_lsn);
-                        return Ok(Some(StreamingBatch {
+                        return Ok(Some(BatchResult::Batch(StreamingBatch {
                             events: txn.events,
                             ack_lsn: end_lsn.0,
-                        }));
+                        })));
                     }
                 }
 
@@ -234,6 +247,14 @@ mod tests {
     use bytes::{BufMut, BytesMut};
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    /// Helper to unwrap a `BatchResult::Batch` from `recv_batch`.
+    fn expect_batch(result: Option<BatchResult>) -> StreamingBatch {
+        match result.expect("expected Some, got None") {
+            BatchResult::Batch(b) => b,
+            other => panic!("expected Batch, got: {other:?}"),
+        }
+    }
 
     struct MockTransport {
         events: VecDeque<Result<Option<ReplicationEvent>>>,
@@ -302,7 +323,7 @@ mod tests {
             })),
         ]);
 
-        let batch = stream.recv_batch().await.unwrap().unwrap();
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
         assert!(batch.events.is_empty());
         assert_eq!(batch.ack_lsn, 200);
         assert!(stream.client.acked_lsns().is_empty());
@@ -323,7 +344,7 @@ mod tests {
             })),
         ]);
 
-        let batch = stream.recv_batch().await.unwrap().unwrap();
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch.ack_lsn, 200);
         // simulate successful processing, then ack
         stream.ack();
@@ -345,7 +366,7 @@ mod tests {
             })),
         ]);
 
-        let _batch = stream.recv_batch().await.unwrap().unwrap();
+        let _batch = expect_batch(stream.recv_batch().await.unwrap());
         // simulate a processing failure — don't call ack
         assert!(stream.client.acked_lsns().is_empty());
     }
@@ -376,11 +397,11 @@ mod tests {
             })),
         ]);
 
-        let batch1 = stream.recv_batch().await.unwrap().unwrap();
+        let batch1 = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch1.ack_lsn, 1000);
         stream.ack();
 
-        let batch2 = stream.recv_batch().await.unwrap().unwrap();
+        let batch2 = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch2.ack_lsn, 2000);
         stream.ack();
 
@@ -466,18 +487,16 @@ mod tests {
         ]);
 
         // First batch succeeds (relation cached)
-        let batch = stream.recv_batch().await.unwrap().unwrap();
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch.ack_lsn, 200);
 
-        // Second batch returns SchemaChanged error
-        let result = stream.recv_batch().await;
-        assert!(
-            matches!(
-                result,
-                Err(ReplicationError::SchemaChanged { relation_id: 1, .. })
-            ),
-            "expected SchemaChanged error, got: {result:?}",
-        );
+        // Second recv returns SchemaChanged signal (not an error)
+        match stream.recv_batch().await.unwrap().unwrap() {
+            BatchResult::SchemaChanged(sc) => {
+                assert_eq!(sc.relation_id, 1);
+            }
+            other => panic!("expected SchemaChanged, got: {other:?}"),
+        };
 
         // Cache was still updated with the new schema
         let cached = stream.relation_cache().get(1).unwrap();
@@ -534,9 +553,9 @@ mod tests {
         ]);
 
         // Both batches should succeed — no schema change
-        let batch1 = stream.recv_batch().await.unwrap().unwrap();
+        let batch1 = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch1.ack_lsn, 200);
-        let batch2 = stream.recv_batch().await.unwrap().unwrap();
+        let batch2 = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch2.ack_lsn, 400);
     }
 }

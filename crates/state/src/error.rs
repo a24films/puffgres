@@ -15,8 +15,6 @@ pub enum StateError {
 }
 
 impl StateError {
-    /// Whether this error is likely transient (e.g. SQLite busy/locked) and
-    /// worth retrying after a backoff.
     pub fn is_retryable(&self) -> bool {
         match self {
             StateError::Database(diesel::result::Error::DatabaseError(_, info)) => {
