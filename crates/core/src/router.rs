@@ -81,6 +81,7 @@ mod tests {
     use replication::{
         ColumnInfo, ColumnValue, Operation, RelationInfo, ReplicaIdentity, TupleData,
     };
+    use std::sync::Arc;
 
     fn load_fixture(name: &str) -> Config {
         let path = format!("tests/fixtures/{name}.toml");
@@ -91,9 +92,9 @@ mod tests {
         RowEvent {
             relation_id,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![ColumnValue::Text(Bytes::from_static(b"1"))],
-            }),
+            })),
             old_tuple: None,
         }
     }
@@ -216,9 +217,9 @@ mod tests {
         let events = vec![RowEvent {
             relation_id: 16384,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![ColumnValue::Null],
-            }),
+            })),
             old_tuple: None,
         }];
         let grouped = router.route_batch(&events, &cache);
@@ -235,17 +236,17 @@ mod tests {
             RowEvent {
                 relation_id: 16384,
                 operation: Operation::Insert,
-                new_tuple: Some(TupleData {
+                new_tuple: Some(Arc::new(TupleData {
                     columns: vec![ColumnValue::Text(Bytes::from_static(b"42"))],
-                }),
+                })),
                 old_tuple: None,
             },
             RowEvent {
                 relation_id: 16384,
                 operation: Operation::Insert,
-                new_tuple: Some(TupleData {
+                new_tuple: Some(Arc::new(TupleData {
                     columns: vec![ColumnValue::Text(Bytes::from_static(b"99"))],
-                }),
+                })),
                 old_tuple: None,
             },
         ];

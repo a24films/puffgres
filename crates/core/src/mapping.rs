@@ -88,6 +88,7 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use replication::{ColumnInfo, ColumnValue, Operation, ReplicaIdentity, TupleData};
+    use std::sync::Arc;
 
     fn load_fixture(name: &str) -> Config {
         let path = format!("tests/fixtures/{name}.toml");
@@ -158,12 +159,12 @@ mod tests {
         let event = RowEvent {
             relation_id: 16384,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![
                     ColumnValue::Text(Bytes::from_static(b"42")),
                     ColumnValue::Text(Bytes::from_static(b"alice")),
                 ],
-            }),
+            })),
             old_tuple: None,
         };
 
@@ -178,12 +179,12 @@ mod tests {
             relation_id: 16384,
             operation: Operation::Delete,
             new_tuple: None,
-            old_tuple: Some(TupleData {
+            old_tuple: Some(Arc::new(TupleData {
                 columns: vec![
                     ColumnValue::Text(Bytes::from_static(b"99")),
                     ColumnValue::Text(Bytes::from_static(b"bob")),
                 ],
-            }),
+            })),
         };
 
         let id = mapping.extract_id(&event, &test_relation()).unwrap();
@@ -199,9 +200,9 @@ mod tests {
         let event = RowEvent {
             relation_id: 16384,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![ColumnValue::Text(Bytes::from_static(b"1"))],
-            }),
+            })),
             old_tuple: None,
         };
 
@@ -229,12 +230,12 @@ mod tests {
         let event = RowEvent {
             relation_id: 16384,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![
                     ColumnValue::Null,
                     ColumnValue::Text(Bytes::from_static(b"alice")),
                 ],
-            }),
+            })),
             old_tuple: None,
         };
 

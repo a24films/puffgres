@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{CoreError, DocumentId};
 use config::IdType;
 use replication::{ColumnValue, Operation, RowEvent, TupleData};
@@ -45,9 +47,9 @@ pub fn values_to_event(
         RowEvent {
             relation_id: 0,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: col_values,
-            }),
+            })),
             old_tuple: None,
         },
         doc_id,

@@ -389,6 +389,7 @@ mod tests {
     use config::IdType;
     use replication::{ColumnValue, TupleData};
     use serde_json::json;
+    use std::sync::Arc;
 
     fn make_transformer() -> JsTransformer {
         JsTransformer::new(PathBuf::from("transform.ts"), IdType::Uint)
@@ -398,12 +399,12 @@ mod tests {
         RowEvent {
             relation_id: 1,
             operation: op,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: cols
                     .into_iter()
                     .map(|s| ColumnValue::Text(Bytes::from(s.to_string())))
                     .collect(),
-            }),
+            })),
             old_tuple: None,
         }
     }
@@ -430,9 +431,9 @@ mod tests {
             relation_id: 1,
             operation: Operation::Delete,
             new_tuple: None,
-            old_tuple: Some(TupleData {
+            old_tuple: Some(Arc::new(TupleData {
                 columns: vec![ColumnValue::Text(Bytes::from("42"))],
-            }),
+            })),
         };
         let id = DocumentId::Uint(42);
 
@@ -449,13 +450,13 @@ mod tests {
         let event = RowEvent {
             relation_id: 1,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![
                     ColumnValue::Text(Bytes::from("a")),
                     ColumnValue::Null,
                     ColumnValue::Text(Bytes::from("c")),
                 ],
-            }),
+            })),
             old_tuple: None,
         };
         let id = DocumentId::Uint(1);
@@ -657,13 +658,13 @@ mod tests {
         let event = RowEvent {
             relation_id: 1,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![
                     ColumnValue::Text(Bytes::from("1")),
                     ColumnValue::Null,
                     ColumnValue::Null,
                 ],
-            }),
+            })),
             old_tuple: None,
         };
         let id = DocumentId::Uint(1);
@@ -698,9 +699,9 @@ mod tests {
             relation_id: 1,
             operation: Operation::Delete,
             new_tuple: None,
-            old_tuple: Some(TupleData {
+            old_tuple: Some(Arc::new(TupleData {
                 columns: vec![ColumnValue::Text(Bytes::from("42"))],
-            }),
+            })),
         };
         let id = DocumentId::Uint(42);
 
@@ -715,13 +716,13 @@ mod tests {
         let event = RowEvent {
             relation_id: 1,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData {
+            new_tuple: Some(Arc::new(TupleData {
                 columns: vec![
                     ColumnValue::Text(Bytes::from("a")),
                     ColumnValue::Null,
                     ColumnValue::Text(Bytes::from("c")),
                 ],
-            }),
+            })),
             old_tuple: None,
         };
         let id = DocumentId::Uint(1);
