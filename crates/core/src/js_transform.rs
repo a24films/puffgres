@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
+
 use config::IdType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -294,15 +296,16 @@ impl Drop for JsTransformer {
     }
 }
 
-#[async_trait]
 impl Transformer for JsTransformer {
-    async fn transform_batch(
-        &self,
-        events: &[(&RowEvent, DocumentId)],
-    ) -> Result<Vec<Action>, CoreError> {
-        let input = self.serialize_events(events)?;
-        let output = self.send_batch_to_process(&input).await?;
-        self.parse_actions(output.trim())
+    fn transform_batch<'a>(
+        &'a self,
+        events: &'a [(&'a RowEvent, DocumentId)],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Action>, CoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            let input = self.serialize_events(events)?;
+            let output = self.send_batch_to_process(&input).await?;
+            self.parse_actions(output.trim())
+        })
     }
 }
 
@@ -347,34 +350,35 @@ impl PassthroughTransformer {
     }
 }
 
-#[async_trait]
 impl Transformer for PassthroughTransformer {
-    async fn transform_batch(
-        &self,
-        events: &[(&RowEvent, DocumentId)],
-    ) -> Result<Vec<Action>, CoreError> {
-        Ok(events
-            .iter()
-            .map(|(event, id)| match event.operation {
-                Operation::Delete => Action::Delete { id: id.clone() },
-                _ => {
-                    let columns = self.columns_to_values(event);
-                    let document = Value::Array(
-                        columns
-                            .into_iter()
-                            .map(|c| c.map(Value::String).unwrap_or(Value::Null))
-                            .collect(),
-                    );
-                    Action::Upsert {
-                        id: id.clone(),
-                        document,
-                        vector: None,
-                        distance_metric: None,
-                        schema: None,
+    fn transform_batch<'a>(
+        &'a self,
+        events: &'a [(&'a RowEvent, DocumentId)],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Action>, CoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(events
+                .iter()
+                .map(|(event, id)| match event.operation {
+                    Operation::Delete => Action::Delete { id: id.clone() },
+                    _ => {
+                        let columns = self.columns_to_values(event);
+                        let document = Value::Array(
+                            columns
+                                .into_iter()
+                                .map(|c| c.map(Value::String).unwrap_or(Value::Null))
+                                .collect(),
+                        );
+                        Action::Upsert {
+                            id: id.clone(),
+                            document,
+                            vector: None,
+                            distance_metric: None,
+                            schema: None,
+                        }
                     }
-                }
-            })
-            .collect())
+                })
+                .collect())
+        })
     }
 }
 

@@ -1,6 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Instant;
-
-use async_trait::async_trait;
 
 use crate::backoff::{Backoff, BackoffConfig};
 use crate::row_convert::pg_rows_to_events;
@@ -57,9 +57,12 @@ pub enum BackfillOutcome {
     Failed { error: String, processed: u64 },
 }
 
-#[async_trait]
 pub trait BackfillSink: Send + Sync {
-    async fn write(&self, namespace: &str, actions: &[Action]) -> Result<(), CoreError>;
+    fn write<'a>(
+        &'a self,
+        namespace: &'a str,
+        actions: &'a [Action],
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoreError>> + Send + 'a>>;
 }
 
 pub async fn run_backfill(

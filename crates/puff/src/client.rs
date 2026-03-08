@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
-use async_trait::async_trait;
 use rs_puff::DistanceMetric;
 use rs_puff::params::WriteParams;
 use serde_json::Value;
@@ -144,12 +145,17 @@ impl TurbopufferClient {
     }
 }
 
-#[async_trait]
 impl BackfillSink for TurbopufferClient {
-    async fn write(&self, namespace: &str, actions: &[Action]) -> Result<(), CoreError> {
-        self.send_batch(namespace, actions)
-            .await
-            .map_err(|e| CoreError::Pipeline(e.to_string()))
+    fn write<'a>(
+        &'a self,
+        namespace: &'a str,
+        actions: &'a [Action],
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.send_batch(namespace, actions)
+                .await
+                .map_err(|e| CoreError::Pipeline(e.to_string()))
+        })
     }
 }
 

@@ -1,4 +1,5 @@
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::{Action, CoreError, DocumentId};
 use replication::RowEvent;
@@ -11,12 +12,11 @@ use replication::RowEvent;
 /// unreachable). Per-event errors (bad data, missing columns, etc.) should be
 /// handled internally — log the error and return [`Action::Skip`] for that
 /// event so the rest of the batch can proceed.
-#[async_trait]
 pub trait Transformer: Send + Sync {
-    async fn transform_batch(
-        &self,
-        events: &[(&RowEvent, DocumentId)],
-    ) -> Result<Vec<Action>, CoreError>;
+    fn transform_batch<'a>(
+        &'a self,
+        events: &'a [(&'a RowEvent, DocumentId)],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Action>, CoreError>> + Send + 'a>>;
 }
 
 #[cfg(test)]
@@ -27,32 +27,33 @@ mod tests {
 
     struct NoopTransformer;
 
-    #[async_trait]
     impl Transformer for NoopTransformer {
-        async fn transform_batch(
-            &self,
-            events: &[(&RowEvent, DocumentId)],
-        ) -> Result<Vec<Action>, CoreError> {
-            Ok(events
-                .iter()
-                .map(|(event, id)| {
-                    // Per-event error handling: skip events with no tuple data
-                    // instead of failing the whole batch.
-                    if event.new_tuple.is_none() && event.old_tuple.is_none() {
-                        return Action::Skip;
-                    }
-                    match event.operation {
-                        Operation::Delete => Action::Delete { id: id.clone() },
-                        _ => Action::Upsert {
-                            id: id.clone(),
-                            document: json!({}),
-                            vector: None,
-                            distance_metric: None,
-                            schema: None,
-                        },
-                    }
-                })
-                .collect())
+        fn transform_batch<'a>(
+            &'a self,
+            events: &'a [(&'a RowEvent, DocumentId)],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Action>, CoreError>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(events
+                    .iter()
+                    .map(|(event, id)| {
+                        // Per-event error handling: skip events with no tuple data
+                        // instead of failing the whole batch.
+                        if event.new_tuple.is_none() && event.old_tuple.is_none() {
+                            return Action::Skip;
+                        }
+                        match event.operation {
+                            Operation::Delete => Action::Delete { id: id.clone() },
+                            _ => Action::Upsert {
+                                id: id.clone(),
+                                document: json!({}),
+                                vector: None,
+                                distance_metric: None,
+                                schema: None,
+                            },
+                        }
+                    })
+                    .collect())
+            })
         }
     }
 

@@ -7,7 +7,6 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-async-trait.workspace = true
 bytes.workspace = true
 config.workspace = true
 derive_more.workspace = true
