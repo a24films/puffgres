@@ -123,6 +123,21 @@ impl StateDb {
         Ok(())
     }
 
+    pub fn untombstone_config(&self, name: &str) -> Result<(), StateError> {
+        let mut conn = self.lock()?;
+        let updated = diesel::update(configs::table.filter(configs::name.eq(name)))
+            .set(configs::tombstone_applied_at.eq(None::<i64>))
+            .execute(&mut *conn)?;
+
+        if updated == 0 {
+            return Err(StateError::InvalidState(format!(
+                "config '{name}' not found"
+            )));
+        }
+
+        Ok(())
+    }
+
     pub fn is_tombstoned(&self, name: &str) -> Result<bool, StateError> {
         let mut conn = self.lock()?;
         let row = configs::table

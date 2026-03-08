@@ -48,6 +48,42 @@ pub fn run(paths: &ProjectPaths, state_db_path: &Path, name: &str) -> Result<(),
     Ok(())
 }
 
+pub fn untombstone(paths: &ProjectPaths, state_db_path: &Path, name: &str) -> Result<(), CliError> {
+    if !state_db_path.exists() {
+        return Err(CliError::NotInitialized("state.db".to_string()));
+    }
+    let db = StateDb::open(state_db_path)?;
+
+    let config = db.get_config(name)?.ok_or_else(|| {
+        CliError::Tombstone(format!("config '{name}' not found in state database"))
+    })?;
+
+    if config.tombstone_applied_at.is_none() {
+        println!("Config '{}' is not tombstoned", name);
+        return Ok(());
+    }
+
+    db.untombstone_config(name)?;
+
+    // Remove the marker file if it exists
+    let loader = ConfigLoader::new(&paths.configs);
+    if let Ok(all_configs) = loader.load_all() {
+        for (config_path, cfg) in &all_configs {
+            if cfg.name == name {
+                let tombstone_path = config_path.parent().unwrap().join("tombstone.toml");
+                if tombstone_path.exists() {
+                    fs::remove_file(&tombstone_path)?;
+                }
+                break;
+            }
+        }
+    }
+
+    println!("Untombstoned config '{}'", name);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
