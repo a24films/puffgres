@@ -92,6 +92,7 @@ async fn schema_change_triggers_error_on_alter_table() {
         publication_name: PUB.to_string(),
         start_lsn: None,
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .unwrap();
@@ -191,6 +192,7 @@ async fn reconnect_after_schema_change_resumes_streaming() {
         publication_name: pub_name.to_string(),
         start_lsn: None,
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .unwrap();
@@ -245,6 +247,7 @@ async fn reconnect_after_schema_change_resumes_streaming() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(last_acked_lsn),
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .unwrap();

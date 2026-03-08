@@ -84,6 +84,7 @@ pub(crate) async fn run_streaming_loop(
             publication_name: PUBLICATION_NAME.to_string(),
             start_lsn,
             status_interval: STATUS_INTERVAL,
+            max_transaction_events: project_config.max_transaction_events(),
         };
 
         let mut stream = ReplicationStream::connect(stream_config).await?;
@@ -126,6 +127,19 @@ pub(crate) async fn run_streaming_loop(
                     );
                     should_reconnect = true;
                     break;
+                }
+                replication::BatchResult::TransactionTooLarge {
+                    ack_lsn,
+                    event_count,
+                } => {
+                    tracing::warn!(
+                        ack_lsn,
+                        event_count,
+                        "transaction exceeded max_transaction_events limit, skipping",
+                    );
+                    // Ack to advance past the oversized transaction
+                    stream.ack();
+                    continue;
                 }
                 replication::BatchResult::Batch(batch) => batch,
             };

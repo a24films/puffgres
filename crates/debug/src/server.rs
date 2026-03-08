@@ -92,6 +92,7 @@ async fn run_replication_stream(
         publication_name: config.publication_name.clone(),
         start_lsn: config.start_lsn,
         status_interval: config.status_interval,
+        max_transaction_events: None,
     };
 
     let mut stream = ReplicationStream::connect(stream_config).await?;
