@@ -167,6 +167,16 @@ pub(crate) async fn run_streaming_loop(
                         event_count,
                         "transaction exceeded max_transaction_events limit, skipping",
                     );
+                    // Save checkpoint so we don't replay this txn after restart
+                    for (_, config) in applied_configs {
+                        let checkpoint = StreamingCheckpoint {
+                            config_name: config.name.clone(),
+                            lsn: ack_lsn,
+                            events_processed: *events_processed.get(&config.name).unwrap_or(&0),
+                            updated_at: Utc::now(),
+                        };
+                        db.save_streaming_checkpoint(&checkpoint)?;
+                    }
                     // Ack to advance past the oversized transaction
                     stream.ack();
 
