@@ -1,14 +1,42 @@
+use std::io::{self, Write};
 use std::path::Path;
 
 use state::StateDb;
 
 use crate::error::CliError;
 
-pub fn run(state_db_path: &Path) -> Result<(), CliError> {
+pub fn run(state_db_path: &Path, force: bool) -> Result<(), CliError> {
     if !state_db_path.exists() {
         return Err(CliError::NotInitialized("state.db".to_string()));
     }
     let db = StateDb::open(state_db_path)?;
+
+    let configs = db.list_configs()?;
+    if configs.is_empty() {
+        println!("No configs to reset.");
+        return Ok(());
+    }
+
+    if !force {
+        println!(
+            "This will delete all state for {} config(s):",
+            configs.len()
+        );
+        for c in &configs {
+            println!("  - {}", c.name);
+        }
+        print!("Continue? [y/N] ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+        if input != "y" && input != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
     db.reset()?;
     println!("Reset: cleared all configs and checkpoints");
     Ok(())
@@ -40,7 +68,7 @@ mod tests {
         assert_eq!(db.list_configs().unwrap().len(), 1);
         drop(db);
 
-        run(&state_db_path).unwrap();
+        run(&state_db_path, true).unwrap();
 
         let db = StateDb::open(&state_db_path).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 0);
@@ -49,7 +77,7 @@ mod tests {
     #[test]
     fn reset_on_empty_db() {
         let (_dir, _paths, state_db_path) = setup_project();
-        run(&state_db_path).unwrap();
+        run(&state_db_path, true).unwrap();
     }
 
     #[test]
@@ -57,7 +85,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing_db = dir.path().join("nonexistent.db");
 
-        let err = run(&missing_db).unwrap_err();
+        let err = run(&missing_db, true).unwrap_err();
         assert!(
             err.to_string().contains("not found"),
             "expected NotInitialized error, got: {err}"

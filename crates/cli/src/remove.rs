@@ -39,7 +39,15 @@ pub async fn run_async(
     println!("Removing config '{}'...", config_name);
     println!("  Namespace: {}", full_namespace);
 
-    // Delete the turbopuffer namespace
+    // Step 1: Delete state first (inside a transaction). If later steps fail,
+    // the worst case is an orphaned turbopuffer namespace (safe — turbopuffer
+    // can garbage-collect) or stale config files on disk (harmless).
+    db.delete_config(&config_name)?;
+    println!(
+        "  Deleted config, checkpoints, backfill progress, and DLQ entries from state database"
+    );
+
+    // Step 2: Delete the turbopuffer namespace
     let puff_client = puff::TurbopufferClient::new(
         env_config.turbopuffer_api_key.clone(),
         env_config.turbopuffer_region.clone(),
@@ -58,13 +66,7 @@ pub async fn run_async(
 
     println!("  Deleted turbopuffer namespace '{}'", full_namespace);
 
-    // Delete config from state DB (FK cascades handle DLQ, backfill, checkpoints)
-    db.delete_config(&config_name)?;
-    println!(
-        "  Deleted config, checkpoints, backfill progress, and DLQ entries from state database"
-    );
-
-    // Delete the config directory from the filesystem
+    // Step 3: Delete the config directory from the filesystem
     let loader = ConfigLoader::new(&paths.configs);
     let all_configs = loader.load_all()?;
     for (config_path, cfg) in &all_configs {
