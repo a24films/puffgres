@@ -21,8 +21,8 @@ impl StreamingCheckpoint {
 
         Ok(Self {
             config_name: row.config_name.clone(),
-            lsn: row.lsn as u64,
-            events_processed: row.events_processed as u64,
+            lsn: u64::from_ne_bytes(row.lsn.to_ne_bytes()),
+            events_processed: u64::from_ne_bytes(row.events_processed.to_ne_bytes()),
             updated_at,
         })
     }
@@ -36,8 +36,8 @@ impl StateDb {
         let updated_at_str = checkpoint.updated_at.to_rfc3339();
         let new = NewStreamingCheckpoint {
             config_name: &checkpoint.config_name,
-            lsn: checkpoint.lsn as i64,
-            events_processed: checkpoint.events_processed as i64,
+            lsn: i64::from_ne_bytes(checkpoint.lsn.to_ne_bytes()),
+            events_processed: i64::from_ne_bytes(checkpoint.events_processed.to_ne_bytes()),
             updated_at: &updated_at_str,
         };
 

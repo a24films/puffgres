@@ -114,12 +114,12 @@ impl DlqEntry {
         Ok(Self {
             id: row.id,
             config_name: row.config_name.clone(),
-            lsn: row.lsn as u64,
+            lsn: u64::from_ne_bytes(row.lsn.to_ne_bytes()),
             event_json: row.event_json.clone(),
             doc_id: row.doc_id.clone(),
             error_message: row.error_message.clone(),
             error_kind,
-            retry_count: row.retry_count as u32,
+            retry_count: u32::try_from(row.retry_count).unwrap_or(0),
             created_at,
             last_retry_at,
             permanent_at,
@@ -135,12 +135,12 @@ impl StateDb {
 
         let new = NewDlqEntry {
             config_name: &entry.config_name,
-            lsn: entry.lsn as i64,
+            lsn: i64::from_ne_bytes(entry.lsn.to_ne_bytes()),
             event_json: &entry.event_json,
             doc_id: entry.doc_id.as_deref(),
             error_message: &entry.error_message,
             error_kind: entry.error_kind.to_str(),
-            retry_count: entry.retry_count as i32,
+            retry_count: i32::try_from(entry.retry_count).expect("retry_count exceeds i32::MAX"),
             created_at: &created_at_str,
             last_retry_at: last_retry_at_str.as_deref(),
             permanent_at: permanent_at_str.as_deref(),
@@ -181,11 +181,11 @@ impl StateDb {
             Some(name) => dlq::table
                 .filter(dlq::config_name.eq(name))
                 .order(dlq::created_at.desc())
-                .limit(limit as i64)
+                .limit(i64::try_from(limit).unwrap_or(i64::MAX))
                 .load(&mut self.conn)?,
             None => dlq::table
                 .order(dlq::created_at.desc())
-                .limit(limit as i64)
+                .limit(i64::try_from(limit).unwrap_or(i64::MAX))
                 .load(&mut self.conn)?,
         };
 
@@ -220,14 +220,14 @@ impl StateDb {
                 .execute(&mut self.conn)?,
             None => diesel::delete(dlq::table).execute(&mut self.conn)?,
         };
-        Ok(rows_affected as u64)
+        Ok(u64::try_from(rows_affected).unwrap_or(0))
     }
 
     pub fn list_retryable_entries(&mut self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
         let rows = dlq::table
             .filter(dlq::error_kind.eq("retryable"))
             .order(dlq::created_at.asc())
-            .limit(limit as i64)
+            .limit(i64::try_from(limit).unwrap_or(i64::MAX))
             .load::<DlqRow>(&mut self.conn)?;
 
         rows.iter().map(DlqEntry::from_row).collect()
@@ -272,8 +272,8 @@ impl StateDb {
         let mut permanent = 0u64;
         for (kind, count) in rows {
             match kind.as_str() {
-                "retryable" => retryable = count as u64,
-                "permanent" => permanent = count as u64,
+                "retryable" => retryable = u64::try_from(count).unwrap_or(0),
+                "permanent" => permanent = u64::try_from(count).unwrap_or(0),
                 _ => {}
             }
         }
@@ -282,7 +282,8 @@ impl StateDb {
 
     /// Delete permanent DLQ entries whose permanence is older than `max_age_hours` hours.
     pub fn clear_old_permanent_entries(&mut self, max_age_hours: u64) -> Result<u64, StateError> {
-        let cutoff = Utc::now() - chrono::Duration::hours(max_age_hours as i64);
+        let cutoff =
+            Utc::now() - chrono::Duration::hours(i64::try_from(max_age_hours).unwrap_or(i64::MAX));
         let cutoff_str = cutoff.to_rfc3339();
 
         let rows_affected = diesel::delete(
@@ -292,7 +293,7 @@ impl StateDb {
         )
         .execute(&mut self.conn)?;
 
-        Ok(rows_affected as u64)
+        Ok(u64::try_from(rows_affected).unwrap_or(0))
     }
 
     pub fn dlq_count(&mut self, config_name: Option<&str>) -> Result<u64, StateError> {
@@ -303,7 +304,7 @@ impl StateDb {
                 .get_result(&mut self.conn)?,
             None => dlq::table.count().get_result(&mut self.conn)?,
         };
-        Ok(count as u64)
+        Ok(u64::try_from(count).unwrap_or(0))
     }
 }
 

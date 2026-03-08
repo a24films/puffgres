@@ -173,7 +173,7 @@ pub async fn count_rows(client: &Client, config: &BatchQueryConfig) -> Result<u6
     })?;
 
     let count: i64 = row.get(0);
-    Ok(count as u64)
+    Ok(u64::try_from(count).unwrap_or(0))
 }
 
 pub async fn resolve_column_names(
@@ -244,10 +244,12 @@ pub async fn fetch_batch(
         ))
     })?;
 
-    let has_more = rows.len() > config.batch_size as usize;
+    let has_more = rows.len() > usize::try_from(config.batch_size).unwrap_or(usize::MAX);
 
     let rows: Vec<tokio_postgres::Row> = if has_more {
-        rows.into_iter().take(config.batch_size as usize).collect()
+        rows.into_iter()
+            .take(usize::try_from(config.batch_size).unwrap_or(usize::MAX))
+            .collect()
     } else {
         rows
     };
