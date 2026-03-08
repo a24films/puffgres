@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use config::IdType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -49,11 +49,11 @@ enum JsAction {
     Skip {},
 }
 
-/// Internal state for the persistent child process.
 struct ChildProcess {
     child: Child,
     stdin: tokio::process::ChildStdin,
     stdout: BufReader<tokio::process::ChildStdout>,
+    stderr: tokio::process::ChildStderr,
 }
 
 /// A [`Transformer`] that delegates to a user-supplied TypeScript/JavaScript
@@ -70,7 +70,6 @@ pub struct JsTransformer {
     /// When set, reindexes WAL tuple columns to match the generated schema order.
     column_reindex: Option<Vec<usize>>,
     timeout: Duration,
-    /// Mutex-protected child process for serialized access.
     process: Mutex<Option<ChildProcess>>,
 }
 
@@ -109,21 +108,26 @@ impl JsTransformer {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| CoreError::Pipeline(format!("failed to spawn pnpx tsx: {e}")))?;
+            .map_err(|e| CoreError::pipeline(format!("failed to spawn pnpx tsx: {e}")))?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| CoreError::Pipeline("failed to open stdin".to_string()))?;
+            .ok_or_else(|| CoreError::pipeline("failed to open stdin".to_string()))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| CoreError::Pipeline("failed to open stdout".to_string()))?;
+            .ok_or_else(|| CoreError::pipeline("failed to open stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| CoreError::pipeline("failed to open stderr".to_string()))?;
 
         Ok(ChildProcess {
             child,
             stdin,
             stdout: BufReader::new(stdout),
+            stderr,
         })
     }
 
@@ -227,61 +231,113 @@ impl JsTransformer {
     }
 
     /// Send a batch over NDJSON and read the response, with timeout.
+    ///
+    /// On a process error (broken pipe, unexpected EOF) the child is respawned
+    /// and the **same batch is retried once** on the fresh process. Timeouts
+    /// are not retried because they likely indicate a problem with the script
+    /// itself rather than a transient child crash.
     async fn send_batch_to_process(&self, input: &str) -> Result<String, CoreError> {
         self.ensure_process().await?;
 
-        let result = {
-            let mut guard = self.process.lock().await;
-            let proc = guard.as_mut().expect("process should exist after ensure");
-
-            let fut =
-                async {
-                    // Write JSON array + newline
-                    proc.stdin.write_all(input.as_bytes()).await.map_err(|e| {
-                        CoreError::Pipeline(format!("failed to write to stdin: {e}"))
-                    })?;
-                    proc.stdin.write_all(b"\n").await.map_err(|e| {
-                        CoreError::Pipeline(format!("failed to write newline: {e}"))
-                    })?;
-                    proc.stdin
-                        .flush()
-                        .await
-                        .map_err(|e| CoreError::Pipeline(format!("failed to flush stdin: {e}")))?;
-
-                    // Read one line of response
-                    let mut line = String::new();
-                    proc.stdout.read_line(&mut line).await.map_err(|e| {
-                        CoreError::Pipeline(format!("failed to read from stdout: {e}"))
-                    })?;
-
-                    if line.is_empty() {
-                        return Err(CoreError::Pipeline(
-                            "transform process closed stdout unexpectedly".to_string(),
-                        ));
-                    }
-
-                    Ok(line)
-                };
-
-            tokio::time::timeout(self.timeout, fut).await
-        };
+        let result = self.try_send(input).await;
 
         match result {
             Ok(Ok(line)) => Ok(line),
-            Ok(Err(e)) => {
-                // Process error — respawn for next batch
+            Ok(Err(_)) => {
+                // Process error — respawn and retry this batch once
                 self.respawn().await?;
-                Err(e)
+                match self.try_send(input).await {
+                    Ok(Ok(line)) => Ok(line),
+                    Ok(Err(e)) => {
+                        self.respawn().await?;
+                        Err(e)
+                    }
+                    Err(_) => {
+                        self.respawn().await?;
+                        Err(CoreError::pipeline(format!(
+                            "transform timed out after {}s",
+                            self.timeout.as_secs()
+                        )))
+                    }
+                }
             }
             Err(_) => {
-                // Timeout — kill and respawn
+                // Timeout — kill and respawn but don't retry
                 self.respawn().await?;
-                Err(CoreError::Pipeline(format!(
+                Err(CoreError::pipeline(format!(
                     "transform timed out after {}s",
                     self.timeout.as_secs()
                 )))
             }
         }
+    }
+
+    /// Attempt a single send/receive cycle on the current child process.
+    async fn try_send(
+        &self,
+        input: &str,
+    ) -> Result<Result<String, CoreError>, tokio::time::error::Elapsed> {
+        let mut guard = self.process.lock().await;
+        let proc = guard.as_mut().expect("process should exist after ensure");
+
+        let fut = async {
+            // Write JSON array + newline
+            proc.stdin
+                .write_all(input.as_bytes())
+                .await
+                .map_err(|e| CoreError::pipeline(format!("failed to write to stdin: {e}")))?;
+            proc.stdin
+                .write_all(b"\n")
+                .await
+                .map_err(|e| CoreError::pipeline(format!("failed to write newline: {e}")))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| CoreError::pipeline(format!("failed to flush stdin: {e}")))?;
+
+            // Read one line of response
+            let mut line = String::new();
+            proc.stdout
+                .read_line(&mut line)
+                .await
+                .map_err(|e| CoreError::pipeline(format!("failed to read from stdout: {e}")))?;
+
+            if line.is_empty() {
+                // stdout EOF — the child process exited. Drain stderr and
+                // capture the exit status so the caller gets an actionable
+                // error instead of an opaque "closed stdout" message.
+                let mut stderr_buf = Vec::new();
+                // Best-effort read; don't let a hung stderr block us.
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    proc.stderr.read_to_end(&mut stderr_buf),
+                )
+                .await;
+                let stderr_text = String::from_utf8_lossy(&stderr_buf);
+                let stderr_snippet = stderr_text.trim();
+
+                let exit_status = proc.child.try_wait().ok().flatten();
+
+                let mut msg = String::from("transform process exited unexpectedly");
+                if let Some(status) = exit_status {
+                    msg.push_str(&format!(" ({})", status));
+                }
+                if !stderr_snippet.is_empty() {
+                    // Cap stderr to avoid flooding the error with huge stack traces.
+                    let truncated: &str = match stderr_snippet.floor_char_boundary(2048) {
+                        bound if bound < stderr_snippet.len() => &stderr_snippet[..bound],
+                        _ => stderr_snippet,
+                    };
+                    msg.push_str(&format!(":\n{truncated}"));
+                }
+
+                return Err(CoreError::pipeline(msg));
+            }
+
+            Ok(line)
+        };
+
+        tokio::time::timeout(self.timeout, fut).await
     }
 }
 
@@ -302,25 +358,39 @@ impl Transformer for JsTransformer {
     ) -> Result<Vec<Action>, CoreError> {
         let input = self.serialize_events(events)?;
         let output = self.send_batch_to_process(&input).await?;
-        self.parse_actions(output.trim())
+        match self.parse_actions(output.trim()) {
+            Ok(actions) => Ok(actions),
+            Err(e) => {
+                // Parse failure may mean the child emitted extra/malformed
+                // output. Respawn to realign the request/response framing.
+                self.respawn().await?;
+                Err(e)
+            }
+        }
     }
 }
 
 /// A [`Transformer`] that passes through raw column values as the document,
 /// skipping the subprocess entirely. Used when no `transform.ts` exists.
+///
+/// Column names must be provided so that the document is emitted as a JSON
+/// object (required by the write path in `puff::client`).
 pub struct PassthroughTransformer {
+    column_names: Vec<String>,
     column_reindex: Option<Vec<usize>>,
 }
 
 impl PassthroughTransformer {
-    pub fn new() -> Self {
+    pub fn new(column_names: Vec<String>) -> Self {
         Self {
+            column_names,
             column_reindex: None,
         }
     }
 
-    pub fn with_column_reindex(column_reindex: Vec<usize>) -> Self {
+    pub fn with_column_reindex(column_names: Vec<String>, column_reindex: Vec<usize>) -> Self {
         Self {
+            column_names,
             column_reindex: Some(column_reindex),
         }
     }
@@ -359,10 +429,13 @@ impl Transformer for PassthroughTransformer {
                 Operation::Delete => Action::Delete { id: id.clone() },
                 _ => {
                     let columns = self.columns_to_values(event);
-                    let document = Value::Array(
-                        columns
-                            .into_iter()
-                            .map(|c| c.map(Value::String).unwrap_or(Value::Null))
+                    let document = Value::Object(
+                        self.column_names
+                            .iter()
+                            .zip(columns.into_iter())
+                            .map(|(name, val)| {
+                                (name.clone(), val.map(Value::String).unwrap_or(Value::Null))
+                            })
                             .collect(),
                     );
                     Action::Upsert {
@@ -672,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn passthrough_insert_returns_upsert() {
-        let t = PassthroughTransformer::new();
+        let t = PassthroughTransformer::new(vec!["col0".into(), "col1".into()]);
         let event = make_event(Operation::Insert, vec!["hello", "world"]);
         let id = DocumentId::Uint(1);
 
@@ -681,7 +754,7 @@ mod tests {
         match &actions[0] {
             Action::Upsert { id, document, .. } => {
                 assert_eq!(*id, DocumentId::Uint(1));
-                assert_eq!(*document, json!(["hello", "world"]));
+                assert_eq!(*document, json!({"col0": "hello", "col1": "world"}));
             }
             _ => panic!("expected Upsert"),
         }
@@ -689,7 +762,7 @@ mod tests {
 
     #[tokio::test]
     async fn passthrough_delete_returns_delete() {
-        let t = PassthroughTransformer::new();
+        let t = PassthroughTransformer::new(vec!["col0".into()]);
         let event = RowEvent {
             relation_id: 1,
             operation: Operation::Delete,
@@ -707,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn passthrough_handles_nulls() {
-        let t = PassthroughTransformer::new();
+        let t = PassthroughTransformer::new(vec!["a".into(), "b".into(), "c".into()]);
         let event = RowEvent {
             relation_id: 1,
             operation: Operation::Insert,
@@ -725,7 +798,7 @@ mod tests {
         let actions = t.transform_batch(&[(&event, id)]).await.unwrap();
         match &actions[0] {
             Action::Upsert { document, .. } => {
-                assert_eq!(*document, json!(["a", null, "c"]));
+                assert_eq!(*document, json!({"a": "a", "b": null, "c": "c"}));
             }
             _ => panic!("expected Upsert"),
         }
