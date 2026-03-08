@@ -2063,7 +2063,6 @@ dependencies = [
 name = "puff"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "puffgres-core",
  "rs-puff",
  "serde_json",
@@ -2112,7 +2111,6 @@ dependencies = [
 name = "puffgres-core"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "bytes",
  "chrono",
  "config",

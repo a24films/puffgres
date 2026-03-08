@@ -20,6 +20,8 @@ pub struct ProjectConfig {
     pub dlq_max_retries: Option<u32>,
     #[serde(default)]
     pub dlq_permanent_max_age_hours: Option<u64>,
+    #[serde(default)]
+    pub max_transaction_events: Option<usize>,
 }
 
 impl ProjectConfig {
@@ -84,6 +86,10 @@ impl ProjectConfig {
         self.dlq_permanent_max_age_hours.unwrap_or(72)
     }
 
+    pub fn max_transaction_events(&self) -> Option<usize> {
+        self.max_transaction_events
+    }
+
     pub fn resolve_env_paths(&self, root: &Path) -> Vec<PathBuf> {
         self.environment_files
             .iter()
@@ -102,6 +108,7 @@ impl Default for ProjectConfig {
             dlq_replay_batch_size: Some(50),
             dlq_max_retries: Some(5),
             dlq_permanent_max_age_hours: Some(72),
+            max_transaction_events: None,
         }
     }
 }
