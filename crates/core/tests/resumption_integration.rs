@@ -9,6 +9,7 @@ use pg::slot::{ensure_slot, get_current_wal_lsn, terminate_active_slot_backend};
 use puffgres_core::{BackfillOutcome, DocumentId, run_backfill};
 use replication::{ReplicationStream, ReplicationStreamConfig, RowEvent};
 use state::{BackfillProgress, BackfillStatus, ConfigRecord, StateDb, StreamingCheckpoint};
+use tokio_util::sync::CancellationToken;
 
 use common::*;
 
@@ -84,6 +85,7 @@ async fn backfill_resumption_after_crash() {
         &sink1,
         &mut state_db,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -140,6 +142,7 @@ async fn backfill_resumption_after_crash() {
         &sink2,
         &mut state_db2,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -335,6 +338,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         &backfill_sink,
         &mut state_db,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 

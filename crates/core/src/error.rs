@@ -16,6 +16,9 @@ pub enum CoreError {
 
     #[error("pipeline error: {message}")]
     Pipeline { message: String, transient: bool },
+
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 impl CoreError {
@@ -42,6 +45,7 @@ impl CoreError {
             CoreError::Replication(e) => e.is_transient(),
             CoreError::State(e) => e.is_transient(),
             CoreError::Pipeline { transient, .. } => *transient,
+            CoreError::Cancelled => false,
         }
     }
 }
