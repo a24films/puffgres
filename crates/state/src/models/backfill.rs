@@ -10,8 +10,8 @@ pub struct BackfillProgressRow {
     pub total_rows: Option<i64>,
     pub processed_rows: i64,
     pub status: String,
-    pub started_at: Option<String>,
-    pub completed_at: Option<String>,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
     pub error_message: Option<String>,
     pub watermark_lsn: Option<i64>,
 }
@@ -24,8 +24,8 @@ pub struct NewBackfillProgress<'a> {
     pub total_rows: Option<i64>,
     pub processed_rows: i64,
     pub status: &'a str,
-    pub started_at: Option<&'a str>,
-    pub completed_at: Option<&'a str>,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
     pub error_message: Option<&'a str>,
     pub watermark_lsn: Option<i64>,
 }

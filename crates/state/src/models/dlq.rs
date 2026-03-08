@@ -13,9 +13,9 @@ pub struct DlqRow {
     pub error_message: String,
     pub error_kind: String,
     pub retry_count: i32,
-    pub created_at: String,
-    pub last_retry_at: Option<String>,
-    pub permanent_at: Option<String>,
+    pub created_at: i64,
+    pub last_retry_at: Option<i64>,
+    pub permanent_at: Option<i64>,
 }
 
 #[derive(Insertable, Debug)]
@@ -28,7 +28,7 @@ pub struct NewDlqEntry<'a> {
     pub error_message: &'a str,
     pub error_kind: &'a str,
     pub retry_count: i32,
-    pub created_at: &'a str,
-    pub last_retry_at: Option<&'a str>,
-    pub permanent_at: Option<&'a str>,
+    pub created_at: i64,
+    pub last_retry_at: Option<i64>,
+    pub permanent_at: Option<i64>,
 }

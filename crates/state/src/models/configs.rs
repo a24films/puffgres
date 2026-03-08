@@ -9,8 +9,8 @@ pub struct ConfigRow {
     pub namespace: String,
     pub content_hash: String,
     pub transform_hash: Option<String>,
-    pub applied_at: String,
-    pub tombstone_applied_at: Option<String>,
+    pub applied_at: i64,
+    pub tombstone_applied_at: Option<i64>,
     pub namespace_prefix: Option<String>,
 }
 
@@ -21,7 +21,7 @@ pub struct NewConfig<'a> {
     pub namespace: &'a str,
     pub content_hash: &'a str,
     pub transform_hash: Option<&'a str>,
-    pub applied_at: &'a str,
-    pub tombstone_applied_at: Option<&'a str>,
+    pub applied_at: i64,
+    pub tombstone_applied_at: Option<i64>,
     pub namespace_prefix: Option<&'a str>,
 }
