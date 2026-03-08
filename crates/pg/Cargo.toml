@@ -1,7 +1,10 @@
 [package]
 name = "pg"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 tokio-postgres.workspace = true
