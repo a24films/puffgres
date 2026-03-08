@@ -1,5 +1,6 @@
 mod common;
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -307,6 +308,7 @@ async fn backfill_then_cdc_captures_all_changes() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .expect("Failed to connect replication stream");
@@ -425,6 +427,7 @@ async fn no_gap_between_backfill_watermark_and_cdc_start() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .unwrap();
@@ -531,6 +534,7 @@ async fn backfill_multiple_batches_then_cdc() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .unwrap();
@@ -588,6 +592,7 @@ async fn cdc_ack_advances_confirmed_flush_lsn() {
         start_lsn: None,
         status_interval: Duration::from_secs(1),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .unwrap();
@@ -659,6 +664,7 @@ async fn empty_backfill_then_cdc_only() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .unwrap();
