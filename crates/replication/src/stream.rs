@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent, TlsConfig};
@@ -183,7 +184,7 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                                     txn.events.push(RowEvent {
                                         relation_id: ins.relation_id,
                                         operation: Operation::Insert,
-                                        new_tuple: Some(ins.tuple),
+                                        new_tuple: Some(Arc::new(ins.tuple)),
                                         old_tuple: None,
                                     });
                                 }
@@ -200,8 +201,8 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                                     txn.events.push(RowEvent {
                                         relation_id: upd.relation_id,
                                         operation: Operation::Update,
-                                        new_tuple: Some(upd.new_tuple),
-                                        old_tuple: upd.old_tuple,
+                                        new_tuple: Some(Arc::new(upd.new_tuple)),
+                                        old_tuple: upd.old_tuple.map(Arc::new),
                                     });
                                 }
                             }
@@ -218,7 +219,7 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                                         relation_id: del.relation_id,
                                         operation: Operation::Delete,
                                         new_tuple: None,
-                                        old_tuple: Some(del.old_tuple),
+                                        old_tuple: Some(Arc::new(del.old_tuple)),
                                     });
                                 }
                             }
