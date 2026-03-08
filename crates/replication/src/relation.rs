@@ -69,6 +69,45 @@ impl RelationCache {
             .is_some_and(|existing| existing.columns != relation.columns)
     }
 
+    /// Returns `true` only if the schema change affects columns in `watched`.
+    /// Additive changes (new columns not in the watched set) are silently accepted.
+    /// If `watched` is empty, any column change is considered breaking.
+    pub fn schema_changed_for_columns(&self, relation: &RelationInfo, watched: &[String]) -> bool {
+        let Some(existing) = self.relations.get(&relation.id) else {
+            return false;
+        };
+        if existing.columns == relation.columns {
+            return false;
+        }
+        if watched.is_empty() {
+            // No explicit column list → all columns are watched
+            return true;
+        }
+        // Build a map of column name → (type_oid, type_modifier, part_of_key) for each
+        let old: HashMap<&str, (&ColumnInfo,)> = existing
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), (c,)))
+            .collect();
+        let new: HashMap<&str, (&ColumnInfo,)> = relation
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), (c,)))
+            .collect();
+
+        for col_name in watched {
+            let old_col = old.get(col_name.as_str());
+            let new_col = new.get(col_name.as_str());
+            match (old_col, new_col) {
+                (Some((o,)), Some((n,))) if o != n => return true, // type/modifier changed
+                (Some(_), None) => return true,                    // column dropped
+                (None, Some(_)) => {} // column added (was missing before)
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub fn insert(&mut self, relation: RelationInfo) {
         self.relations.insert(relation.id, relation);
     }
@@ -250,5 +289,116 @@ mod tests {
         cache.clear();
         assert!(cache.is_empty());
         assert!(cache.get(1).is_none());
+    }
+
+    #[test]
+    fn schema_changed_for_columns_additive_is_safe() {
+        let mut cache = RelationCache::new();
+        let col_id = ColumnInfo {
+            part_of_key: true,
+            name: "id".to_string(),
+            type_oid: 23,
+            type_modifier: -1,
+        };
+        cache.insert(RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![col_id.clone()],
+        });
+
+        // Adding a column NOT in the watched set → not breaking
+        let with_email = RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![
+                col_id.clone(),
+                ColumnInfo {
+                    part_of_key: false,
+                    name: "email".to_string(),
+                    type_oid: 25,
+                    type_modifier: -1,
+                },
+            ],
+        };
+        let watched = vec!["id".to_string()];
+        assert!(!cache.schema_changed_for_columns(&with_email, &watched));
+    }
+
+    #[test]
+    fn schema_changed_for_columns_watched_column_dropped() {
+        let mut cache = RelationCache::new();
+        cache.insert(RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![
+                ColumnInfo {
+                    part_of_key: true,
+                    name: "id".to_string(),
+                    type_oid: 23,
+                    type_modifier: -1,
+                },
+                ColumnInfo {
+                    part_of_key: false,
+                    name: "email".to_string(),
+                    type_oid: 25,
+                    type_modifier: -1,
+                },
+            ],
+        });
+
+        // Dropping a watched column → breaking
+        let without_email = RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![ColumnInfo {
+                part_of_key: true,
+                name: "id".to_string(),
+                type_oid: 23,
+                type_modifier: -1,
+            }],
+        };
+        let watched = vec!["id".to_string(), "email".to_string()];
+        assert!(cache.schema_changed_for_columns(&without_email, &watched));
+    }
+
+    #[test]
+    fn schema_changed_for_columns_type_change_is_breaking() {
+        let mut cache = RelationCache::new();
+        cache.insert(RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![ColumnInfo {
+                part_of_key: true,
+                name: "id".to_string(),
+                type_oid: 23, // int4
+                type_modifier: -1,
+            }],
+        });
+
+        // Changing type of a watched column → breaking
+        let type_changed = RelationInfo {
+            id: 1,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![ColumnInfo {
+                part_of_key: true,
+                name: "id".to_string(),
+                type_oid: 20, // int8
+                type_modifier: -1,
+            }],
+        };
+        let watched = vec!["id".to_string()];
+        assert!(cache.schema_changed_for_columns(&type_changed, &watched));
     }
 }

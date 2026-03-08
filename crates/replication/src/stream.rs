@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +41,11 @@ pub struct ReplicationStreamConfig {
     /// limit are dropped and returned as `BatchResult::TransactionTooLarge`.
     /// Defaults to 1,000,000.
     pub max_transaction_events: Option<usize>,
+    /// Columns watched per table (`schema.table` → column names).
+    /// Schema changes that only add columns NOT in this set are silently accepted.
+    /// If a table has no entry (or the entry is empty), all column changes trigger
+    /// a `SchemaChanged` signal.
+    pub watched_columns: HashMap<String, Vec<String>>,
 }
 
 /// All row events from a single committed transaction.
@@ -86,6 +92,7 @@ pub struct ReplicationStream<T: ReplicationTransport = ReplicationClient> {
     current_txn: Option<TransactionState>,
     pending_lsn: Option<Lsn>,
     max_transaction_events: usize,
+    watched_columns: HashMap<String, Vec<String>>,
 }
 
 impl ReplicationStream {
@@ -127,6 +134,7 @@ impl ReplicationStream {
             max_transaction_events: config
                 .max_transaction_events
                 .unwrap_or(DEFAULT_MAX_TRANSACTION_EVENTS),
+            watched_columns: config.watched_columns,
         })
     }
 }
@@ -159,16 +167,20 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
 
                     match msg {
                         WalMessage::Relation(info) => {
-                            if self.relation_cache.schema_changed(&info) {
+                            let key = format!("{}.{}", info.namespace, info.name);
+                            let is_breaking = if let Some(cols) = self.watched_columns.get(&key) {
+                                self.relation_cache.schema_changed_for_columns(&info, cols)
+                            } else {
+                                self.relation_cache.schema_changed(&info)
+                            };
+
+                            if is_breaking {
                                 let signal = SchemaChanged {
                                     relation_id: info.id,
                                     namespace: info.namespace.clone(),
                                     name: info.name.clone(),
                                 };
                                 self.relation_cache.insert(info);
-                                // Signal the caller to tear down and reconnect with a
-                                // fresh stream. Postgres replication slots retain all
-                                // un-acked WAL, so no messages are lost on reconnect.
                                 return Ok(Some(BatchResult::SchemaChanged(signal)));
                             }
                             self.relation_cache.insert(info);
@@ -345,6 +357,7 @@ mod tests {
             current_txn: None,
             pending_lsn: None,
             max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
+            watched_columns: HashMap::new(),
         }
     }
 
@@ -358,6 +371,7 @@ mod tests {
             current_txn: None,
             pending_lsn: None,
             max_transaction_events: max_events,
+            watched_columns: HashMap::new(),
         }
     }
 
@@ -370,6 +384,7 @@ mod tests {
             start_lsn: Some(0x1234),
             status_interval: Duration::from_secs(10),
             max_transaction_events: None,
+            watched_columns: HashMap::new(),
         };
         assert_eq!(config.slot_name, "my_slot");
         assert_eq!(config.start_lsn, Some(0x1234));

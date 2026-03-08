@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -93,6 +94,7 @@ async fn run_replication_stream(
         start_lsn: config.start_lsn,
         status_interval: config.status_interval,
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     };
 
     let mut stream = ReplicationStream::connect(stream_config).await?;
