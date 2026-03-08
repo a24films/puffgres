@@ -26,7 +26,7 @@ pub fn values_to_event(
             }
             None => {
                 if col_name == id_column {
-                    return Err(CoreError::Pipeline(format!(
+                    return Err(CoreError::pipeline(format!(
                         "NULL id column '{}'",
                         id_column
                     )));
@@ -38,7 +38,7 @@ pub fn values_to_event(
     }
 
     let doc_id = doc_id.ok_or_else(|| {
-        CoreError::Pipeline(format!("id column '{}' not found in row", id_column))
+        CoreError::pipeline(format!("id column '{}' not found in row", id_column))
     })?;
 
     Ok((

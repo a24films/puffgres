@@ -23,15 +23,15 @@ impl DocumentId {
             IdType::Uint => s
                 .parse::<u64>()
                 .map(DocumentId::Uint)
-                .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as uint: {e}"))),
+                .map_err(|e| CoreError::pipeline(format!("cannot parse \"{s}\" as uint: {e}"))),
             IdType::Int => s
                 .parse::<i64>()
                 .map(DocumentId::Int)
-                .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as int: {e}"))),
+                .map_err(|e| CoreError::pipeline(format!("cannot parse \"{s}\" as int: {e}"))),
             IdType::Uuid => s
                 .parse::<uuid::Uuid>()
                 .map(DocumentId::Uuid)
-                .map_err(|e| CoreError::Pipeline(format!("cannot parse \"{s}\" as uuid: {e}"))),
+                .map_err(|e| CoreError::pipeline(format!("cannot parse \"{s}\" as uuid: {e}"))),
             IdType::String => Ok(DocumentId::String(s.to_string())),
         }
     }
@@ -41,32 +41,32 @@ impl DocumentId {
         match id_type {
             IdType::Uint => match value {
                 Value::Number(n) => n.as_u64().map(DocumentId::Uint).ok_or_else(|| {
-                    CoreError::Pipeline(format!("expected unsigned integer, got {value}"))
+                    CoreError::pipeline(format!("expected unsigned integer, got {value}"))
                 }),
                 Value::String(s) => Self::from_text(s, id_type),
-                _ => Err(CoreError::Pipeline(format!(
+                _ => Err(CoreError::pipeline(format!(
                     "expected uint-compatible value, got {value}"
                 ))),
             },
             IdType::Int => match value {
                 Value::Number(n) => n.as_i64().map(DocumentId::Int).ok_or_else(|| {
-                    CoreError::Pipeline(format!("expected signed integer, got {value}"))
+                    CoreError::pipeline(format!("expected signed integer, got {value}"))
                 }),
                 Value::String(s) => Self::from_text(s, id_type),
-                _ => Err(CoreError::Pipeline(format!(
+                _ => Err(CoreError::pipeline(format!(
                     "expected int-compatible value, got {value}"
                 ))),
             },
             IdType::Uuid => match value {
                 Value::String(s) => Self::from_text(s, id_type),
-                _ => Err(CoreError::Pipeline(format!(
+                _ => Err(CoreError::pipeline(format!(
                     "expected uuid string, got {value}"
                 ))),
             },
             IdType::String => match value {
                 Value::String(s) => Ok(DocumentId::String(s.clone())),
                 Value::Number(n) => Ok(DocumentId::String(n.to_string())),
-                _ => Err(CoreError::Pipeline(format!(
+                _ => Err(CoreError::pipeline(format!(
                     "expected string-compatible value, got {value}"
                 ))),
             },
