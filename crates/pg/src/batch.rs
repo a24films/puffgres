@@ -185,11 +185,15 @@ pub async fn resolve_column_names(
     table: &str,
 ) -> Result<Vec<String>> {
     let query = r#"
-        SELECT column_name::text
-        FROM information_schema.columns
-        WHERE table_schema = $1
-        AND table_name = $2
-        ORDER BY ordinal_position
+        SELECT a.attname::text
+        FROM pg_catalog.pg_attribute a
+        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1
+          AND c.relname = $2
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        ORDER BY a.attnum
     "#;
     let rows = client.query(query, &[&schema, &table]).await.map_err(|e| {
         PgError::QueryError(format!(

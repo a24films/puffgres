@@ -10,13 +10,17 @@ pub async fn fetch_sample_row(
     schema: &str,
     table: &str,
 ) -> Result<Option<(Vec<String>, Vec<Option<String>>)>> {
-    // Get column names in ordinal order
+    // Get column names in ordinal order via pg_catalog (faster than information_schema)
     let col_query = r#"
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = $1
-        AND table_name = $2
-        ORDER BY ordinal_position
+        SELECT a.attname::text
+        FROM pg_catalog.pg_attribute a
+        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1
+          AND c.relname = $2
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        ORDER BY a.attnum
     "#;
     let col_rows = client
         .query(col_query, &[&schema, &table])
