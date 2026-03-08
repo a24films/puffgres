@@ -12,7 +12,7 @@ pub fn run(paths: &ProjectPaths, state_db_path: &Path, name: &str) -> Result<(),
     if !state_db_path.exists() {
         return Err(CliError::NotInitialized("state.db".to_string()));
     }
-    let mut db = StateDb::open(state_db_path)?;
+    let db = StateDb::open(state_db_path)?;
 
     let config = db.get_config(name)?.ok_or_else(|| {
         CliError::Tombstone(format!("config '{name}' not found in state database"))
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn tombstone_sets_timestamp() {
         let (_dir, paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&sample_config("film")).unwrap();
 
         run(&paths, &state_db_path, "film").unwrap();
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn tombstone_already_tombstoned_is_idempotent() {
         let (_dir, paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&sample_config("film")).unwrap();
 
         run(&paths, &state_db_path, "film").unwrap();
@@ -107,7 +107,7 @@ mod tests {
         let loader = ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
 
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),

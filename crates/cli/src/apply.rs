@@ -23,7 +23,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             std::fs::create_dir_all(parent)?;
         }
     }
-    let mut db = StateDb::open(&env_config.state_db_path)?;
+    let db = StateDb::open(&env_config.state_db_path)?;
 
     let loader = config::ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;
@@ -232,7 +232,7 @@ mod tests {
 
         run(&paths, &dummy_env(state_db_path.clone())).unwrap_err();
 
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         assert!(db.get_config("user").unwrap().is_none());
     }
 
@@ -248,7 +248,7 @@ mod tests {
         let (config_path, cfg) = &all[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -276,7 +276,7 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let all = loader.load_all().unwrap();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         for (config_path, cfg) in &all {
             let transform_bytes =
                 fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
@@ -306,7 +306,7 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -351,7 +351,7 @@ type = "uint"
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -384,7 +384,7 @@ type = "uint"
         let cfg = &loader.load_all().unwrap()[0].1;
         let content_hash = cfg.content_hash().unwrap();
 
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 

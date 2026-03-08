@@ -10,6 +10,7 @@ mod streaming_checkpoint;
 mod test_helpers;
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use diesel::SqliteConnection;
 use diesel::prelude::*;
@@ -23,8 +24,15 @@ pub use streaming_checkpoint::StreamingCheckpoint;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
+/// Thread-safe state database backed by SQLite.
+///
+/// Internally wraps `Arc<Mutex<SqliteConnection>>` so all methods take `&self`
+/// and the database can be shared across pipeline phases. SQLite WAL mode
+/// is enabled on open for concurrent read access; writes serialize through
+/// the mutex.
+#[derive(Clone)]
 pub struct StateDb {
-    conn: SqliteConnection,
+    conn: Arc<Mutex<SqliteConnection>>,
     path: PathBuf,
 }
 
@@ -47,11 +55,20 @@ impl StateDb {
             .execute(&mut conn)
             .ok();
 
+        // Verify WAL mode is active
+        let mode: String = diesel::sql_query("PRAGMA journal_mode")
+            .get_result::<JournalModeResult>(&mut conn)
+            .map(|r| r.journal_mode)
+            .unwrap_or_default();
+        if mode != "wal" {
+            eprintln!("warning: expected SQLite WAL mode but got '{mode}'");
+        }
+
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| StateError::Migration(e.to_string()))?;
 
         Ok(Self {
-            conn,
+            conn: Arc::new(Mutex::new(conn)),
             path: path.to_path_buf(),
         })
     }
@@ -60,13 +77,38 @@ impl StateDb {
         &self.path
     }
 
-    pub fn reset(&mut self) -> Result<(), StateError> {
-        diesel::delete(schema::dlq::table).execute(&mut self.conn)?;
-        diesel::delete(schema::backfill_progress::table).execute(&mut self.conn)?;
-        diesel::delete(schema::streaming_checkpoints::table).execute(&mut self.conn)?;
-        diesel::delete(schema::configs::table).execute(&mut self.conn)?;
+    /// Acquire the connection lock, returning a guard.
+    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, SqliteConnection>, StateError> {
+        self.conn
+            .lock()
+            .map_err(|_| StateError::InvalidState("state db mutex poisoned".into()))
+    }
+
+    /// Run a closure inside a SQLite transaction, holding the mutex for the
+    /// duration. If the closure returns `Err`, the transaction is rolled back.
+    pub fn transaction<F, T>(&self, f: F) -> Result<T, StateError>
+    where
+        F: FnOnce(&mut SqliteConnection) -> Result<T, StateError>,
+    {
+        let mut conn = self.lock()?;
+        conn.transaction(|conn| f(conn)).map_err(StateError::from)
+    }
+
+    pub fn reset(&self) -> Result<(), StateError> {
+        let mut conn = self.lock()?;
+        diesel::delete(schema::dlq::table).execute(&mut *conn)?;
+        diesel::delete(schema::backfill_progress::table).execute(&mut *conn)?;
+        diesel::delete(schema::streaming_checkpoints::table).execute(&mut *conn)?;
+        diesel::delete(schema::configs::table).execute(&mut *conn)?;
         Ok(())
     }
+}
+
+/// Helper struct for reading PRAGMA journal_mode result.
+#[derive(QueryableByName)]
+struct JournalModeResult {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    journal_mode: String,
 }
 
 #[cfg(test)]
@@ -98,34 +140,34 @@ mod tests {
     fn open_creates_all_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let mut db = StateDb::open(&path).unwrap();
+        let db = StateDb::open(&path).unwrap();
 
         // Verify each table exists by querying it via the ORM.
         assert_eq!(
             schema::configs::table
                 .count()
-                .get_result::<i64>(&mut db.conn)
+                .get_result::<i64>(&mut *db.lock().unwrap())
                 .unwrap(),
             0
         );
         assert_eq!(
             schema::streaming_checkpoints::table
                 .count()
-                .get_result::<i64>(&mut db.conn)
+                .get_result::<i64>(&mut *db.lock().unwrap())
                 .unwrap(),
             0
         );
         assert_eq!(
             schema::dlq::table
                 .count()
-                .get_result::<i64>(&mut db.conn)
+                .get_result::<i64>(&mut *db.lock().unwrap())
                 .unwrap(),
             0
         );
         assert_eq!(
             schema::backfill_progress::table
                 .count()
-                .get_result::<i64>(&mut db.conn)
+                .get_result::<i64>(&mut *db.lock().unwrap())
                 .unwrap(),
             0
         );
@@ -135,7 +177,7 @@ mod tests {
     fn reset_clears_all_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let mut db = StateDb::open(&path).unwrap();
+        let db = StateDb::open(&path).unwrap();
 
         let config = ConfigRecord {
             name: "film".to_string(),
@@ -158,7 +200,7 @@ mod tests {
     fn reset_on_empty_tables() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let mut db = StateDb::open(&path).unwrap();
+        let db = StateDb::open(&path).unwrap();
 
         db.reset().unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 0);
@@ -168,7 +210,7 @@ mod tests {
     fn reset_clears_dlq_and_backfill() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let mut db = StateDb::open(&path).unwrap();
+        let db = StateDb::open(&path).unwrap();
 
         let config = ConfigRecord {
             name: "film".to_string(),
