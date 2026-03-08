@@ -13,6 +13,7 @@ pub mod project_config;
 pub mod remove;
 pub mod reset;
 pub mod run;
+pub mod shutdown;
 pub mod tombstone;
 pub mod validate;
 
