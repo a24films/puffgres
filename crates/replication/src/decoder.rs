@@ -123,7 +123,7 @@ fn decode_relation(buf: &mut Bytes) -> Result<WalMessage> {
     let name = read_cstring(buf)?;
     need(buf, 3)?;
     let replica_identity = ReplicaIdentity::from_pgoutput_byte(buf.get_u8());
-    let ncols = buf.get_u16() as usize;
+    let ncols = usize::from(buf.get_u16());
 
     let mut columns = Vec::with_capacity(ncols);
     for _ in 0..ncols {
@@ -202,6 +202,7 @@ fn decode_delete(buf: &mut Bytes) -> Result<WalMessage> {
 
 fn decode_truncate(buf: &mut Bytes) -> Result<WalMessage> {
     need(buf, 5)?;
+    // Safe: u32 always fits in usize on 32-bit+ platforms
     let nrels = buf.get_u32() as usize;
     let option_bits = buf.get_u8();
     need(buf, nrels * 4)?;
@@ -256,7 +257,7 @@ fn read_cstring(buf: &mut Bytes) -> Result<String> {
 /// Read a TupleData (column count + per-column values).
 fn read_tuple(buf: &mut Bytes) -> Result<TupleData> {
     need(buf, 2)?;
-    let ncols = buf.get_u16() as usize;
+    let ncols = usize::from(buf.get_u16());
     let mut columns = Vec::with_capacity(ncols);
 
     for _ in 0..ncols {
@@ -266,12 +267,14 @@ fn read_tuple(buf: &mut Bytes) -> Result<TupleData> {
             b'u' => ColumnValue::Unchanged,
             b't' => {
                 need(buf, 4)?;
+                // Safe: u32 always fits in usize on 32-bit+ platforms
                 let len = buf.get_u32() as usize;
                 need(buf, len)?;
                 ColumnValue::Text(buf.copy_to_bytes(len))
             }
             b'b' => {
                 need(buf, 4)?;
+                // Safe: u32 always fits in usize on 32-bit+ platforms
                 let len = buf.get_u32() as usize;
                 need(buf, len)?;
                 ColumnValue::Binary(buf.copy_to_bytes(len))
