@@ -6,8 +6,8 @@ pub(crate) mod streaming;
 use std::fs;
 use std::time::Duration;
 
+use backon::{BackoffBuilder, ExponentialBuilder};
 use puff::TurbopufferClient;
-use puffgres_core::{Backoff, BackoffConfig};
 use tokio_util::sync::CancellationToken;
 
 use crate::env::EnvConfig;
@@ -54,7 +54,7 @@ pub(crate) fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> St
 /// If the cancellation token is set, the loop exits cleanly after the current
 /// iteration completes.
 async fn retry_loop<F, Fut>(
-    config: BackoffConfig,
+    builder: ExponentialBuilder,
     token: CancellationToken,
     mut f: F,
 ) -> Result<(), CliError>
@@ -62,7 +62,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(), CliError>>,
 {
-    let mut backoff = Backoff::new(config);
+    let mut backoff = builder.build();
     loop {
         if token.is_cancelled() {
             tracing::info!("shutdown requested, exiting retry loop");
@@ -81,7 +81,7 @@ where
                     break Ok(());
                 }
                 tracing::error!(error = %e, "CDC loop exited with error, restarting...");
-                if let Some(delay) = backoff.next_delay() {
+                if let Some(delay) = backoff.next() {
                     tracing::info!(
                         delay_ms = delay.as_millis() as u64,
                         "waiting before restart"
@@ -111,13 +111,11 @@ pub async fn run_async(
     let token = shutdown.token();
 
     retry_loop(
-        BackoffConfig {
-            initial_delay_ms: 1_000,
-            max_delay_ms: 60_000,
-            max_retries: u32::MAX,
-            multiplier: 2.0,
-            jitter: true,
-        },
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_secs(1))
+            .with_max_delay(Duration::from_secs(60))
+            .with_max_times(usize::MAX)
+            .with_jitter(),
         token.clone(),
         || run_cdc_inner(paths, env_config, project_config, metrics, token.clone()),
     )
@@ -213,13 +211,10 @@ mod tests {
     async fn retry_loop_succeeds_after_transient_failures() {
         let attempts = AtomicU32::new(0);
         let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 5,
-                multiplier: 1.0,
-                jitter: false,
-            },
+            ExponentialBuilder::default()
+                .with_min_delay(Duration::from_millis(1))
+                .with_max_delay(Duration::from_millis(1))
+                .with_max_times(5),
             CancellationToken::new(),
             || {
                 let n = attempts.fetch_add(1, Ordering::SeqCst);
@@ -241,13 +236,10 @@ mod tests {
     async fn retry_loop_gives_up_after_max_retries() {
         let attempts = AtomicU32::new(0);
         let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 3,
-                multiplier: 1.0,
-                jitter: false,
-            },
+            ExponentialBuilder::default()
+                .with_min_delay(Duration::from_millis(1))
+                .with_max_delay(Duration::from_millis(1))
+                .with_max_times(3),
             CancellationToken::new(),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
@@ -264,13 +256,10 @@ mod tests {
     async fn retry_loop_skips_non_retryable_errors() {
         let attempts = AtomicU32::new(0);
         let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 5,
-                multiplier: 1.0,
-                jitter: false,
-            },
+            ExponentialBuilder::default()
+                .with_min_delay(Duration::from_millis(1))
+                .with_max_delay(Duration::from_millis(1))
+                .with_max_times(5),
             CancellationToken::new(),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
@@ -287,13 +276,10 @@ mod tests {
     async fn retry_loop_returns_immediately_on_success() {
         let attempts = AtomicU32::new(0);
         let result = retry_loop(
-            BackoffConfig {
-                initial_delay_ms: 1,
-                max_delay_ms: 1,
-                max_retries: 5,
-                multiplier: 1.0,
-                jitter: false,
-            },
+            ExponentialBuilder::default()
+                .with_min_delay(Duration::from_millis(1))
+                .with_max_delay(Duration::from_millis(1))
+                .with_max_times(5),
             CancellationToken::new(),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
