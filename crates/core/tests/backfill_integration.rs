@@ -28,12 +28,12 @@ impl MemCheckpointer {
 }
 
 impl BackfillCheckpointer for MemCheckpointer {
-    fn load_progress(&mut self, _config_name: &str) -> Result<Option<(String, u64)>, StateError> {
+    fn load_progress(&self, _config_name: &str) -> Result<Option<(String, u64)>, StateError> {
         Ok(self.progress.lock().unwrap().clone())
     }
 
     fn save_progress(
-        &mut self,
+        &self,
         _config_name: &str,
         last_id: &str,
         processed_rows: u64,

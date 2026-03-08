@@ -106,7 +106,7 @@ async fn run_cdc_inner(
             fs::create_dir_all(parent)?;
         }
     }
-    let mut db = StateDb::open(&env_config.state_db_path)?;
+    let db = StateDb::open(&env_config.state_db_path)?;
 
     let loader = ConfigLoader::new(&paths.configs);
     let all_configs = loader.load_all()?;
@@ -369,7 +369,7 @@ async fn run_cdc_inner(
                 &backfill_config,
                 &pg_client,
                 &puff_client,
-                &mut db,
+                &db,
                 transformer.as_ref(),
             )
             .await;
@@ -475,7 +475,7 @@ async fn run_cdc_inner(
 
     // Replay any retryable DLQ entries from previous runs
     replay_dlq(
-        &mut db,
+        &db,
         &transformers,
         &namespaces,
         &puff_client,
@@ -569,7 +569,7 @@ async fn run_cdc_inner(
                             m.cdc_events_failed.add(events.len() as u64, &[]);
                         }
                         send_events_to_dlq(
-                            &mut db,
+                            &db,
                             config_name,
                             batch.ack_lsn,
                             events,
@@ -589,7 +589,7 @@ async fn run_cdc_inner(
                                         .record(send_start.elapsed().as_millis() as f64, &[]);
                                 }
                                 send_events_to_dlq(
-                                    &mut db,
+                                    &db,
                                     config_name,
                                     batch.ack_lsn,
                                     events,
@@ -643,7 +643,7 @@ async fn run_cdc_inner(
             batch_count += 1;
             if batch_count.is_multiple_of(project_config.dlq_replay_interval()) {
                 replay_dlq(
-                    &mut db,
+                    &db,
                     &transformers,
                     &namespaces,
                     &puff_client,
@@ -713,7 +713,7 @@ async fn run_cdc_inner(
 /// `permanent` = true for transform errors (bad data won't fix itself on retry),
 /// false for sink errors (transient network/server failures).
 fn send_events_to_dlq(
-    db: &mut StateDb,
+    db: &StateDb,
     config_name: &str,
     lsn: u64,
     events: &[(&RowEvent, DocumentId)],
@@ -740,7 +740,7 @@ fn send_events_to_dlq(
 /// if max retries exhausted.
 #[tracing::instrument(name = "replay_dlq", skip_all)]
 async fn replay_dlq(
-    db: &mut StateDb,
+    db: &StateDb,
     transformers: &HashMap<String, Box<dyn Transformer>>,
     namespaces: &HashMap<String, String>,
     puff_client: &TurbopufferClient,
@@ -995,7 +995,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
@@ -1034,7 +1034,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -1072,7 +1072,7 @@ mod tests {
 
         let loader = ConfigLoader::new(&paths.configs);
         let cfg = &loader.load_all().unwrap()[0].1;
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
 
