@@ -102,10 +102,13 @@ pub async fn validate_tables(client: &Client, tables: &[(&str, &str)]) -> Result
             .query_one(query, &[schema, table])
             .await
             .map_err(|e| {
-                PgError::QueryError(format!(
-                    "Failed to check if table {}.{} exists: {}",
-                    schema, table, e
-                ))
+                PgError::from_query_err(
+                    format!(
+                        "Failed to check if table {}.{} exists: {}",
+                        schema, table, e
+                    ),
+                    &e,
+                )
             })?;
 
         let exists: bool = row.get(0);
@@ -123,10 +126,10 @@ pub async fn validate_tables(client: &Client, tables: &[(&str, &str)]) -> Result
         );
 
         client.query(&read_query, &[]).await.map_err(|e| {
-            PgError::QueryError(format!(
-                "Failed to read from table {}.{}: {}",
-                schema, table, e
-            ))
+            PgError::from_query_err(
+                format!("Failed to read from table {}.{}: {}", schema, table, e),
+                &e,
+            )
         })?;
     }
 

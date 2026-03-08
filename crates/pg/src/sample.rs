@@ -20,13 +20,17 @@ pub async fn fetch_sample_row(
           AND c.relname = $2
           AND a.attnum > 0
           AND NOT a.attisdropped
+          AND has_column_privilege(c.oid, a.attnum, 'SELECT')
         ORDER BY a.attnum
     "#;
     let col_rows = client
         .query(col_query, &[&schema, &table])
         .await
         .map_err(|e| {
-            PgError::QueryError(format!("Failed to get columns for {schema}.{table}: {e}"))
+            PgError::from_query_err(
+                format!("Failed to get columns for {schema}.{table}: {e}"),
+                &e,
+            )
         })?;
 
     let column_names: Vec<String> = col_rows.iter().map(|r| r.get(0)).collect();
@@ -49,9 +53,10 @@ pub async fn fetch_sample_row(
     );
 
     let rows = client.query(&select, &[]).await.map_err(|e| {
-        PgError::QueryError(format!(
-            "Failed to fetch sample row from {schema}.{table}: {e}"
-        ))
+        PgError::from_query_err(
+            format!("Failed to fetch sample row from {schema}.{table}: {e}"),
+            &e,
+        )
     })?;
 
     if rows.is_empty() {
