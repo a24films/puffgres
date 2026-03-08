@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 
+use crate::epoch;
 use crate::models::{ConfigRow, NewConfig};
 use crate::schema::configs;
 use crate::{StateDb, StateError};
@@ -18,19 +19,16 @@ pub struct ConfigRecord {
 
 impl ConfigRecord {
     fn from_row(row: &ConfigRow) -> Result<Self, StateError> {
-        let applied_at = DateTime::parse_from_rfc3339(&row.applied_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| StateError::InvalidState(format!("invalid applied_at: {e}")))?;
+        let applied_at = epoch::from_millis(row.applied_at).ok_or_else(|| {
+            StateError::InvalidState(format!("invalid applied_at millis: {}", row.applied_at))
+        })?;
 
         let tombstone_applied_at = row
             .tombstone_applied_at
-            .as_deref()
-            .map(|s| {
-                DateTime::parse_from_rfc3339(s)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .map_err(|e| {
-                        StateError::InvalidState(format!("invalid tombstone_applied_at: {e}"))
-                    })
+            .map(|ms| {
+                epoch::from_millis(ms).ok_or_else(|| {
+                    StateError::InvalidState(format!("invalid tombstone_applied_at millis: {ms}"))
+                })
             })
             .transpose()?;
 
@@ -48,13 +46,12 @@ impl ConfigRecord {
 
 impl StateDb {
     pub fn insert_config(&self, config: &ConfigRecord) -> Result<(), StateError> {
-        let applied_at_str = config.applied_at.to_rfc3339();
         let new = NewConfig {
             name: &config.name,
             namespace: &config.namespace,
             content_hash: &config.content_hash,
             transform_hash: config.transform_hash.as_deref(),
-            applied_at: &applied_at_str,
+            applied_at: epoch::to_millis(&config.applied_at),
             tombstone_applied_at: None,
             namespace_prefix: config.namespace_prefix.as_deref(),
         };
@@ -68,16 +65,15 @@ impl StateDb {
     }
 
     /// Insert multiple configs atomically in a single transaction.
-    pub fn insert_configs(&self, configs: &[ConfigRecord]) -> Result<(), StateError> {
+    pub fn insert_configs(&self, records: &[ConfigRecord]) -> Result<(), StateError> {
         self.transaction(|conn| {
-            for config in configs {
-                let applied_at_str = config.applied_at.to_rfc3339();
+            for config in records {
                 let new = NewConfig {
                     name: &config.name,
                     namespace: &config.namespace,
                     content_hash: &config.content_hash,
                     transform_hash: config.transform_hash.as_deref(),
-                    applied_at: &applied_at_str,
+                    applied_at: epoch::to_millis(&config.applied_at),
                     tombstone_applied_at: None,
                     namespace_prefix: config.namespace_prefix.as_deref(),
                 };
@@ -112,10 +108,10 @@ impl StateDb {
     }
 
     pub fn tombstone_config(&self, name: &str) -> Result<(), StateError> {
-        let now = Utc::now().to_rfc3339();
+        let now = epoch::to_millis(&Utc::now());
         let mut conn = self.lock()?;
         let updated = diesel::update(configs::table.filter(configs::name.eq(name)))
-            .set(configs::tombstone_applied_at.eq(&now))
+            .set(configs::tombstone_applied_at.eq(now))
             .execute(&mut *conn)?;
 
         if updated == 0 {
@@ -436,5 +432,20 @@ mod tests {
         // Only the original "alpha" should exist
         assert_eq!(db.list_configs().unwrap().len(), 1);
         assert!(db.get_config("beta").unwrap().is_none());
+    }
+
+    #[test]
+    fn timestamp_roundtrips_correctly() {
+        let (_dir, db) = setup_test_db();
+        let config = sample_config("film");
+        let original_ts = config.applied_at;
+        db.insert_config(&config).unwrap();
+
+        let retrieved = db.get_config("film").unwrap().unwrap();
+        // Epoch millis has millisecond precision, so truncate to millis for comparison
+        let diff = (original_ts - retrieved.applied_at)
+            .num_milliseconds()
+            .abs();
+        assert!(diff == 0, "timestamps should roundtrip within millis");
     }
 }

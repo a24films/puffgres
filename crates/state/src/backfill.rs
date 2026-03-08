@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use strum::{AsRefStr, Display, EnumString};
 
+use crate::epoch;
 use crate::models::{BackfillProgressRow, NewBackfillProgress};
 use crate::schema::backfill_progress;
 use crate::{StateDb, StateError};
@@ -35,17 +36,8 @@ impl BackfillProgress {
         let status = BackfillStatus::from_str(&row.status)
             .map_err(|e| StateError::InvalidState(format!("invalid status: {e}")))?;
 
-        let started_at = row
-            .started_at
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc));
-
-        let completed_at = row
-            .completed_at
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc));
+        let started_at = row.started_at.and_then(epoch::from_millis);
+        let completed_at = row.completed_at.and_then(epoch::from_millis);
 
         Ok(Self {
             config_name: row.config_name.clone(),
@@ -93,8 +85,6 @@ impl BackfillCheckpointer for StateDb {
 
 impl StateDb {
     pub fn save_backfill_progress(&self, progress: &BackfillProgress) -> Result<(), StateError> {
-        let started_at_str = progress.started_at.as_ref().map(|dt| dt.to_rfc3339());
-        let completed_at_str = progress.completed_at.as_ref().map(|dt| dt.to_rfc3339());
         let new = NewBackfillProgress {
             config_name: &progress.config_name,
             last_id: progress.last_id.as_deref(),
@@ -103,8 +93,8 @@ impl StateDb {
                 .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
             processed_rows: i64::from_ne_bytes(progress.processed_rows.to_ne_bytes()),
             status: progress.status.as_ref(),
-            started_at: started_at_str.as_deref(),
-            completed_at: completed_at_str.as_deref(),
+            started_at: progress.started_at.as_ref().map(epoch::to_millis),
+            completed_at: progress.completed_at.as_ref().map(epoch::to_millis),
             error_message: progress.error_message.as_deref(),
             watermark_lsn: progress
                 .watermark_lsn
@@ -150,11 +140,11 @@ impl StateDb {
             .map(|r| BackfillProgress::from_row(&r))
             .transpose()?;
 
-        let started_at = existing
+        let started_at_millis = existing
             .as_ref()
             .and_then(|p| p.started_at)
-            .or_else(|| Some(Utc::now()));
-        let started_at_str = started_at.map(|dt| dt.to_rfc3339());
+            .or_else(|| Some(Utc::now()))
+            .map(|dt| epoch::to_millis(&dt));
 
         let new = NewBackfillProgress {
             config_name,
@@ -165,7 +155,7 @@ impl StateDb {
                 .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
             processed_rows: i64::from_ne_bytes(processed_rows.to_ne_bytes()),
             status: BackfillStatus::InProgress.as_ref(),
-            started_at: started_at_str.as_deref(),
+            started_at: started_at_millis,
             completed_at: None,
             error_message: None,
             watermark_lsn: existing

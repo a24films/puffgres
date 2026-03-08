@@ -1,6 +1,7 @@
 mod backfill;
 mod configs;
 mod dlq;
+mod epoch;
 mod error;
 mod models;
 mod schema;

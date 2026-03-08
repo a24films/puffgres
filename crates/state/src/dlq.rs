@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use diesel::Connection;
 use diesel::prelude::*;
 
+use crate::epoch;
 use crate::models::{DlqRow, NewDlqEntry};
 use crate::schema::dlq;
 use crate::{StateDb, StateError};
@@ -93,21 +94,13 @@ impl DlqEntry {
     }
 
     fn from_row(row: &DlqRow) -> Result<Self, StateError> {
-        let created_at = DateTime::parse_from_rfc3339(&row.created_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| StateError::InvalidState(format!("invalid created_at: {e}")))?;
+        let created_at = epoch::from_millis(row.created_at).ok_or_else(|| {
+            StateError::InvalidState(format!("invalid created_at millis: {}", row.created_at))
+        })?;
 
-        let last_retry_at = row
-            .last_retry_at
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc));
+        let last_retry_at = row.last_retry_at.map(|ms| epoch::from_millis(ms)).flatten();
 
-        let permanent_at = row
-            .permanent_at
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc));
+        let permanent_at = row.permanent_at.map(|ms| epoch::from_millis(ms)).flatten();
 
         let error_kind = ErrorKind::from_str(&row.error_kind)?;
 
@@ -129,10 +122,6 @@ impl DlqEntry {
 
 impl StateDb {
     pub fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
-        let created_at_str = entry.created_at.to_rfc3339();
-        let last_retry_at_str = entry.last_retry_at.as_ref().map(|dt| dt.to_rfc3339());
-        let permanent_at_str = entry.permanent_at.as_ref().map(|dt| dt.to_rfc3339());
-
         let new = NewDlqEntry {
             config_name: &entry.config_name,
             lsn: i64::from_ne_bytes(entry.lsn.to_ne_bytes()),
@@ -141,9 +130,9 @@ impl StateDb {
             error_message: &entry.error_message,
             error_kind: entry.error_kind.to_str(),
             retry_count: i32::try_from(entry.retry_count).expect("retry_count exceeds i32::MAX"),
-            created_at: &created_at_str,
-            last_retry_at: last_retry_at_str.as_deref(),
-            permanent_at: permanent_at_str.as_deref(),
+            created_at: epoch::to_millis(&entry.created_at),
+            last_retry_at: entry.last_retry_at.as_ref().map(epoch::to_millis),
+            permanent_at: entry.permanent_at.as_ref().map(epoch::to_millis),
         };
 
         let mut conn = self.lock()?;
@@ -194,12 +183,12 @@ impl StateDb {
     }
 
     pub fn increment_retry(&self, id: i64) -> Result<(), StateError> {
-        let now = Utc::now().to_rfc3339();
+        let now = epoch::to_millis(&Utc::now());
         let mut conn = self.lock()?;
         let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
             .set((
                 dlq::retry_count.eq(dlq::retry_count + 1),
-                dlq::last_retry_at.eq(&now),
+                dlq::last_retry_at.eq(now),
             ))
             .execute(&mut *conn)?;
 
@@ -240,14 +229,14 @@ impl StateDb {
     }
 
     pub fn mark_permanent(&self, id: i64, error: &str) -> Result<(), StateError> {
-        let now = Utc::now().to_rfc3339();
+        let now = epoch::to_millis(&Utc::now());
         let mut conn = self.lock()?;
         let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
             .set((
                 dlq::error_kind.eq("permanent"),
                 dlq::error_message.eq(error),
-                dlq::last_retry_at.eq(&now),
-                dlq::permanent_at.eq(&now),
+                dlq::last_retry_at.eq(now),
+                dlq::permanent_at.eq(now),
             ))
             .execute(&mut *conn)?;
 
@@ -289,13 +278,13 @@ impl StateDb {
     pub fn clear_old_permanent_entries(&self, max_age_hours: u64) -> Result<u64, StateError> {
         let cutoff =
             Utc::now() - chrono::Duration::hours(i64::try_from(max_age_hours).unwrap_or(i64::MAX));
-        let cutoff_str = cutoff.to_rfc3339();
+        let cutoff_millis = epoch::to_millis(&cutoff);
 
         let mut conn = self.lock()?;
         let rows_affected = diesel::delete(
             dlq::table
                 .filter(dlq::error_kind.eq("permanent"))
-                .filter(dlq::permanent_at.lt(&cutoff_str)),
+                .filter(dlq::permanent_at.lt(cutoff_millis)),
         )
         .execute(&mut *conn)?;
 
