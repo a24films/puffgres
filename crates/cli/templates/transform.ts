@@ -1,8 +1,7 @@
 // Transform for {{NAME}}
 //
-// Reads newline-delimited JSON (NDJSON) from stdin. Each line is a JSON array
-// of events. For each line, write a JSON array of actions to stdout followed
-// by a newline.
+// Reads JSONL from stdin, writes one JSON line per batch to stdout. The
+// process stays alive across batches.
 //
 // Each output action (one of):
 //   { type: "upsert", id: number | string, document: object, vector?: number[], distance_metric?: string, schema?: object }

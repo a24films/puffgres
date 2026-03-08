@@ -9,9 +9,11 @@ use std::pin::Pin;
 use config::IdType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+
+use std::sync::Arc;
 
 use crate::transform::Transformer;
 use crate::{Action, CoreError, DocumentId};
@@ -55,7 +57,7 @@ struct ChildProcess {
     child: Child,
     stdin: tokio::process::ChildStdin,
     stdout: BufReader<tokio::process::ChildStdout>,
-    stderr: tokio::process::ChildStderr,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
 }
 
 /// A [`Transformer`] that delegates to a user-supplied TypeScript/JavaScript
@@ -125,11 +127,25 @@ impl JsTransformer {
             .take()
             .ok_or_else(|| CoreError::pipeline("failed to open stderr".to_string()))?;
 
+        // Drain stderr in a background task so the OS pipe buffer doesn't fill
+        // and block the child process. Lines are collected into a shared buffer
+        // so they can be reported if the child exits unexpectedly.
+        let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_lines_handle = Arc::clone(&stderr_lines);
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::warn!(target: "transform_stderr", "{}", line);
+                stderr_lines_handle.lock().await.push(line);
+            }
+        });
+
         Ok(ChildProcess {
             child,
             stdin,
             stdout: BufReader::new(stdout),
-            stderr,
+            stderr_lines,
         })
     }
 
@@ -305,17 +321,12 @@ impl JsTransformer {
                 .map_err(|e| CoreError::pipeline(format!("failed to read from stdout: {e}")))?;
 
             if line.is_empty() {
-                // stdout EOF — the child process exited. Drain stderr and
-                // capture the exit status so the caller gets an actionable
-                // error instead of an opaque "closed stdout" message.
-                let mut stderr_buf = Vec::new();
-                // Best-effort read; don't let a hung stderr block us.
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    proc.stderr.read_to_end(&mut stderr_buf),
-                )
-                .await;
-                let stderr_text = String::from_utf8_lossy(&stderr_buf);
+                // stdout EOF — the child process exited. Read any stderr
+                // collected by the background drain task so the caller gets
+                // an actionable error instead of an opaque "closed stdout"
+                // message.
+                let stderr_collected = proc.stderr_lines.lock().await;
+                let stderr_text = stderr_collected.join("\n");
                 let stderr_snippet = stderr_text.trim();
 
                 let exit_status = proc.child.try_wait().ok().flatten();
