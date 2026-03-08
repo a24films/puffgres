@@ -177,6 +177,7 @@ async fn run() -> (
                         publication_name: publication.clone(),
                         start_lsn: None,
                         status_interval: std::time::Duration::from_secs(10),
+                        max_transaction_events: None,
                     })
                 }
                 Err(e) => {

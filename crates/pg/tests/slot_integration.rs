@@ -136,6 +136,7 @@ async fn terminate_active_slot_backend_kills_stale_connection() {
         publication_name: "active_slot_pub".to_string(),
         start_lsn: None,
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .unwrap();

@@ -313,6 +313,7 @@ async fn backfill_then_cdc_captures_all_changes() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .expect("Failed to connect replication stream");
@@ -431,6 +432,7 @@ async fn no_gap_between_backfill_watermark_and_cdc_start() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .unwrap();
@@ -537,6 +539,7 @@ async fn backfill_multiple_batches_then_cdc() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .unwrap();
@@ -593,6 +596,7 @@ async fn cdc_ack_advances_confirmed_flush_lsn() {
         publication_name: pub_name.to_string(),
         start_lsn: None,
         status_interval: Duration::from_secs(1),
+        max_transaction_events: None,
     })
     .await
     .unwrap();
@@ -664,6 +668,7 @@ async fn empty_backfill_then_cdc_only() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
+        max_transaction_events: None,
     })
     .await
     .unwrap();
