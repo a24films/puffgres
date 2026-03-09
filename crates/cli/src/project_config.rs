@@ -22,6 +22,11 @@ pub struct ProjectConfig {
     pub dlq_permanent_max_age_hours: Option<u64>,
     #[serde(default)]
     pub max_transaction_events: Option<usize>,
+    /// When set, yield sub-batches of this size during large transactions instead
+    /// of buffering the entire transaction in memory. The pipeline processes chunks
+    /// as they arrive, giving natural backpressure. The commit finalizes the group.
+    #[serde(default)]
+    pub sub_batch_size: Option<usize>,
 }
 
 impl ProjectConfig {
@@ -64,6 +69,11 @@ impl ProjectConfig {
                 "max_transaction_events must be at least 1 in puffgres.toml".to_string(),
             ));
         }
+        if self.sub_batch_size == Some(0) {
+            return Err(CliError::RunValidation(
+                "sub_batch_size must be at least 1 in puffgres.toml".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -95,6 +105,10 @@ impl ProjectConfig {
         self.max_transaction_events
     }
 
+    pub fn sub_batch_size(&self) -> Option<usize> {
+        self.sub_batch_size
+    }
+
     pub fn resolve_env_paths(&self, root: &Path) -> Vec<PathBuf> {
         self.environment_files
             .iter()
@@ -114,6 +128,7 @@ impl Default for ProjectConfig {
             dlq_max_retries: Some(5),
             dlq_permanent_max_age_hours: Some(72),
             max_transaction_events: None,
+            sub_batch_size: None,
         }
     }
 }

@@ -90,7 +90,7 @@ impl BackfillSink for FailingSink {
     }
 }
 
-async fn setup_test_table() -> (TestContext, tokio_postgres::Client) {
+async fn setup_test_table() -> (TestContext, pg::connect::PgConnection) {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -315,6 +315,7 @@ async fn backfill_then_cdc_captures_all_changes() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await
@@ -435,6 +436,7 @@ async fn no_gap_between_backfill_watermark_and_cdc_start() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await
@@ -543,6 +545,7 @@ async fn backfill_multiple_batches_then_cdc() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await
@@ -601,6 +604,7 @@ async fn cdc_ack_advances_confirmed_flush_lsn() {
         start_lsn: None,
         status_interval: Duration::from_secs(1),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await
@@ -674,6 +678,7 @@ async fn empty_backfill_then_cdc_only() {
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await

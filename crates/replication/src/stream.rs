@@ -39,8 +39,13 @@ pub struct ReplicationStreamConfig {
     pub status_interval: Duration,
     /// Maximum number of events per transaction. Transactions exceeding this
     /// limit are dropped and returned as `BatchResult::TransactionTooLarge`.
-    /// Defaults to 1,000,000.
+    /// Defaults to 1,000,000. Ignored when `sub_batch_size` is set.
     pub max_transaction_events: Option<usize>,
+    /// When set, yield sub-batches of this size during large transactions instead
+    /// of buffering the entire transaction in memory. The commit message finalizes
+    /// the group. This gives backpressure for free — the pipeline processes chunks
+    /// as they arrive rather than waiting for the full transaction to buffer.
+    pub sub_batch_size: Option<usize>,
     /// Columns watched per table (`schema.table` → column names).
     /// Schema changes that only add columns NOT in this set are silently accepted.
     /// If a table has no entry (or the entry is empty), all column changes trigger
@@ -48,12 +53,26 @@ pub struct ReplicationStreamConfig {
     pub watched_columns: HashMap<String, Vec<String>>,
 }
 
-/// All row events from a single committed transaction.
+/// All row events from a single committed transaction (or the final chunk
+/// of a streamed transaction when sub-batching is enabled).
 #[derive(Debug)]
 pub struct StreamingBatch {
     pub events: Vec<RowEvent>,
     /// Commit LSN for this transaction — used for checkpointing and ack.
     pub ack_lsn: u64,
+    /// Transaction ID (xid). When preceded by `SubBatch`es with the same ID,
+    /// this is the final chunk that commits the group.
+    pub transaction_id: u64,
+}
+
+/// A chunk of events from an in-progress transaction, yielded before commit
+/// when sub-batch streaming is enabled. Process immediately for throughput,
+/// but don't checkpoint or ack until the final `Batch` arrives.
+#[derive(Debug)]
+pub struct StreamingSubBatch {
+    pub events: Vec<RowEvent>,
+    /// Transaction ID for grouping sub-batches together.
+    pub transaction_id: u64,
 }
 
 /// The result of receiving the next batch from the replication stream.
@@ -61,13 +80,18 @@ pub struct StreamingBatch {
 /// are not failures — just signals to reconnect with fresh metadata.
 #[derive(Debug)]
 pub enum BatchResult {
-    /// A committed transaction batch.
+    /// A committed transaction batch (or the final chunk of a streamed transaction).
     Batch(StreamingBatch),
+    /// A sub-batch from an in-progress transaction (not yet committed).
+    /// Only emitted when `sub_batch_size` is configured. Process events
+    /// immediately but defer checkpointing until the corresponding `Batch`.
+    SubBatch(StreamingSubBatch),
     /// A tracked relation's schema changed. The caller should tear down
     /// and reconnect with fresh schema metadata.
     SchemaChanged(SchemaChanged),
     /// A transaction exceeded `max_transaction_events`. The caller should
     /// skip this transaction (log + DLQ) and advance past it.
+    /// Only emitted when `sub_batch_size` is NOT configured.
     TransactionTooLarge {
         /// Commit LSN — must be acked to advance past the skipped transaction.
         ack_lsn: u64,
@@ -81,7 +105,11 @@ const DEFAULT_MAX_TRANSACTION_EVENTS: usize = 1_000_000;
 
 struct TransactionState {
     events: Vec<RowEvent>,
+    xid: u64,
+    /// Total events seen in this transaction (including already-yielded sub-batches).
+    total_events: usize,
     /// Set to `true` when this transaction exceeded the event limit and was truncated.
+    /// Only used when sub-batching is disabled.
     too_large: bool,
 }
 
@@ -92,6 +120,7 @@ pub struct ReplicationStream<T: ReplicationTransport = ReplicationClient> {
     current_txn: Option<TransactionState>,
     pending_lsn: Option<Lsn>,
     max_transaction_events: usize,
+    sub_batch_size: Option<usize>,
     watched_columns: HashMap<String, Vec<String>>,
 }
 
@@ -134,15 +163,52 @@ impl ReplicationStream {
             max_transaction_events: config
                 .max_transaction_events
                 .unwrap_or(DEFAULT_MAX_TRANSACTION_EVENTS),
+            sub_batch_size: config.sub_batch_size,
             watched_columns: config.watched_columns,
         })
     }
 }
 
 impl<T: ReplicationTransport> ReplicationStream<T> {
+    /// Push an event into the current transaction, returning a `SubBatch` if the
+    /// sub-batch threshold is reached.
+    fn push_event(&mut self, event: RowEvent) -> Option<BatchResult> {
+        let txn = self.current_txn.as_mut()?;
+
+        if txn.too_large {
+            return None;
+        }
+
+        if let Some(sub_batch_size) = self.sub_batch_size {
+            txn.events.push(event);
+            txn.total_events += 1;
+            if txn.events.len() >= sub_batch_size {
+                let events = std::mem::take(&mut txn.events);
+                return Some(BatchResult::SubBatch(StreamingSubBatch {
+                    events,
+                    transaction_id: txn.xid,
+                }));
+            }
+        } else if txn.events.len() >= self.max_transaction_events {
+            // Check BEFORE pushing to match the original semantics:
+            // max_transaction_events=N allows exactly N events.
+            txn.too_large = true;
+            txn.events.clear();
+        } else {
+            txn.events.push(event);
+            txn.total_events += 1;
+        }
+
+        None
+    }
+
     /// Returns the next committed transaction as a batch, or `None` on stream end.
     /// This function itself does **not** ack the batch to Postgres, because it may fail.
     /// Instead, the `ack` function is called by the parent afterwards.
+    ///
+    /// When `sub_batch_size` is configured, may return `BatchResult::SubBatch` for
+    /// in-progress transactions. The final `BatchResult::Batch` on commit carries
+    /// the remaining events and the ack LSN.
     ///
     /// If a tracked relation's schema changes, returns `BatchResult::SchemaChanged`
     /// instead of an error, since schema changes are not failures.
@@ -155,9 +221,11 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
             };
 
             match event {
-                ReplicationEvent::Begin { .. } => {
+                ReplicationEvent::Begin { xid, .. } => {
                     self.current_txn = Some(TransactionState {
                         events: Vec::new(),
+                        xid: u64::from(xid),
+                        total_events: 0,
                         too_large: false,
                     });
                 }
@@ -195,54 +263,33 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                             self.relation_cache.insert(info);
                         }
                         WalMessage::Insert(ins) => {
-                            if let Some(txn) = &mut self.current_txn {
-                                if txn.too_large {
-                                    // Already marked — skip remaining events
-                                } else if txn.events.len() >= self.max_transaction_events {
-                                    txn.too_large = true;
-                                    txn.events.clear();
-                                } else {
-                                    txn.events.push(RowEvent {
-                                        relation_id: ins.relation_id,
-                                        operation: Operation::Insert,
-                                        new_tuple: Some(Arc::new(ins.tuple)),
-                                        old_tuple: None,
-                                    });
-                                }
+                            if let Some(sub_batch) = self.push_event(RowEvent {
+                                relation_id: ins.relation_id,
+                                operation: Operation::Insert,
+                                new_tuple: Some(Arc::new(ins.tuple)),
+                                old_tuple: None,
+                            }) {
+                                return Ok(Some(sub_batch));
                             }
                         }
                         WalMessage::Update(upd) => {
-                            if let Some(txn) = &mut self.current_txn {
-                                if txn.too_large {
-                                    // Already marked — skip remaining events
-                                } else if txn.events.len() >= self.max_transaction_events {
-                                    txn.too_large = true;
-                                    txn.events.clear();
-                                } else {
-                                    txn.events.push(RowEvent {
-                                        relation_id: upd.relation_id,
-                                        operation: Operation::Update,
-                                        new_tuple: Some(Arc::new(upd.new_tuple)),
-                                        old_tuple: upd.old_tuple.map(Arc::new),
-                                    });
-                                }
+                            if let Some(sub_batch) = self.push_event(RowEvent {
+                                relation_id: upd.relation_id,
+                                operation: Operation::Update,
+                                new_tuple: Some(Arc::new(upd.new_tuple)),
+                                old_tuple: upd.old_tuple.map(Arc::new),
+                            }) {
+                                return Ok(Some(sub_batch));
                             }
                         }
                         WalMessage::Delete(del) => {
-                            if let Some(txn) = &mut self.current_txn {
-                                if txn.too_large {
-                                    // Already marked — skip remaining events
-                                } else if txn.events.len() >= self.max_transaction_events {
-                                    txn.too_large = true;
-                                    txn.events.clear();
-                                } else {
-                                    txn.events.push(RowEvent {
-                                        relation_id: del.relation_id,
-                                        operation: Operation::Delete,
-                                        new_tuple: None,
-                                        old_tuple: Some(Arc::new(del.old_tuple)),
-                                    });
-                                }
+                            if let Some(sub_batch) = self.push_event(RowEvent {
+                                relation_id: del.relation_id,
+                                operation: Operation::Delete,
+                                new_tuple: None,
+                                old_tuple: Some(Arc::new(del.old_tuple)),
+                            }) {
+                                return Ok(Some(sub_batch));
                             }
                         }
                         _ => {}
@@ -261,6 +308,7 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                         return Ok(Some(BatchResult::Batch(StreamingBatch {
                             events: txn.events,
                             ack_lsn: end_lsn.0,
+                            transaction_id: txn.xid,
                         })));
                     }
                 }
@@ -366,6 +414,7 @@ mod tests {
             current_txn: None,
             pending_lsn: None,
             max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
+            sub_batch_size: None,
             watched_columns: HashMap::new(),
         }
     }
@@ -380,7 +429,30 @@ mod tests {
             current_txn: None,
             pending_lsn: None,
             max_transaction_events: max_events,
+            sub_batch_size: None,
             watched_columns: HashMap::new(),
+        }
+    }
+
+    fn make_stream_with_sub_batching(
+        events: Vec<Result<Option<ReplicationEvent>>>,
+        sub_batch_size: usize,
+    ) -> ReplicationStream<MockTransport> {
+        ReplicationStream {
+            client: MockTransport::new(events),
+            relation_cache: RelationCache::new(),
+            current_txn: None,
+            pending_lsn: None,
+            max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
+            sub_batch_size: Some(sub_batch_size),
+            watched_columns: HashMap::new(),
+        }
+    }
+
+    fn expect_sub_batch(result: Option<BatchResult>) -> StreamingSubBatch {
+        match result.expect("expected Some, got None") {
+            BatchResult::SubBatch(sb) => sb,
+            other => panic!("expected SubBatch, got: {other:?}"),
         }
     }
 
@@ -393,6 +465,7 @@ mod tests {
             start_lsn: Some(0x1234),
             status_interval: Duration::from_secs(10),
             max_transaction_events: None,
+            sub_batch_size: None,
             watched_columns: HashMap::new(),
         };
         assert_eq!(config.slot_name, "my_slot");
@@ -731,6 +804,7 @@ mod tests {
             pending_lsn: None,
             max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
             watched_columns,
+            sub_batch_size: None,
         }
     }
 
@@ -927,5 +1001,226 @@ mod tests {
         let batch = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch.events.len(), 2);
         assert_eq!(batch.ack_lsn, 200);
+    }
+
+    /// Helper: build a list of N insert XLogData events.
+    fn n_inserts(n: usize) -> Vec<Result<Option<ReplicationEvent>>> {
+        (0..n)
+            .map(|i| {
+                let data = encode_insert(1, &format!("row-{i}"));
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data,
+                }))
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_sub_batch_yields_chunks_then_commit() {
+        // 5 events with sub_batch_size=2 → 2 sub-batches (2 each) + 1 final batch (1 remaining)
+        let mut events = vec![Ok(Some(ReplicationEvent::Begin {
+            final_lsn: Lsn(0),
+            xid: 42,
+            commit_time_micros: 0,
+        }))];
+        events.extend(n_inserts(5));
+        events.push(Ok(Some(ReplicationEvent::Commit {
+            lsn: Lsn(100),
+            end_lsn: Lsn(200),
+            commit_time_micros: 0,
+        })));
+
+        let mut stream = make_stream_with_sub_batching(events, 2);
+
+        // First sub-batch: 2 events
+        let sb1 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb1.events.len(), 2);
+        assert_eq!(sb1.transaction_id, 42);
+
+        // Second sub-batch: 2 events
+        let sb2 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb2.events.len(), 2);
+        assert_eq!(sb2.transaction_id, 42);
+
+        // Final batch on commit: 1 remaining event
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.ack_lsn, 200);
+        assert_eq!(batch.transaction_id, 42);
+
+        // No ack until caller calls ack()
+        assert!(stream.client.acked_lsns().is_empty());
+        stream.ack();
+        assert_eq!(stream.client.acked_lsns(), vec![200]);
+    }
+
+    #[tokio::test]
+    async fn test_sub_batch_exact_multiple() {
+        // 4 events with sub_batch_size=2 → 2 sub-batches + final batch with 0 events
+        let mut events = vec![Ok(Some(ReplicationEvent::Begin {
+            final_lsn: Lsn(0),
+            xid: 10,
+            commit_time_micros: 0,
+        }))];
+        events.extend(n_inserts(4));
+        events.push(Ok(Some(ReplicationEvent::Commit {
+            lsn: Lsn(100),
+            end_lsn: Lsn(500),
+            commit_time_micros: 0,
+        })));
+
+        let mut stream = make_stream_with_sub_batching(events, 2);
+
+        let sb1 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb1.events.len(), 2);
+
+        let sb2 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb2.events.len(), 2);
+
+        // Final batch: 0 remaining events (exact multiple)
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.events.len(), 0);
+        assert_eq!(batch.ack_lsn, 500);
+        assert_eq!(batch.transaction_id, 10);
+    }
+
+    #[tokio::test]
+    async fn test_sub_batch_small_transaction_no_sub_batches() {
+        // 1 event with sub_batch_size=10 → no sub-batches, just a normal batch
+        let mut events = vec![Ok(Some(ReplicationEvent::Begin {
+            final_lsn: Lsn(0),
+            xid: 99,
+            commit_time_micros: 0,
+        }))];
+        events.extend(n_inserts(1));
+        events.push(Ok(Some(ReplicationEvent::Commit {
+            lsn: Lsn(100),
+            end_lsn: Lsn(300),
+            commit_time_micros: 0,
+        })));
+
+        let mut stream = make_stream_with_sub_batching(events, 10);
+
+        // Should get a normal batch, no sub-batches
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.ack_lsn, 300);
+    }
+
+    #[tokio::test]
+    async fn test_sub_batch_large_transaction_many_chunks() {
+        // 2_000_005 events with sub_batch_size=1_000_000 → 2 sub-batches + final batch
+        let total_events = 2_000_005;
+        let sub_batch_size = 1_000_000;
+
+        let mut events = vec![Ok(Some(ReplicationEvent::Begin {
+            final_lsn: Lsn(0),
+            xid: 777,
+            commit_time_micros: 0,
+        }))];
+        events.extend(n_inserts(total_events));
+        events.push(Ok(Some(ReplicationEvent::Commit {
+            lsn: Lsn(100),
+            end_lsn: Lsn(9999),
+            commit_time_micros: 0,
+        })));
+
+        let mut stream = make_stream_with_sub_batching(events, sub_batch_size);
+
+        // First sub-batch: 1M events
+        let sb1 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb1.events.len(), sub_batch_size);
+        assert_eq!(sb1.transaction_id, 777);
+
+        // Second sub-batch: 1M events
+        let sb2 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb2.events.len(), sub_batch_size);
+        assert_eq!(sb2.transaction_id, 777);
+
+        // Final batch: 5 remaining events
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.events.len(), 5);
+        assert_eq!(batch.ack_lsn, 9999);
+        assert_eq!(batch.transaction_id, 777);
+
+        stream.ack();
+        assert_eq!(stream.client.acked_lsns(), vec![9999]);
+    }
+
+    #[tokio::test]
+    async fn test_sub_batch_transaction_id_preserved() {
+        // Two transactions, each with sub-batches — verify IDs are distinct
+        let mut events = vec![Ok(Some(ReplicationEvent::Begin {
+            final_lsn: Lsn(0),
+            xid: 100,
+            commit_time_micros: 0,
+        }))];
+        events.extend(n_inserts(3));
+        events.push(Ok(Some(ReplicationEvent::Commit {
+            lsn: Lsn(100),
+            end_lsn: Lsn(200),
+            commit_time_micros: 0,
+        })));
+        events.push(Ok(Some(ReplicationEvent::Begin {
+            final_lsn: Lsn(0),
+            xid: 200,
+            commit_time_micros: 0,
+        })));
+        events.extend(n_inserts(3));
+        events.push(Ok(Some(ReplicationEvent::Commit {
+            lsn: Lsn(300),
+            end_lsn: Lsn(400),
+            commit_time_micros: 0,
+        })));
+
+        let mut stream = make_stream_with_sub_batching(events, 2);
+
+        // Txn 100: sub-batch + final
+        let sb = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb.transaction_id, 100);
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.transaction_id, 100);
+        stream.ack();
+
+        // Txn 200: sub-batch + final
+        let sb = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb.transaction_id, 200);
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.transaction_id, 200);
+        stream.ack();
+
+        assert_eq!(stream.client.acked_lsns(), vec![200, 400]);
+    }
+
+    #[tokio::test]
+    async fn test_sub_batch_total_events_tracked() {
+        // Verify total_events counts across sub-batches
+        let mut events = vec![Ok(Some(ReplicationEvent::Begin {
+            final_lsn: Lsn(0),
+            xid: 1,
+            commit_time_micros: 0,
+        }))];
+        events.extend(n_inserts(7));
+        events.push(Ok(Some(ReplicationEvent::Commit {
+            lsn: Lsn(100),
+            end_lsn: Lsn(200),
+            commit_time_micros: 0,
+        })));
+
+        let mut stream = make_stream_with_sub_batching(events, 3);
+
+        let sb1 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb1.events.len(), 3);
+
+        let sb2 = expect_sub_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(sb2.events.len(), 3);
+
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.events.len(), 1);
+
+        // Total across all: 3 + 3 + 1 = 7
     }
 }

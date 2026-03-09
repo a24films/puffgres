@@ -13,7 +13,7 @@ use pg::test_utils::{TestContext, setup_postgres_logical};
 use puffgres_core::{
     Action, BackfillConfig, BackfillSink, CoreError, DocumentId, Mapping, Router, Transformer,
 };
-use replication::{Operation, RelationCache, ReplicationStream, RowEvent};
+use replication::{BatchResult, Operation, RelationCache, ReplicationStream, RowEvent};
 
 #[allow(dead_code)]
 pub struct CollectingSink {
@@ -176,7 +176,7 @@ pub fn make_mapping(table_name: &str) -> Mapping {
     }
 }
 
-pub async fn setup_replication_test(table_name: &str) -> (TestContext, tokio_postgres::Client) {
+pub async fn setup_replication_test(table_name: &str) -> (TestContext, pg::connect::PgConnection) {
     let ctx = setup_postgres_logical().await;
     let client = connect(&ctx.connection_string)
         .await
@@ -201,13 +201,14 @@ pub async fn collect_cdc_events(
             break;
         }
         match tokio::time::timeout(remaining, stream.recv_batch()).await {
-            Ok(Ok(Some(batch))) => {
+            Ok(Ok(Some(BatchResult::Batch(batch)))) => {
                 let ack_lsn = batch.ack_lsn;
                 for ev in batch.events {
                     events.push((ev, ack_lsn));
                 }
                 stream.ack();
             }
+            Ok(Ok(Some(_))) => continue, // SubBatch, SchemaChanged, TransactionTooLarge
             Ok(Ok(None)) => break,
             Ok(Err(e)) => panic!("Replication stream error: {e}"),
             Err(_) => break,
