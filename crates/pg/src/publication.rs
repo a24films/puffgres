@@ -179,7 +179,17 @@ pub async fn remove_tables_from_publication(
 /// column values in the old tuple (not just the primary-key columns).
 /// Without this, non-PK id columns appear as `Unchanged` in deletes and
 /// `extract_id` fails.
+///
+/// Runs all ALTER TABLE statements inside a single transaction so that
+/// either all tables get REPLICA IDENTITY FULL or none do.
 pub async fn ensure_replica_identity_full(client: &Client, tables: &[String]) -> Result<()> {
+    // Table/schema names are SQL identifiers and cannot be parameterized;
+    // we use quote_identifier() which matches PG's quote_ident() algorithm.
+    client
+        .execute("BEGIN", &[])
+        .await
+        .map_err(|e| PgError::ReplicationError(format!("Failed to begin transaction: {e}")))?;
+
     for table in tables {
         let qualified = match table.split_once('.') {
             Some((schema, name)) => {
@@ -189,13 +199,19 @@ pub async fn ensure_replica_identity_full(client: &Client, tables: &[String]) ->
         };
 
         let query = format!("ALTER TABLE {qualified} REPLICA IDENTITY FULL");
-        client.execute(&query, &[]).await.map_err(|e| {
-            PgError::ReplicationError(format!(
+        if let Err(e) = client.execute(&query, &[]).await {
+            let _ = client.execute("ROLLBACK", &[]).await;
+            return Err(PgError::ReplicationError(format!(
                 "Failed to set REPLICA IDENTITY FULL on '{}': {}",
                 table, e
-            ))
-        })?;
+            )));
+        }
     }
+
+    client
+        .execute("COMMIT", &[])
+        .await
+        .map_err(|e| PgError::ReplicationError(format!("Failed to commit transaction: {e}")))?;
 
     Ok(())
 }
