@@ -40,6 +40,12 @@ enum Command {
     },
     /// Generate typed schema.ts files for each config
     Generate,
+    /// Launch a light UI to see the contents of turbopuffer namespaces
+    Debug {
+        /// Port to serve on
+        #[arg(long, default_value = "3333")]
+        port: u16,
+    },
 }
 
 fn main() {
@@ -91,6 +97,38 @@ fn run() -> (
             Err(e) => return (Err(e), None),
         };
         return (puffgres_cli::generate::run(&paths, &database_url), None);
+    }
+
+    // Tier 3b: Debug only needs TURBOPUFFER_API_KEY (+ optional region).
+    if let Command::Debug { port } = cli.command {
+        let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
+            Ok(c) => c,
+            Err(e) => return (Err(e), None),
+        };
+        let env_paths = project_config.resolve_env_paths(&paths.root);
+        let file_vars = match puffgres_cli::env::load_env_files(&env_paths) {
+            Ok(v) => v,
+            Err(e) => return (Err(e), None),
+        };
+        let api_key = match puffgres_cli::env::resolve_env_var("TURBOPUFFER_API_KEY", &file_vars) {
+            Some(v) => v,
+            None => {
+                return (
+                    Err(puffgres_cli::CliError::MissingEnvVar(
+                        "TURBOPUFFER_API_KEY".into(),
+                    )),
+                    None,
+                );
+            }
+        };
+        let region = puffgres_cli::env::resolve_env_var("TURBOPUFFER_REGION", &file_vars);
+        let client = match puff::TurbopufferClient::new(api_key, region) {
+            Ok(c) => c,
+            Err(e) => return (Err(CliError::Debug(e.to_string())), None),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(puffgres_debug::run(client, port));
+        return (result.map_err(|e| CliError::Debug(e.to_string())), None);
     }
 
     // Tier 4: ProjectPaths + state_db_path (no full ProjectConfig validation needed).
@@ -181,7 +219,8 @@ fn run() -> (
         | Command::Reset
         | Command::Tombstone { .. }
         | Command::Check
-        | Command::Generate => unreachable!(),
+        | Command::Generate
+        | Command::Debug { .. } => unreachable!(),
         Command::DryRun { name } => {
             puffgres_cli::dry_run::run(&paths, &env_config, name.as_deref())
         }

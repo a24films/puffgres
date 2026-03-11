@@ -15,6 +15,7 @@ config = { path = "../config" }
 dotenvy = "0.15"
 pg = { path = "../pg" }
 puff = { path = "../puff" }
+puffgres-debug = { path = "../debug" }
 puffgres-core = { path = "../core" }
 replication = { path = "../replication" }
 serde = { version = "1.0.228", features = ["derive"] }
