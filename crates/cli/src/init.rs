@@ -173,6 +173,10 @@ fn ensure_utils(paths: &ProjectPaths) -> Result<(), CliError> {
             "tokenize.ts",
             include_str!("../templates/utils/tokenize.ts"),
         ),
+        (
+            "puffgres.ts",
+            include_str!("../templates/utils/puffgres.ts"),
+        ),
     ];
 
     for (name, content) in files {
@@ -467,6 +471,7 @@ mod tests {
         assert!(sub.join("utils/load-env.ts").exists());
         assert!(sub.join("utils/embed.ts").exists());
         assert!(sub.join("utils/tokenize.ts").exists());
+        assert!(sub.join("utils/puffgres.ts").exists());
     }
 
     #[test]
@@ -487,6 +492,9 @@ mod tests {
         let tokenize = fs::read_to_string(sub.join("utils/tokenize.ts")).unwrap();
         assert!(tokenize.contains("@huggingface/transformers"));
         assert!(tokenize.contains("tokenizeBatch"));
+
+        let puffgres = fs::read_to_string(sub.join("utils/puffgres.ts")).unwrap();
+        assert!(puffgres.contains("PrimitiveType"));
     }
 
     #[test]
