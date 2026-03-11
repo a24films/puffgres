@@ -12,6 +12,7 @@ use pg::test_utils::{TestContext, setup_postgres};
 use puffgres_core::{Action, BackfillOutcome, BackfillSink, CoreError, DocumentId, run_backfill};
 use replication::{ReplicationStream, ReplicationStreamConfig};
 use state::{BackfillCheckpointer, StateError};
+use tokio_util::sync::CancellationToken;
 
 use common::*;
 
@@ -104,6 +105,7 @@ async fn complete_backfill_processes_all_batches() {
         &sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -127,6 +129,7 @@ async fn resumes_from_checkpoint() {
         &sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -153,6 +156,7 @@ async fn saves_progress_after_each_batch() {
         &sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -176,6 +180,7 @@ async fn empty_table_completes_immediately() {
         &sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -199,6 +204,7 @@ async fn sink_failure_exhausts_retries() {
         &FailingSink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -243,6 +249,7 @@ async fn backfill_then_cdc_captures_all_changes() {
         &backfill_sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -385,6 +392,7 @@ async fn no_gap_between_backfill_watermark_and_cdc_start() {
         &notify_sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     );
     tokio::pin!(backfill_fut);
 
@@ -504,6 +512,7 @@ async fn backfill_multiple_batches_then_cdc() {
         &backfill_sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 
@@ -630,6 +639,7 @@ async fn empty_backfill_then_cdc_only() {
         &backfill_sink,
         &mut checkpointer,
         &PassthroughTransformer,
+        CancellationToken::new(),
     )
     .await;
 

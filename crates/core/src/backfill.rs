@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use crate::backoff::{Backoff, BackoffConfig};
 use crate::row_convert::pg_rows_to_events;
@@ -13,8 +14,13 @@ use state::BackfillCheckpointer;
 /// Retry an async operation with exponential backoff.
 ///
 /// Transient errors are retried until backoff is exhausted. Permanent errors
-/// (where `is_transient()` returns false) propagate immediately.
-async fn retry_with_backoff<F, Fut, T>(backoff: &mut Backoff, mut f: F) -> Result<T, CoreError>
+/// (where `is_transient()` returns false) propagate immediately. Cancellation
+/// is checked during retry backoff sleeps so that shutdown is not delayed.
+async fn retry_with_backoff<F, Fut, T>(
+    backoff: &mut Backoff,
+    token: &CancellationToken,
+    mut f: F,
+) -> Result<T, CoreError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, CoreError>>,
@@ -30,7 +36,13 @@ where
                         retry_delay_ms = delay.as_millis() as u64,
                         "backfill batch error, retrying",
                     );
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = token.cancelled() => {
+                            tracing::info!("shutdown requested during backfill retry backoff");
+                            return Err(CoreError::Cancelled);
+                        }
+                    }
                 }
                 None => return Err(e),
             },
@@ -54,6 +66,7 @@ pub struct BackfillResult {
 
 pub enum BackfillOutcome {
     Completed,
+    Cancelled,
     Failed { error: String, processed: u64 },
 }
 
@@ -68,6 +81,7 @@ pub async fn run_backfill(
     sink: &dyn BackfillSink,
     checkpointer: &dyn BackfillCheckpointer,
     transformer: &dyn Transformer,
+    token: CancellationToken,
 ) -> BackfillResult {
     // 1. Resolve columns (also validates table reachability)
     let columns = match pg::batch::resolve_column_names(
@@ -147,8 +161,20 @@ pub async fn run_backfill(
     // 6. Main loop
     let mut batch_num: u64 = 0;
     loop {
+        if token.is_cancelled() {
+            tracing::info!(
+                config = %config.config_name,
+                processed_rows = processed,
+                "shutdown requested, stopping backfill",
+            );
+            return BackfillResult {
+                processed_rows: processed,
+                status: BackfillOutcome::Cancelled,
+            };
+        }
+
         let batch_start = Instant::now();
-        let fetch_result = retry_with_backoff(&mut backoff, || async {
+        let fetch_result = retry_with_backoff(&mut backoff, &token, || async {
             pg::batch::fetch_batch(client, &query_config, cursor.as_deref(), &cursor_cast)
                 .await
                 .map_err(CoreError::from)
@@ -157,6 +183,12 @@ pub async fn run_backfill(
 
         let batch_result = match fetch_result {
             Ok(val) => val,
+            Err(CoreError::Cancelled) => {
+                return BackfillResult {
+                    processed_rows: processed,
+                    status: BackfillOutcome::Cancelled,
+                };
+            }
             Err(e) => {
                 return BackfillResult {
                     processed_rows: processed,
@@ -192,8 +224,16 @@ pub async fn run_backfill(
         let refs: Vec<(&RowEvent, DocumentId)> =
             events.iter().map(|(ev, id)| (ev, id.clone())).collect();
         let actions =
-            match retry_with_backoff(&mut backoff, || transformer.transform_batch(&refs)).await {
+            match retry_with_backoff(&mut backoff, &token, || transformer.transform_batch(&refs))
+                .await
+            {
                 Ok(val) => val,
+                Err(CoreError::Cancelled) => {
+                    return BackfillResult {
+                        processed_rows: processed,
+                        status: BackfillOutcome::Cancelled,
+                    };
+                }
                 Err(e) => {
                     return BackfillResult {
                         processed_rows: processed,
@@ -205,16 +245,27 @@ pub async fn run_backfill(
                 }
             };
 
-        if let Err(e) =
-            retry_with_backoff(&mut backoff, || sink.write(&config.namespace, &actions)).await
+        match retry_with_backoff(&mut backoff, &token, || {
+            sink.write(&config.namespace, &actions)
+        })
+        .await
         {
-            return BackfillResult {
-                processed_rows: processed,
-                status: BackfillOutcome::Failed {
-                    error: e.to_string(),
-                    processed,
-                },
-            };
+            Ok(()) => {}
+            Err(CoreError::Cancelled) => {
+                return BackfillResult {
+                    processed_rows: processed,
+                    status: BackfillOutcome::Cancelled,
+                };
+            }
+            Err(e) => {
+                return BackfillResult {
+                    processed_rows: processed,
+                    status: BackfillOutcome::Failed {
+                        error: e.to_string(),
+                        processed,
+                    },
+                };
+            }
         }
 
         // Save checkpoint in a dedicated retry loop so that a transient
@@ -228,7 +279,18 @@ pub async fn run_backfill(
             match checkpointer.save_progress(&config.config_name, last_id, processed + batch_len) {
                 Ok(()) => break,
                 Err(e) => match backoff.next_delay() {
-                    Some(delay) => tokio::time::sleep(delay).await,
+                    Some(delay) => {
+                        tokio::select! {
+                            _ = tokio::time::sleep(delay) => {}
+                            _ = token.cancelled() => {
+                                tracing::info!("shutdown requested during checkpoint retry");
+                                return BackfillResult {
+                                    processed_rows: processed,
+                                    status: BackfillOutcome::Cancelled,
+                                };
+                            }
+                        }
+                    }
                     None => {
                         return BackfillResult {
                             processed_rows: processed,

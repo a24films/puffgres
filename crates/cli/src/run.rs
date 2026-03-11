@@ -13,12 +13,14 @@ use puffgres_core::{
 use replication::{ReplicationStream, ReplicationStreamConfig, RowEvent};
 use sha2::{Digest, Sha256};
 use state::{BackfillProgress, BackfillStatus, DlqEntry, StateDb, StreamingCheckpoint};
+use tokio_util::sync::CancellationToken;
 
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::observability::Metrics;
 use crate::paths::ProjectPaths;
 use crate::project_config::ProjectConfig;
+use crate::shutdown::ShutdownController;
 
 const SLOT_NAME: &str = "puffgres";
 const PUBLICATION_NAME: &str = "puffgres";
@@ -46,13 +48,24 @@ fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> String {
 ///
 /// Non-retryable errors (e.g. config validation failures) bypass the loop and
 /// propagate immediately so the process fails fast for operator action.
-async fn retry_loop<F, Fut>(config: BackoffConfig, mut f: F) -> Result<(), CliError>
+/// If the cancellation token is set, the loop exits cleanly after the current
+/// iteration completes.
+async fn retry_loop<F, Fut>(
+    config: BackoffConfig,
+    token: CancellationToken,
+    mut f: F,
+) -> Result<(), CliError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(), CliError>>,
 {
     let mut backoff = Backoff::new(config);
     loop {
+        if token.is_cancelled() {
+            tracing::info!("shutdown requested, exiting retry loop");
+            break Ok(());
+        }
+
         match f().await {
             Ok(()) => break Ok(()),
             Err(e) if !e.is_retryable() => {
@@ -60,13 +73,23 @@ where
                 break Err(e);
             }
             Err(e) => {
+                if token.is_cancelled() {
+                    tracing::info!("shutdown requested during error recovery, exiting");
+                    break Ok(());
+                }
                 tracing::error!(error = %e, "CDC loop exited with error, restarting...");
                 if let Some(delay) = backoff.next_delay() {
                     tracing::info!(
                         delay_ms = delay.as_millis() as u64,
                         "waiting before restart"
                     );
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = token.cancelled() => {
+                            tracing::info!("shutdown requested during backoff, exiting");
+                            break Ok(());
+                        }
+                    }
                 } else {
                     break Err(e);
                 }
@@ -81,6 +104,9 @@ pub async fn run_async(
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
+    let shutdown = ShutdownController::new();
+    let token = shutdown.token();
+
     retry_loop(
         BackoffConfig {
             initial_delay_ms: 1_000,
@@ -89,7 +115,8 @@ pub async fn run_async(
             multiplier: 2.0,
             jitter: true,
         },
-        || run_cdc_inner(paths, env_config, project_config, metrics),
+        token.clone(),
+        || run_cdc_inner(paths, env_config, project_config, metrics, token.clone()),
     )
     .await
 }
@@ -100,6 +127,7 @@ async fn run_cdc_inner(
     env_config: &EnvConfig,
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
+    token: CancellationToken,
 ) -> Result<(), CliError> {
     if let Some(parent) = env_config.state_db_path.parent() {
         if !parent.exists() {
@@ -343,6 +371,11 @@ async fn run_cdc_inner(
         tracing::info!(watermark_lsn = %pg::PgLsn::from(watermark), "starting backfill");
 
         for config in &needs_backfill {
+            if token.is_cancelled() {
+                tracing::info!("shutdown requested, skipping remaining backfills");
+                return Ok(());
+            }
+
             let namespace = namespaces
                 .get(&config.name)
                 .expect("namespace missing for applied config");
@@ -371,6 +404,7 @@ async fn run_cdc_inner(
                 &puff_client,
                 &db,
                 transformer.as_ref(),
+                token.clone(),
             )
             .await;
 
@@ -398,6 +432,14 @@ async fn run_cdc_inner(
                     }
                     watermark_lsns.push(watermark);
                 }
+                BackfillOutcome::Cancelled => {
+                    tracing::info!(
+                        config = %config.name,
+                        rows = result.processed_rows,
+                        "backfill cancelled by shutdown",
+                    );
+                    return Ok(());
+                }
                 BackfillOutcome::Failed { error, .. } => {
                     return Err(CliError::Run(format!(
                         "backfill failed for {}: {}",
@@ -419,6 +461,11 @@ async fn run_cdc_inner(
         candidates.into_iter().min()
     };
 
+    if token.is_cancelled() {
+        tracing::info!("shutdown requested, exiting before streaming setup");
+        return Ok(());
+    }
+
     // Here we stop holding the existing slot, and poll w/ exponential backoff for the new one.
     // Need to do this after publication setup / LSN resolution so we don't create
     // (and fail to clean one of these up) if those fail.
@@ -435,9 +482,19 @@ async fn run_cdc_inner(
         .await?
         .is_some()
     {
+        if token.is_cancelled() {
+            tracing::info!("shutdown requested while waiting for slot release");
+            return Ok(());
+        }
         match backoff.next_delay() {
             Some(delay) => {
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = token.cancelled() => {
+                        tracing::info!("shutdown requested during slot wait");
+                        return Ok(());
+                    }
+                }
                 pg::slot::terminate_active_slot_backend(&pg_client, SLOT_NAME).await?;
             }
             None => {
@@ -473,6 +530,11 @@ async fn run_cdc_inner(
         );
     }
 
+    if token.is_cancelled() {
+        tracing::info!("shutdown requested, skipping DLQ replay");
+        return Ok(());
+    }
+
     // Replay any retryable DLQ entries from previous runs
     replay_dlq(
         &db,
@@ -481,6 +543,7 @@ async fn run_cdc_inner(
         &puff_client,
         project_config,
         metrics,
+        &token,
     )
     .await?;
 
@@ -491,6 +554,10 @@ async fn run_cdc_inner(
     // When Postgres sends a Relation message with changed columns (e.g. ALTER TABLE),
     // we drop the stream and reconnect so the fresh RelationCache picks up the new schema.
     loop {
+        if token.is_cancelled() {
+            tracing::info!("shutdown requested, exiting streaming loop");
+            return Ok(());
+        }
         let stream_config = ReplicationStreamConfig {
             connection_string: env_config.database_url.clone(),
             slot_name: SLOT_NAME.to_string(),
@@ -513,6 +580,11 @@ async fn run_cdc_inner(
         // This is fine because Turbopuffer upserts are idempotent.
         let should_reconnect;
         loop {
+            if token.is_cancelled() {
+                tracing::info!("shutdown requested, finishing current batch loop");
+                return Ok(());
+            }
+
             let batch_result = match stream.recv_batch().await {
                 Ok(Some(result)) => result,
                 Ok(None) => {
@@ -649,6 +721,7 @@ async fn run_cdc_inner(
                     &puff_client,
                     project_config,
                     metrics,
+                    &token,
                 )
                 .await?;
             }
@@ -684,7 +757,13 @@ async fn run_cdc_inner(
             {
                 match backoff.next_delay() {
                     Some(delay) => {
-                        tokio::time::sleep(delay).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(delay) => {}
+                            _ = token.cancelled() => {
+                                tracing::info!("shutdown requested during schema-change slot wait");
+                                return Ok(());
+                            }
+                        }
                         pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME).await?;
                     }
                     None => {
@@ -746,6 +825,7 @@ async fn replay_dlq(
     puff_client: &TurbopufferClient,
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
+    token: &CancellationToken,
 ) -> Result<(), CliError> {
     let entries = db.list_retryable_entries(project_config.dlq_replay_batch_size())?;
     if entries.is_empty() {
@@ -755,6 +835,11 @@ async fn replay_dlq(
     tracing::info!(entries = entries.len(), "replaying DLQ entries");
 
     for entry in &entries {
+        if token.is_cancelled() {
+            tracing::info!("shutdown requested, aborting DLQ replay");
+            return Ok(());
+        }
+
         let transformer = match transformers.get(&entry.config_name) {
             Some(t) => t,
             None => {
@@ -859,6 +944,7 @@ mod tests {
                 multiplier: 1.0,
                 jitter: false,
             },
+            CancellationToken::new(),
             || {
                 let n = attempts.fetch_add(1, Ordering::SeqCst);
                 async move {
@@ -886,6 +972,7 @@ mod tests {
                 multiplier: 1.0,
                 jitter: false,
             },
+            CancellationToken::new(),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async { Err(CliError::Run("permanent".into())) }
@@ -908,6 +995,7 @@ mod tests {
                 multiplier: 1.0,
                 jitter: false,
             },
+            CancellationToken::new(),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async { Err(CliError::RunValidation("config drift".into())) }
@@ -930,6 +1018,7 @@ mod tests {
                 multiplier: 1.0,
                 jitter: false,
             },
+            CancellationToken::new(),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async { Ok(()) }
@@ -982,7 +1071,14 @@ mod tests {
     ) -> Result<(), CliError> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| CliError::Run(format!("failed to create async runtime: {e}")))?;
-        rt.block_on(run_cdc_inner(paths, env_config, project_config, metrics))
+        let token = CancellationToken::new();
+        rt.block_on(run_cdc_inner(
+            paths,
+            env_config,
+            project_config,
+            metrics,
+            token,
+        ))
     }
 
     #[test]

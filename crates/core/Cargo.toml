@@ -21,10 +21,12 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["process", "io-util"] }
 tokio-postgres.workspace = true
+tokio-util.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 chrono.workspace = true
+tokio-util.workspace = true
 pg = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
 testcontainers.workspace = true
