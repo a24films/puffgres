@@ -7,7 +7,7 @@ use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
 
-pub fn run(
+pub async fn run_async(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     name: Option<&str>,
@@ -46,10 +46,9 @@ pub fn run(
     )
     .map_err(|e| CliError::Remove(format!("failed to create turbopuffer client: {e}")))?;
 
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| CliError::Remove(format!("failed to create runtime: {e}")))?;
-
-    rt.block_on(async { puff_client.delete_namespace(&full_namespace).await })
+    puff_client
+        .delete_namespace(&full_namespace)
+        .await
         .map_err(|e| {
             CliError::Remove(format!(
                 "failed to delete namespace '{}': {e}",
