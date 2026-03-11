@@ -15,6 +15,16 @@ pub enum PuffError {
     Json(String),
 }
 
+impl PuffError {
+    pub fn is_transient(&self) -> bool {
+        match self {
+            PuffError::Client(_) | PuffError::Http(_) => true,
+            PuffError::Api { status, .. } => *status == 429 || *status >= 500,
+            PuffError::Json(_) => false,
+        }
+    }
+}
+
 impl From<rs_puff::Error> for PuffError {
     fn from(err: rs_puff::Error) -> Self {
         match err {
@@ -54,5 +64,53 @@ mod tests {
     fn json_error_display() {
         let err = PuffError::Json("invalid json".to_string());
         assert_eq!(err.to_string(), "json error: invalid json");
+    }
+
+    #[test]
+    fn client_error_is_transient() {
+        assert!(PuffError::Client("timeout".into()).is_transient());
+    }
+
+    #[test]
+    fn http_error_is_transient() {
+        assert!(PuffError::Http("connection reset".into()).is_transient());
+    }
+
+    #[test]
+    fn api_429_is_transient() {
+        assert!(
+            PuffError::Api {
+                status: 429,
+                message: "rate limited".into()
+            }
+            .is_transient()
+        );
+    }
+
+    #[test]
+    fn api_500_is_transient() {
+        assert!(
+            PuffError::Api {
+                status: 500,
+                message: "internal".into()
+            }
+            .is_transient()
+        );
+    }
+
+    #[test]
+    fn api_400_is_permanent() {
+        assert!(
+            !PuffError::Api {
+                status: 400,
+                message: "bad request".into()
+            }
+            .is_transient()
+        );
+    }
+
+    #[test]
+    fn json_error_is_permanent() {
+        assert!(!PuffError::Json("parse error".into()).is_transient());
     }
 }

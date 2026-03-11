@@ -76,7 +76,7 @@ impl CliError {
     pub fn is_retryable(&self) -> bool {
         match self {
             CliError::Run(_) => true,
-            CliError::State(e) => e.is_retryable(),
+            CliError::State(e) => e.is_transient(),
             _ => false,
         }
     }
