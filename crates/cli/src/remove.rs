@@ -17,9 +17,9 @@ pub async fn run_async(
         return Err(CliError::NotInitialized("state.db".to_string()));
     }
 
-    let mut db = StateDb::open(&env_config.state_db_path)?;
+    let db = StateDb::open(&env_config.state_db_path)?;
 
-    let config_name = resolve_config_name(&mut db, name, last)?;
+    let config_name = resolve_config_name(&db, name, last)?;
 
     let config = db.get_config(&config_name)?.ok_or_else(|| {
         CliError::Remove(format!(
@@ -80,11 +80,7 @@ pub async fn run_async(
     Ok(())
 }
 
-fn resolve_config_name(
-    db: &mut StateDb,
-    name: Option<&str>,
-    last: bool,
-) -> Result<String, CliError> {
+fn resolve_config_name(db: &StateDb, name: Option<&str>, last: bool) -> Result<String, CliError> {
     if let Some(name) = name {
         return Ok(name.to_string());
     }
@@ -140,31 +136,31 @@ mod tests {
     #[test]
     fn resolve_config_name_with_explicit_name() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
-        let name = resolve_config_name(&mut db, Some("film"), false).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
+        let name = resolve_config_name(&db, Some("film"), false).unwrap();
         assert_eq!(name, "film");
     }
 
     #[test]
     fn resolve_config_name_errors_without_name_or_last() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
-        let err = resolve_config_name(&mut db, None, false).unwrap_err();
+        let db = StateDb::open(&state_db_path).unwrap();
+        let err = resolve_config_name(&db, None, false).unwrap_err();
         assert!(err.to_string().contains("provide a config name"));
     }
 
     #[test]
     fn resolve_config_name_last_errors_on_empty_db() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
-        let err = resolve_config_name(&mut db, None, true).unwrap_err();
+        let db = StateDb::open(&state_db_path).unwrap();
+        let err = resolve_config_name(&db, None, true).unwrap_err();
         assert!(err.to_string().contains("no configs found"));
     }
 
     #[test]
     fn delete_config_cascades_to_all_tables() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
 
         db.insert_config(&sample_config("film")).unwrap();
 
@@ -228,7 +224,7 @@ mod tests {
     #[test]
     fn delete_config_does_not_affect_other_configs() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
 
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
@@ -261,7 +257,7 @@ mod tests {
     #[test]
     fn delete_nonexistent_config_returns_false() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         let deleted = db.delete_config("nonexistent").unwrap();
         assert!(!deleted);
     }
@@ -269,7 +265,7 @@ mod tests {
     #[test]
     fn get_last_applied_config_returns_most_recent() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
 
         let mut config1 = sample_config("alpha");
         config1.applied_at = Utc::now() - chrono::Duration::hours(2);
@@ -290,7 +286,7 @@ mod tests {
     #[test]
     fn get_last_applied_config_returns_none_on_empty_db() {
         let (_dir, _paths, state_db_path) = setup_project();
-        let mut db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).unwrap();
         assert!(db.get_last_applied_config().unwrap().is_none());
     }
 

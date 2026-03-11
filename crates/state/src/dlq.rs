@@ -128,7 +128,7 @@ impl DlqEntry {
 }
 
 impl StateDb {
-    pub fn insert_dlq_entry(&mut self, entry: &DlqEntry) -> Result<i64, StateError> {
+    pub fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
         let created_at_str = entry.created_at.to_rfc3339();
         let last_retry_at_str = entry.last_retry_at.as_ref().map(|dt| dt.to_rfc3339());
         let permanent_at_str = entry.permanent_at.as_ref().map(|dt| dt.to_rfc3339());
@@ -146,24 +146,24 @@ impl StateDb {
             permanent_at: permanent_at_str.as_deref(),
         };
 
-        let id = self
-            .conn
-            .transaction::<i64, diesel::result::Error, _>(|conn| {
-                diesel::insert_into(dlq::table).values(&new).execute(conn)?;
+        let mut conn = self.lock()?;
+        let id = conn.transaction::<i64, diesel::result::Error, _>(|conn| {
+            diesel::insert_into(dlq::table).values(&new).execute(conn)?;
 
-                diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
-                    "last_insert_rowid()",
-                ))
-                .get_result(conn)
-            })?;
+            diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "last_insert_rowid()",
+            ))
+            .get_result(conn)
+        })?;
 
         Ok(id)
     }
 
-    pub fn get_dlq_entry(&mut self, id: i64) -> Result<Option<DlqEntry>, StateError> {
+    pub fn get_dlq_entry(&self, id: i64) -> Result<Option<DlqEntry>, StateError> {
+        let mut conn = self.lock()?;
         let row = dlq::table
             .filter(dlq::id.eq(id))
-            .first::<DlqRow>(&mut self.conn)
+            .first::<DlqRow>(&mut *conn)
             .optional()?;
 
         match row {
@@ -173,33 +173,35 @@ impl StateDb {
     }
 
     pub fn list_dlq_entries(
-        &mut self,
+        &self,
         config_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<DlqEntry>, StateError> {
+        let mut conn = self.lock()?;
         let rows: Vec<DlqRow> = match config_name {
             Some(name) => dlq::table
                 .filter(dlq::config_name.eq(name))
                 .order(dlq::created_at.desc())
                 .limit(i64::try_from(limit).unwrap_or(i64::MAX))
-                .load(&mut self.conn)?,
+                .load(&mut *conn)?,
             None => dlq::table
                 .order(dlq::created_at.desc())
                 .limit(i64::try_from(limit).unwrap_or(i64::MAX))
-                .load(&mut self.conn)?,
+                .load(&mut *conn)?,
         };
 
         rows.iter().map(DlqEntry::from_row).collect()
     }
 
-    pub fn increment_retry(&mut self, id: i64) -> Result<(), StateError> {
+    pub fn increment_retry(&self, id: i64) -> Result<(), StateError> {
         let now = Utc::now().to_rfc3339();
+        let mut conn = self.lock()?;
         let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
             .set((
                 dlq::retry_count.eq(dlq::retry_count + 1),
                 dlq::last_retry_at.eq(&now),
             ))
-            .execute(&mut self.conn)?;
+            .execute(&mut *conn)?;
 
         if rows_affected == 0 {
             return Err(StateError::NotFound(format!("dlq entry with id {}", id)));
@@ -208,33 +210,38 @@ impl StateDb {
         Ok(())
     }
 
-    pub fn delete_dlq_entry(&mut self, id: i64) -> Result<bool, StateError> {
+    pub fn delete_dlq_entry(&self, id: i64) -> Result<bool, StateError> {
+        let mut conn = self.lock()?;
         let rows_affected =
-            diesel::delete(dlq::table.filter(dlq::id.eq(id))).execute(&mut self.conn)?;
+            diesel::delete(dlq::table.filter(dlq::id.eq(id))).execute(&mut *conn)?;
         Ok(rows_affected > 0)
     }
 
-    pub fn clear_dlq(&mut self, config_name: Option<&str>) -> Result<u64, StateError> {
+    pub fn clear_dlq(&self, config_name: Option<&str>) -> Result<u64, StateError> {
+        let mut conn = self.lock()?;
         let rows_affected = match config_name {
-            Some(name) => diesel::delete(dlq::table.filter(dlq::config_name.eq(name)))
-                .execute(&mut self.conn)?,
-            None => diesel::delete(dlq::table).execute(&mut self.conn)?,
+            Some(name) => {
+                diesel::delete(dlq::table.filter(dlq::config_name.eq(name))).execute(&mut *conn)?
+            }
+            None => diesel::delete(dlq::table).execute(&mut *conn)?,
         };
         Ok(u64::try_from(rows_affected).unwrap_or(0))
     }
 
-    pub fn list_retryable_entries(&mut self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
+    pub fn list_retryable_entries(&self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
+        let mut conn = self.lock()?;
         let rows = dlq::table
             .filter(dlq::error_kind.eq("retryable"))
             .order(dlq::created_at.asc())
             .limit(i64::try_from(limit).unwrap_or(i64::MAX))
-            .load::<DlqRow>(&mut self.conn)?;
+            .load::<DlqRow>(&mut *conn)?;
 
         rows.iter().map(DlqEntry::from_row).collect()
     }
 
-    pub fn mark_permanent(&mut self, id: i64, error: &str) -> Result<(), StateError> {
+    pub fn mark_permanent(&self, id: i64, error: &str) -> Result<(), StateError> {
         let now = Utc::now().to_rfc3339();
+        let mut conn = self.lock()?;
         let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
             .set((
                 dlq::error_kind.eq("permanent"),
@@ -242,7 +249,7 @@ impl StateDb {
                 dlq::last_retry_at.eq(&now),
                 dlq::permanent_at.eq(&now),
             ))
-            .execute(&mut self.conn)?;
+            .execute(&mut *conn)?;
 
         if rows_affected == 0 {
             return Err(StateError::NotFound(format!("dlq entry with id {}", id)));
@@ -252,20 +259,18 @@ impl StateDb {
     }
 
     /// Returns (retryable_count, permanent_count) for a given config or globally.
-    pub fn dlq_count_by_kind(
-        &mut self,
-        config_name: Option<&str>,
-    ) -> Result<(u64, u64), StateError> {
+    pub fn dlq_count_by_kind(&self, config_name: Option<&str>) -> Result<(u64, u64), StateError> {
+        let mut conn = self.lock()?;
         let rows: Vec<(String, i64)> = match config_name {
             Some(name) => dlq::table
                 .filter(dlq::config_name.eq(name))
                 .group_by(dlq::error_kind)
                 .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
-                .load(&mut self.conn)?,
+                .load(&mut *conn)?,
             None => dlq::table
                 .group_by(dlq::error_kind)
                 .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
-                .load(&mut self.conn)?,
+                .load(&mut *conn)?,
         };
 
         let mut retryable = 0u64;
@@ -281,28 +286,30 @@ impl StateDb {
     }
 
     /// Delete permanent DLQ entries whose permanence is older than `max_age_hours` hours.
-    pub fn clear_old_permanent_entries(&mut self, max_age_hours: u64) -> Result<u64, StateError> {
+    pub fn clear_old_permanent_entries(&self, max_age_hours: u64) -> Result<u64, StateError> {
         let cutoff =
             Utc::now() - chrono::Duration::hours(i64::try_from(max_age_hours).unwrap_or(i64::MAX));
         let cutoff_str = cutoff.to_rfc3339();
 
+        let mut conn = self.lock()?;
         let rows_affected = diesel::delete(
             dlq::table
                 .filter(dlq::error_kind.eq("permanent"))
                 .filter(dlq::permanent_at.lt(&cutoff_str)),
         )
-        .execute(&mut self.conn)?;
+        .execute(&mut *conn)?;
 
         Ok(u64::try_from(rows_affected).unwrap_or(0))
     }
 
-    pub fn dlq_count(&mut self, config_name: Option<&str>) -> Result<u64, StateError> {
+    pub fn dlq_count(&self, config_name: Option<&str>) -> Result<u64, StateError> {
+        let mut conn = self.lock()?;
         let count: i64 = match config_name {
             Some(name) => dlq::table
                 .filter(dlq::config_name.eq(name))
                 .count()
-                .get_result(&mut self.conn)?,
-            None => dlq::table.count().get_result(&mut self.conn)?,
+                .get_result(&mut *conn)?,
+            None => dlq::table.count().get_result(&mut *conn)?,
         };
         Ok(u64::try_from(count).unwrap_or(0))
     }
@@ -335,7 +342,7 @@ mod tests {
 
     #[test]
     fn insert_and_retrieve_entry() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -353,7 +360,7 @@ mod tests {
 
     #[test]
     fn insert_and_retrieve_entry_without_doc_id() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -367,7 +374,7 @@ mod tests {
 
     #[test]
     fn list_with_config_filter() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -385,7 +392,7 @@ mod tests {
 
     #[test]
     fn list_without_config_filter() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -400,7 +407,7 @@ mod tests {
 
     #[test]
     fn increment_retry_count() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -421,7 +428,7 @@ mod tests {
 
     #[test]
     fn clear_by_config_name() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -442,7 +449,7 @@ mod tests {
 
     #[test]
     fn clear_all() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -460,7 +467,7 @@ mod tests {
 
     #[test]
     fn delete_dlq_entry_returns_true_when_exists() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -474,14 +481,14 @@ mod tests {
 
     #[test]
     fn delete_dlq_entry_returns_false_when_not_exists() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let deleted = db.delete_dlq_entry(999).unwrap();
         assert!(!deleted);
     }
 
     #[test]
     fn dlq_count_with_config_filter() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -498,7 +505,7 @@ mod tests {
 
     #[test]
     fn dlq_count_without_filter() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -512,7 +519,7 @@ mod tests {
 
     #[test]
     fn dlq_entry_deleted_when_config_deleted() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -521,18 +528,21 @@ mod tests {
 
         assert!(db.get_dlq_entry(id).unwrap().is_some());
 
-        diesel::delete(
-            crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
-        )
-        .execute(&mut db.conn)
-        .unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            diesel::delete(
+                crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
+            )
+            .execute(&mut *conn)
+            .unwrap();
+        }
 
         assert!(db.get_dlq_entry(id).unwrap().is_none());
     }
 
     #[test]
     fn dlq_entry_requires_valid_config() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let entry = sample_dlq_entry("nonexistent_config", 1000, ErrorKind::Retryable);
 
         let result = db.insert_dlq_entry(&entry);
@@ -541,13 +551,13 @@ mod tests {
 
     #[test]
     fn get_nonexistent_dlq_entry_returns_none() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         assert!(db.get_dlq_entry(999).unwrap().is_none());
     }
 
     #[test]
     fn increment_retry_fails_for_nonexistent_entry() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let result = db.increment_retry(999);
         assert!(result.is_err());
     }
@@ -589,7 +599,7 @@ mod tests {
 
     #[test]
     fn list_retryable_entries() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
@@ -610,7 +620,7 @@ mod tests {
 
     #[test]
     fn mark_permanent() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
@@ -627,13 +637,13 @@ mod tests {
 
     #[test]
     fn mark_permanent_nonexistent_fails() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         assert!(db.mark_permanent(999, "error").is_err());
     }
 
     #[test]
     fn dlq_count_by_kind_empty() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let (r, p) = db.dlq_count_by_kind(None).unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
@@ -641,7 +651,7 @@ mod tests {
 
     #[test]
     fn dlq_count_by_kind_mixed() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.insert_config(&sample_config("actor")).unwrap();
 
@@ -669,7 +679,7 @@ mod tests {
 
     #[test]
     fn dlq_count_by_kind_nonexistent_config() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let (r, p) = db.dlq_count_by_kind(Some("nonexistent")).unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
@@ -677,7 +687,7 @@ mod tests {
 
     #[test]
     fn clear_old_permanent_entries_removes_old() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let old_time = Utc::now() - chrono::Duration::hours(100);
@@ -717,7 +727,7 @@ mod tests {
 
     #[test]
     fn clear_old_permanent_entries_leaves_recent() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.insert_dlq_entry(&DlqEntry::permanent(
@@ -744,7 +754,7 @@ mod tests {
 
     #[test]
     fn clear_old_permanent_entries_uses_permanent_at_not_created_at() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let mut entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
@@ -759,14 +769,14 @@ mod tests {
 
     #[test]
     fn clear_old_permanent_entries_empty_dlq() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let cleaned = db.clear_old_permanent_entries(72).unwrap();
         assert_eq!(cleaned, 0);
     }
 
     #[test]
     fn list_respects_limit() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         for i in 0..10 {

@@ -17,7 +17,7 @@ use common::*;
 fn create_state_db() -> (tempfile::TempDir, StateDb) {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let path = dir.path().join("state.db");
-    let mut db = StateDb::open(&path).expect("failed to open state db");
+    let db = StateDb::open(&path).expect("failed to open state db");
     db.insert_config(&ConfigRecord {
         name: "test".to_string(),
         namespace: "test_ns".to_string(),

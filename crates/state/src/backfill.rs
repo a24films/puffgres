@@ -66,10 +66,10 @@ impl BackfillProgress {
 /// Trait for persisting backfill cursor state. Implemented by `StateDb` for
 /// production use; tests can supply an in-memory implementation.
 pub trait BackfillCheckpointer {
-    fn load_progress(&mut self, config_name: &str) -> Result<Option<(String, u64)>, StateError>;
+    fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError>;
 
     fn save_progress(
-        &mut self,
+        &self,
         config_name: &str,
         last_id: &str,
         processed_rows: u64,
@@ -77,12 +77,12 @@ pub trait BackfillCheckpointer {
 }
 
 impl BackfillCheckpointer for StateDb {
-    fn load_progress(&mut self, config_name: &str) -> Result<Option<(String, u64)>, StateError> {
+    fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError> {
         self.get_backfill_cursor(config_name)
     }
 
     fn save_progress(
-        &mut self,
+        &self,
         config_name: &str,
         last_id: &str,
         processed_rows: u64,
@@ -92,10 +92,7 @@ impl BackfillCheckpointer for StateDb {
 }
 
 impl StateDb {
-    pub fn save_backfill_progress(
-        &mut self,
-        progress: &BackfillProgress,
-    ) -> Result<(), StateError> {
+    pub fn save_backfill_progress(&self, progress: &BackfillProgress) -> Result<(), StateError> {
         let started_at_str = progress.started_at.as_ref().map(|dt| dt.to_rfc3339());
         let completed_at_str = progress.completed_at.as_ref().map(|dt| dt.to_rfc3339());
         let new = NewBackfillProgress {
@@ -114,16 +111,17 @@ impl StateDb {
                 .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
         };
 
+        let mut conn = self.lock()?;
         diesel::replace_into(backfill_progress::table)
             .values(&new)
-            .execute(&mut self.conn)?;
+            .execute(&mut *conn)?;
 
         Ok(())
     }
 
     /// Lightweight cursor load for the backfill loop — returns just (last_id, processed_rows).
     pub fn get_backfill_cursor(
-        &mut self,
+        &self,
         config_name: &str,
     ) -> Result<Option<(String, u64)>, StateError> {
         let p = self.get_backfill_progress(config_name)?;
@@ -133,36 +131,64 @@ impl StateDb {
     /// Lightweight cursor save for the backfill loop — saves cursor position as InProgress.
     /// Preserves existing `watermark_lsn` and `started_at` so a resumed backfill
     /// doesn't lose the original watermark.
+    ///
+    /// The read-modify-write is performed under a single lock acquisition so
+    /// concurrent callers on cloned `StateDb` handles cannot regress cursor state.
     pub fn save_backfill_cursor(
-        &mut self,
+        &self,
         config_name: &str,
         last_id: &str,
         processed_rows: u64,
     ) -> Result<(), StateError> {
-        let existing = self.get_backfill_progress(config_name)?;
-        self.save_backfill_progress(&BackfillProgress {
-            config_name: config_name.to_string(),
-            last_id: Some(last_id.to_string()),
-            total_rows: existing.as_ref().and_then(|p| p.total_rows),
-            processed_rows,
-            status: BackfillStatus::InProgress,
-            started_at: existing
+        let mut conn = self.lock()?;
+
+        // Read existing progress under the same lock.
+        let existing = backfill_progress::table
+            .filter(backfill_progress::config_name.eq(config_name))
+            .first::<BackfillProgressRow>(&mut *conn)
+            .optional()?
+            .map(|r| BackfillProgress::from_row(&r))
+            .transpose()?;
+
+        let started_at = existing
+            .as_ref()
+            .and_then(|p| p.started_at)
+            .or_else(|| Some(Utc::now()));
+        let started_at_str = started_at.map(|dt| dt.to_rfc3339());
+
+        let new = NewBackfillProgress {
+            config_name,
+            last_id: Some(last_id),
+            total_rows: existing
                 .as_ref()
-                .and_then(|p| p.started_at)
-                .or_else(|| Some(Utc::now())),
+                .and_then(|p| p.total_rows)
+                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+            processed_rows: i64::from_ne_bytes(processed_rows.to_ne_bytes()),
+            status: BackfillStatus::InProgress.as_ref(),
+            started_at: started_at_str.as_deref(),
             completed_at: None,
             error_message: None,
-            watermark_lsn: existing.as_ref().and_then(|p| p.watermark_lsn),
-        })
+            watermark_lsn: existing
+                .as_ref()
+                .and_then(|p| p.watermark_lsn)
+                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+        };
+
+        diesel::replace_into(backfill_progress::table)
+            .values(&new)
+            .execute(&mut *conn)?;
+
+        Ok(())
     }
 
     pub fn get_backfill_progress(
-        &mut self,
+        &self,
         config_name: &str,
     ) -> Result<Option<BackfillProgress>, StateError> {
+        let mut conn = self.lock()?;
         let row = backfill_progress::table
             .filter(backfill_progress::config_name.eq(config_name))
-            .first::<BackfillProgressRow>(&mut self.conn)
+            .first::<BackfillProgressRow>(&mut *conn)
             .optional()?;
 
         match row {
@@ -193,7 +219,7 @@ mod tests {
 
     #[test]
     fn save_and_retrieve_backfill_progress() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -212,7 +238,7 @@ mod tests {
 
     #[test]
     fn update_backfill_progress_upsert() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -233,7 +259,7 @@ mod tests {
 
     #[test]
     fn backfill_progress_deleted_when_config_deleted() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -242,24 +268,27 @@ mod tests {
 
         assert!(db.get_backfill_progress("film").unwrap().is_some());
 
-        diesel::delete(
-            crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
-        )
-        .execute(&mut db.conn)
-        .unwrap();
+        {
+            let mut conn = db.lock().unwrap();
+            diesel::delete(
+                crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
+            )
+            .execute(&mut *conn)
+            .unwrap();
+        }
 
         assert!(db.get_backfill_progress("film").unwrap().is_none());
     }
 
     #[test]
     fn get_nonexistent_backfill_progress_returns_none() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         assert!(db.get_backfill_progress("nonexistent").unwrap().is_none());
     }
 
     #[test]
     fn backfill_progress_requires_valid_config() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let progress = sample_backfill_progress("nonexistent_config");
 
         let result = db.save_backfill_progress(&progress);
@@ -268,7 +297,7 @@ mod tests {
 
     #[test]
     fn watermark_lsn_saved_and_retrieved() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -282,13 +311,13 @@ mod tests {
 
     #[test]
     fn get_backfill_cursor_returns_none_when_no_progress() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         assert!(db.get_backfill_cursor("nonexistent").unwrap().is_none());
     }
 
     #[test]
     fn get_backfill_cursor_returns_none_when_no_last_id() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         let mut progress = sample_backfill_progress("film");
@@ -300,7 +329,7 @@ mod tests {
 
     #[test]
     fn get_backfill_cursor_returns_id_and_count() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
         db.save_backfill_progress(&sample_backfill_progress("film"))
             .unwrap();
@@ -312,7 +341,7 @@ mod tests {
 
     #[test]
     fn save_backfill_cursor_creates_in_progress_record() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.save_backfill_cursor("film", "500", 250).unwrap();
@@ -326,7 +355,7 @@ mod tests {
 
     #[test]
     fn save_backfill_cursor_updates_existing() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         db.save_backfill_cursor("film", "100", 50).unwrap();
@@ -339,7 +368,7 @@ mod tests {
 
     #[test]
     fn save_backfill_cursor_preserves_watermark_lsn() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         db.insert_config(&sample_config("film")).unwrap();
 
         // Set initial progress with a watermark
@@ -364,7 +393,7 @@ mod tests {
 
     #[test]
     fn watermark_lsn_above_i32_max_roundtrips() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
@@ -379,7 +408,7 @@ mod tests {
 
     #[test]
     fn watermark_lsn_defaults_to_none() {
-        let (_dir, mut db) = setup_test_db();
+        let (_dir, db) = setup_test_db();
         let config = sample_config("film");
         db.insert_config(&config).unwrap();
 
