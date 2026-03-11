@@ -8,23 +8,23 @@ name = "puffgres"
 path = "src/main.rs"
 
 [dependencies]
-bytes = "1.11.1"
-chrono = "0.4.44"
-clap = { version = "4", features = ["derive"] }
-config = { path = "../config" }
-dotenvy = "0.15"
-pg = { path = "../pg" }
-puff = { path = "../puff" }
-puffgres-debug = { path = "../debug" }
-puffgres-core = { path = "../core" }
-replication = { path = "../replication" }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-sha2 = "0.10.9"
-state = { path = "../state" }
-thiserror = "2.0.18"
-tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
-toml = "1.0.0"
+bytes.workspace = true
+chrono.workspace = true
+clap.workspace = true
+config.workspace = true
+dotenvy.workspace = true
+pg.workspace = true
+puff.workspace = true
+puffgres-debug.workspace = true
+puffgres-core.workspace = true
+replication.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+state.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
@@ -37,16 +37,16 @@ opentelemetry-appender-tracing.workspace = true
 test-utils = ["dep:tempfile"]
 
 [dependencies.tempfile]
-version = "3.17.0"
+workspace = true
 optional = true
 
 [dev-dependencies]
-chrono = "0.4"
-config = { path = "../config" }
-pg = { path = "../pg", features = ["test-utils"] }
+chrono.workspace = true
+config.workspace = true
+pg = { workspace = true, features = ["test-utils"] }
 puffgres-cli = { path = ".", features = ["test-utils"] }
-temp-env = "0.3.6"
-tempfile = "3.17.0"
-testcontainers = "0.26.3"
-testcontainers-modules = { version = "0.14.0", features = ["postgres"] }
-tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros"] }
+temp-env.workspace = true
+tempfile.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
