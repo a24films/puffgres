@@ -24,9 +24,30 @@ impl PgError {
             PgError::ConnectionError(_) => true,
             PgError::PostgresError(_) => true,
             PgError::ReplicationError(_) => true,
-            PgError::QueryError(_) | PgError::TableNotFound { .. } => false,
+            PgError::QueryError(_) => false,
+            PgError::TableNotFound { .. } => false,
         }
     }
+
+    /// Create an error from a failed query, routing it properly based on the Postgres error.
+    pub fn from_query_err(msg: String, source: &tokio_postgres::Error) -> Self {
+        if is_connection_error(source) {
+            PgError::ConnectionError(msg)
+        } else {
+            PgError::QueryError(msg)
+        }
+    }
+}
+
+fn is_connection_error(e: &tokio_postgres::Error) -> bool {
+    if e.is_closed() {
+        return true;
+    }
+    if let Some(code) = e.code() {
+        // SQL state class 08 = Connection Exception
+        return code.code().starts_with("08");
+    }
+    false
 }
 
 #[cfg(test)]
@@ -51,6 +72,6 @@ mod tests {
 
     #[test]
     fn query_error_is_permanent() {
-        assert!(!PgError::QueryError("syntax error".into()).is_transient());
+        assert!(!PgError::QueryError("permission denied".into()).is_transient());
     }
 }
