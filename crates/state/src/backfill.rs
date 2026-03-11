@@ -50,13 +50,15 @@ impl BackfillProgress {
         Ok(Self {
             config_name: row.config_name.clone(),
             last_id: row.last_id.clone(),
-            total_rows: row.total_rows.map(|v| v as u64),
-            processed_rows: row.processed_rows as u64,
+            total_rows: row.total_rows.map(|v| u64::from_ne_bytes(v.to_ne_bytes())),
+            processed_rows: u64::from_ne_bytes(row.processed_rows.to_ne_bytes()),
             status,
             started_at,
             completed_at,
             error_message: row.error_message.clone(),
-            watermark_lsn: row.watermark_lsn.map(|v| v as u64),
+            watermark_lsn: row
+                .watermark_lsn
+                .map(|v| u64::from_ne_bytes(v.to_ne_bytes())),
         })
     }
 }
@@ -99,13 +101,17 @@ impl StateDb {
         let new = NewBackfillProgress {
             config_name: &progress.config_name,
             last_id: progress.last_id.as_deref(),
-            total_rows: progress.total_rows.map(|v| v as i64),
-            processed_rows: progress.processed_rows as i64,
+            total_rows: progress
+                .total_rows
+                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+            processed_rows: i64::from_ne_bytes(progress.processed_rows.to_ne_bytes()),
             status: progress.status.as_ref(),
             started_at: started_at_str.as_deref(),
             completed_at: completed_at_str.as_deref(),
             error_message: progress.error_message.as_deref(),
-            watermark_lsn: progress.watermark_lsn.map(|v| v as i64),
+            watermark_lsn: progress
+                .watermark_lsn
+                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
         };
 
         diesel::replace_into(backfill_progress::table)
