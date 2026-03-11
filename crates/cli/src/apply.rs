@@ -160,20 +160,24 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             .await
             .map_err(|e| CliError::Apply(format!("failed to set replica identity: {e}")))?;
 
-        // Persist configs only after replica identity is set successfully.
-        for (_path, config, content_hash, transform_hash) in &new_configs {
-            let record = ConfigRecord {
-                name: config.name.clone(),
+        // Persist all configs atomically after replica identity is set.
+        {
+            let records: Vec<ConfigRecord> = new_configs
+                .iter()
+                .map(|(_, config, content_hash, transform_hash)| ConfigRecord {
+                    name: config.name.clone(),
+                    namespace: config.namespace.clone(),
+                    content_hash: content_hash.clone(),
+                    transform_hash: Some(transform_hash.clone()),
+                    applied_at: Utc::now(),
+                    tombstone_applied_at: None,
+                    namespace_prefix: None,
+                })
+                .collect();
+            db.insert_configs(&records)?;
+        }
 
-                namespace: config.namespace.clone(),
-                content_hash: content_hash.clone(),
-                transform_hash: Some(transform_hash.clone()),
-                applied_at: Utc::now(),
-                tombstone_applied_at: None,
-                namespace_prefix: None,
-            };
-
-            db.insert_config(&record)?;
+        for (_path, config, _, _) in &new_configs {
             applied += 1;
             println!("Applied: {}", config.name);
         }
