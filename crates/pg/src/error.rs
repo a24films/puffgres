@@ -18,25 +18,39 @@ pub enum PgError {
     PostgresError(#[from] tokio_postgres::Error),
 }
 
+impl PgError {
+    pub fn is_transient(&self) -> bool {
+        match self {
+            PgError::ConnectionError(_) => true,
+            PgError::PostgresError(_) => true,
+            PgError::ReplicationError(_) => true,
+            PgError::QueryError(_) | PgError::TableNotFound { .. } => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn connection_error_creation() {
-        let err = PgError::ConnectionError("failed to connect".to_string());
-        assert_eq!(err.to_string(), "Connection error: failed to connect");
+    fn connection_error_is_transient() {
+        assert!(PgError::ConnectionError("timeout".into()).is_transient());
     }
 
     #[test]
-    fn query_error_creation() {
-        let err = PgError::QueryError("invalid query".to_string());
-        assert_eq!(err.to_string(), "Query error: invalid query");
+    fn table_not_found_is_permanent() {
+        assert!(
+            !PgError::TableNotFound {
+                schema: "public".into(),
+                table: "foo".into()
+            }
+            .is_transient()
+        );
     }
 
     #[test]
-    fn replication_error_creation() {
-        let err = PgError::ReplicationError("replication slot error".to_string());
-        assert_eq!(err.to_string(), "Replication error: replication slot error");
+    fn query_error_is_permanent() {
+        assert!(!PgError::QueryError("syntax error".into()).is_transient());
     }
 }

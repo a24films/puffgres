@@ -10,7 +10,7 @@ use puffgres_core::{
     BackfillConfig, BackfillOutcome, Backoff, BackoffConfig, DocumentId, JsTransformer, Mapping,
     Router, Transformer, run_backfill,
 };
-use replication::{ReplicationError, ReplicationStream, ReplicationStreamConfig, RowEvent};
+use replication::{ReplicationStream, ReplicationStreamConfig, RowEvent};
 use sha2::{Digest, Sha256};
 use state::{BackfillProgress, BackfillStatus, DlqEntry, StateDb, StreamingCheckpoint};
 
@@ -540,29 +540,29 @@ async fn run_cdc_inner(
         // This is fine because Turbopuffer upserts are idempotent.
         let should_reconnect;
         loop {
-            let batch = match stream.recv_batch().await {
-                Ok(Some(batch)) => batch,
+            let batch_result = match stream.recv_batch().await {
+                Ok(Some(result)) => result,
                 Ok(None) => {
                     tracing::info!("replication stream ended");
                     return Ok(());
                 }
-                Err(ReplicationError::SchemaChanged {
-                    relation_id,
-                    ref namespace,
-                    ref name,
-                }) => {
+                Err(e) => {
+                    return Err(CliError::Run(format!("replication stream error: {e}")));
+                }
+            };
+
+            let batch = match batch_result {
+                replication::BatchResult::SchemaChanged(sc) => {
                     tracing::warn!(
-                        relation_id,
-                        schema = %namespace,
-                        table = %name,
+                        relation_id = sc.relation_id,
+                        schema = %sc.namespace,
+                        table = %sc.name,
                         "schema change detected, reconnecting replication stream",
                     );
                     should_reconnect = true;
                     break;
                 }
-                Err(e) => {
-                    return Err(CliError::Run(format!("replication stream error: {e}")));
-                }
+                replication::BatchResult::Batch(batch) => batch,
             };
 
             if batch.events.is_empty() {
