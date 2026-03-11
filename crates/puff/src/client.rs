@@ -147,9 +147,10 @@ impl TurbopufferClient {
 #[async_trait]
 impl BackfillSink for TurbopufferClient {
     async fn write(&self, namespace: &str, actions: &[Action]) -> Result<(), CoreError> {
-        self.send_batch(namespace, actions)
-            .await
-            .map_err(|e| CoreError::Pipeline(e.to_string()))
+        self.send_batch(namespace, actions).await.map_err(|e| {
+            let puff_err: PuffError = e.into();
+            CoreError::pipeline_transient(puff_err.to_string(), puff_err.is_transient())
+        })
     }
 }
 

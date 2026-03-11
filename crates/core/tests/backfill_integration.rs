@@ -76,7 +76,7 @@ struct FailingSink;
 #[async_trait]
 impl BackfillSink for FailingSink {
     async fn write(&self, _namespace: &str, _actions: &[Action]) -> Result<(), CoreError> {
-        Err(CoreError::Pipeline("sink failure".to_string()))
+        Err(CoreError::pipeline("sink failure".to_string()))
     }
 }
 

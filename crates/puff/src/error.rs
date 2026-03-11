@@ -18,7 +18,8 @@ pub enum PuffError {
 impl PuffError {
     pub fn is_transient(&self) -> bool {
         match self {
-            PuffError::Client(_) | PuffError::Http(_) => true,
+            PuffError::Client(_) => false,
+            PuffError::Http(_) => true,
             PuffError::Api { status, .. } => *status == 429 || *status >= 500,
             PuffError::Json(_) => false,
         }
@@ -67,8 +68,8 @@ mod tests {
     }
 
     #[test]
-    fn client_error_is_transient() {
-        assert!(PuffError::Client("timeout".into()).is_transient());
+    fn client_error_is_permanent() {
+        assert!(!PuffError::Client("bad config".into()).is_transient());
     }
 
     #[test]

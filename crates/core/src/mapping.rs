@@ -47,7 +47,7 @@ impl Mapping {
             .iter()
             .position(|c| c.name == self.id_column)
             .ok_or_else(|| {
-                CoreError::Pipeline(format!(
+                CoreError::pipeline(format!(
                     "id column \"{}\" not found in relation \"{}.{}\"",
                     self.id_column, relation.namespace, relation.name
                 ))
@@ -58,10 +58,10 @@ impl Mapping {
             .new_tuple
             .as_ref()
             .or(event.old_tuple.as_ref())
-            .ok_or_else(|| CoreError::Pipeline("row event has no tuple data".to_string()))?;
+            .ok_or_else(|| CoreError::pipeline("row event has no tuple data".to_string()))?;
 
         let col_value = tuple.columns.get(col_index).ok_or_else(|| {
-            CoreError::Pipeline(format!(
+            CoreError::pipeline(format!(
                 "column index {col_index} out of bounds (tuple has {} columns)",
                 tuple.columns.len()
             ))
@@ -73,11 +73,11 @@ impl Mapping {
             } else {
                 "null"
             };
-            CoreError::Pipeline(format!("id column \"{}\" is {}", self.id_column, reason))
+            CoreError::pipeline(format!("id column \"{}\" is {}", self.id_column, reason))
         })?;
 
         let text = std::str::from_utf8(bytes)
-            .map_err(|e| CoreError::Pipeline(format!("id column is not valid utf-8: {e}")))?;
+            .map_err(|e| CoreError::pipeline(format!("id column is not valid utf-8: {e}")))?;
 
         DocumentId::from_text(text, &self.id_type)
     }

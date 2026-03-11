@@ -14,18 +14,34 @@ pub enum CoreError {
     #[error("state error: {0}")]
     State(#[from] state::StateError),
 
-    #[error("pipeline error: {0}")]
-    Pipeline(String),
+    #[error("pipeline error: {message}")]
+    Pipeline { message: String, transient: bool },
 }
 
 impl CoreError {
+    /// Create a non-transient pipeline error (data/mapping issues).
+    pub fn pipeline(message: impl Into<String>) -> Self {
+        CoreError::Pipeline {
+            message: message.into(),
+            transient: false,
+        }
+    }
+
+    /// Create a pipeline error with explicit transience (e.g. from sink errors).
+    pub fn pipeline_transient(message: impl Into<String>, transient: bool) -> Self {
+        CoreError::Pipeline {
+            message: message.into(),
+            transient,
+        }
+    }
+
     pub fn is_transient(&self) -> bool {
         match self {
             CoreError::Config(e) => e.is_transient(),
             CoreError::Pg(e) => e.is_transient(),
             CoreError::Replication(e) => e.is_transient(),
             CoreError::State(e) => e.is_transient(),
-            CoreError::Pipeline(_) => false,
+            CoreError::Pipeline { transient, .. } => *transient,
         }
     }
 }
@@ -36,7 +52,7 @@ mod tests {
 
     #[test]
     fn pipeline_error_creation() {
-        let err = CoreError::Pipeline("stage failed".to_string());
+        let err = CoreError::pipeline("stage failed");
         assert_eq!(err.to_string(), "pipeline error: stage failed");
     }
 
@@ -77,6 +93,6 @@ mod tests {
 
     #[test]
     fn pipeline_error_is_permanent() {
-        assert!(!CoreError::Pipeline("failed".into()).is_transient());
+        assert!(!CoreError::pipeline("failed").is_transient());
     }
 }

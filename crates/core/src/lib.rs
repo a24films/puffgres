@@ -33,7 +33,7 @@ mod tests {
         let success: Result<i32> = Ok(42);
         assert_eq!(success.unwrap(), 42);
 
-        let failure: Result<i32> = Err(CoreError::Pipeline("test".to_string()));
+        let failure: Result<i32> = Err(CoreError::pipeline("test".to_string()));
         assert!(failure.is_err());
     }
 

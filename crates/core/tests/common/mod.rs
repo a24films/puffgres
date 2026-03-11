@@ -74,7 +74,7 @@ impl BackfillSink for FailingAfterSink {
             |n| if n > 0 { Some(n - 1) } else { None },
         );
         if prev.is_err() {
-            return Err(CoreError::Pipeline("simulated crash".to_string()));
+            return Err(CoreError::pipeline("simulated crash".to_string()));
         }
         self.inner.write(namespace, actions).await
     }
