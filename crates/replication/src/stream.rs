@@ -194,6 +194,34 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
         }
     }
 
+    /// Returns the next decoded WAL message without transaction batching.
+    /// Auto-acks commits to prevent WAL buildup. Updates the relation cache
+    /// for Relation messages. Intended for debug/observation use cases.
+    pub async fn recv_raw(&mut self) -> Result<Option<WalMessage>> {
+        loop {
+            let event = match self.client.recv().await {
+                Ok(Some(event)) => event,
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(e),
+            };
+
+            match event {
+                ReplicationEvent::XLogData { data, .. } => {
+                    let msg = decoder::decode(data)?;
+                    if let WalMessage::Relation(ref info) = msg {
+                        self.relation_cache.insert(info.clone());
+                    }
+                    return Ok(Some(msg));
+                }
+                ReplicationEvent::Commit { end_lsn, .. } => {
+                    self.client.update_applied_lsn(end_lsn);
+                }
+                ReplicationEvent::StoppedAt { .. } => return Ok(None),
+                _ => {}
+            }
+        }
+    }
+
     pub fn relation_cache(&self) -> &RelationCache {
         &self.relation_cache
     }
