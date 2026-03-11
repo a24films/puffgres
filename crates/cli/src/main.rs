@@ -14,8 +14,6 @@ struct Cli {
 enum Command {
     /// Initialize a puffgres project
     Init,
-    /// Initialize the state database
-    Setup,
     /// Create a new table config
     New {
         /// Name for the config (e.g. "user", "film")
@@ -99,7 +97,7 @@ fn run() -> (
     // These recovery/status commands only read environment_files from puffgres.toml
     // so they still work when runtime config fields (e.g. batch_size) are invalid.
     match cli.command {
-        Command::Setup | Command::Reset | Command::Tombstone { .. } => {
+        Command::Reset | Command::Tombstone { .. } => {
             let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
                 Ok(c) => c,
                 Err(e) => return (Err(e), None),
@@ -112,7 +110,6 @@ fn run() -> (
                 };
 
             let result = match cli.command {
-                Command::Setup => puffgres_cli::setup::run(&state_db_path),
                 Command::Reset => puffgres_cli::reset::run(&state_db_path),
                 Command::Tombstone { ref name } => {
                     puffgres_cli::tombstone::run(&paths, &state_db_path, name)
@@ -181,7 +178,6 @@ fn run() -> (
     let result = match cli.command {
         Command::Init
         | Command::New { .. }
-        | Command::Setup
         | Command::Reset
         | Command::Tombstone { .. }
         | Command::Check

@@ -10,9 +10,7 @@ use crate::paths::ProjectPaths;
 
 pub fn run(paths: &ProjectPaths, state_db_path: &Path, name: &str) -> Result<(), CliError> {
     if !state_db_path.exists() {
-        return Err(CliError::NotInitialized(
-            "state.db — run `puffgres setup` first".to_string(),
-        ));
+        return Err(CliError::NotInitialized("state.db".to_string()));
     }
     let mut db = StateDb::open(state_db_path)?;
 

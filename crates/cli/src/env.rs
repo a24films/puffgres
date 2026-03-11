@@ -54,7 +54,7 @@ pub fn resolve_env_var(key: &str, file_vars: &HashMap<String, String>) -> Option
 
 /// Resolve the state database path from env files and process env.
 ///
-/// Use this for commands that need only the DB path (setup, reset, tombstone, status)
+/// Use this for commands that need only the DB path (reset, tombstone, status)
 /// without requiring the full EnvConfig (DATABASE_URL, TURBOPUFFER_API_KEY, etc.).
 ///
 /// Falls back to `<project_root>/state.db` when `PUFFGRES_STATE_DB` is not set.
