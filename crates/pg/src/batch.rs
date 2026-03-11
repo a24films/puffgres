@@ -1,3 +1,14 @@
+// SQL Identifier Safety
+//
+// Postgres does not support parameterized identifiers (table names, column
+// names, schema names). These MUST be interpolated into query strings.
+// All identifier interpolation uses `quote_identifier()` which wraps the
+// value in double-quotes and escapes embedded double-quotes — the same
+// algorithm as PG's `quote_ident()` function.
+//
+// All *values* (cursor position, LIMIT, schema/table names used in WHERE
+// clauses against catalog tables) go through `$1`, `$2`, etc. parameters.
+
 use tokio_postgres::Client;
 
 use crate::connect::quote_identifier;
@@ -99,33 +110,22 @@ pub async fn validate_id_column_uniqueness(
     Ok(())
 }
 
-/// Query the actual PG column type and return the SQL cast suffix needed for
-/// cursor comparisons.  Returns e.g. `"::int8"`, `"::uuid"`, or `""` (no cast).
+/// Query the actual PG column type and return the SQL cast expression needed
+/// for cursor comparisons. Returns e.g. `"::int8"`, `"::uuid"`, or `""` (no cast).
 ///
-/// Domain types are recursively unwrapped to their base type so that domains
-/// over text, uuid, or integer columns work without an explicit allowlist entry.
+/// Uses `format_type()` to get the human-readable type name, which handles
+/// domain types transparently — Postgres resolves the base type for us.
 pub async fn resolve_cursor_cast(client: &Client, config: &BatchQueryConfig) -> Result<String> {
-    // Recursive CTE unwraps domain layers (typbasetype != 0) until we reach a
-    // concrete base type (typbasetype = 0).
     let query = r#"
-        WITH RECURSIVE resolved(oid, base) AS (
-            SELECT a.atttypid, t.typbasetype
-            FROM pg_attribute a
-            JOIN pg_type t ON t.oid = a.atttypid
-            JOIN pg_class c ON c.oid = a.attrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = $1
-              AND c.relname = $2
-              AND a.attname = $3
-              AND a.attnum > 0
-              AND NOT a.attisdropped
-            UNION ALL
-            SELECT r.base, t.typbasetype
-            FROM resolved r
-            JOIN pg_type t ON t.oid = r.base
-            WHERE r.base != 0
-        )
-        SELECT oid::int FROM resolved WHERE base = 0 LIMIT 1
+        SELECT format_type(atttypid, atttypmod)
+        FROM pg_catalog.pg_attribute a
+        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1
+          AND c.relname = $2
+          AND a.attname = $3
+          AND a.attnum > 0
+          AND NOT a.attisdropped
     "#;
 
     let row = client
@@ -138,18 +138,21 @@ pub async fn resolve_cursor_cast(client: &Client, config: &BatchQueryConfig) -> 
             ))
         })?;
 
-    let type_oid: i32 = row.get(0);
+    let type_name: String = row.get(0);
 
-    // Well-known OIDs from pg_type (after domain unwrapping)
-    let cast = match type_oid {
-        21 | 23 | 20 => "::int8", // int2, int4, int8
-        2950 => "::uuid",         // uuid
-        25 | 1043 | 1042 => "",   // text, varchar, bpchar (char(n))
+    // Map the PG type name to the cast suffix needed for text→type conversion.
+    // The cursor value is always stored as text; we cast it back for comparison.
+    let cast = match type_name.as_str() {
+        "smallint" | "integer" | "bigint" => "::int8",
+        "uuid" => "::uuid",
+        "text" | "character varying" => "",
+        t if t.starts_with("character varying") => "", // varchar(n)
+        t if t.starts_with("character") => "",         // char(n)
         _ => {
             return Err(PgError::QueryError(format!(
-                "unsupported id column type (OID {}) for cursor pagination on {}.{}.{}; \
-                 supported types: int2, int4, int8, uuid, text, varchar, char",
-                type_oid, config.schema, config.table, config.id_column,
+                "unsupported id column type '{}' for cursor pagination on {}.{}.{}; \
+                 supported types: smallint, integer, bigint, uuid, text, varchar, char",
+                type_name, config.schema, config.table, config.id_column,
             )));
         }
     };
