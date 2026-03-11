@@ -10,13 +10,20 @@ use pg::batch::BatchQueryConfig;
 use replication::RowEvent;
 use state::BackfillCheckpointer;
 
-/// Unwrap a `Result` inside the batch loop: on error, sleep with backoff and
-/// retry. Once retries are exhausted, return a failed `BackfillResult`.
-macro_rules! retry_or_fail {
-    ($backoff:expr, $processed:expr, $result:expr) => {
-        match $result {
-            Ok(val) => val,
-            Err(e) => match $backoff.next_delay() {
+/// Retry an async operation with exponential backoff.
+///
+/// Transient errors are retried until backoff is exhausted. Permanent errors
+/// (where `is_transient()` returns false) propagate immediately.
+async fn retry_with_backoff<F, Fut, T>(backoff: &mut Backoff, mut f: F) -> Result<T, CoreError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, CoreError>>,
+{
+    loop {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) if !e.is_transient() => return Err(e),
+            Err(e) => match backoff.next_delay() {
                 Some(delay) => {
                     tracing::warn!(
                         error = %e,
@@ -24,20 +31,11 @@ macro_rules! retry_or_fail {
                         "backfill batch error, retrying",
                     );
                     tokio::time::sleep(delay).await;
-                    continue;
                 }
-                None => {
-                    return BackfillResult {
-                        processed_rows: $processed,
-                        status: BackfillOutcome::Failed {
-                            error: e.to_string(),
-                            processed: $processed,
-                        },
-                    };
-                }
+                None => return Err(e),
             },
         }
-    };
+    }
 }
 
 pub struct BackfillConfig {
@@ -150,13 +148,25 @@ pub async fn run_backfill(
     let mut batch_num: u64 = 0;
     loop {
         let batch_start = Instant::now();
-        let batch_result = retry_or_fail!(
-            backoff,
-            processed,
+        let fetch_result = retry_with_backoff(&mut backoff, || async {
             pg::batch::fetch_batch(client, &query_config, cursor.as_deref(), &cursor_cast)
                 .await
                 .map_err(CoreError::from)
-        );
+        })
+        .await;
+
+        let batch_result = match fetch_result {
+            Ok(val) => val,
+            Err(e) => {
+                return BackfillResult {
+                    processed_rows: processed,
+                    status: BackfillOutcome::Failed {
+                        error: e.to_string(),
+                        processed,
+                    },
+                };
+            }
+        };
 
         if batch_result.rows.is_empty() {
             break;
@@ -181,13 +191,31 @@ pub async fn run_backfill(
 
         let refs: Vec<(&RowEvent, DocumentId)> =
             events.iter().map(|(ev, id)| (ev, id.clone())).collect();
-        let actions = retry_or_fail!(backoff, processed, transformer.transform_batch(&refs).await);
+        let actions =
+            match retry_with_backoff(&mut backoff, || transformer.transform_batch(&refs)).await {
+                Ok(val) => val,
+                Err(e) => {
+                    return BackfillResult {
+                        processed_rows: processed,
+                        status: BackfillOutcome::Failed {
+                            error: e.to_string(),
+                            processed,
+                        },
+                    };
+                }
+            };
 
-        retry_or_fail!(
-            backoff,
-            processed,
-            sink.write(&config.namespace, &actions).await
-        );
+        if let Err(e) =
+            retry_with_backoff(&mut backoff, || sink.write(&config.namespace, &actions)).await
+        {
+            return BackfillResult {
+                processed_rows: processed,
+                status: BackfillOutcome::Failed {
+                    error: e.to_string(),
+                    processed,
+                },
+            };
+        }
 
         // Save checkpoint in a dedicated retry loop so that a transient
         // checkpoint failure does not re-fetch and re-write the batch.

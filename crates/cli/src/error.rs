@@ -26,6 +26,15 @@ pub enum CliError {
     #[error("Config error: {0}")]
     Config(#[from] config::ConfigError),
 
+    #[error("Postgres error: {0}")]
+    Pg(#[from] pg::PgError),
+
+    #[error("Replication error: {0}")]
+    Replication(#[from] replication::ReplicationError),
+
+    #[error("Turbopuffer error: {0}")]
+    Puff(#[from] puff::PuffError),
+
     #[error("{0}")]
     Apply(String),
 
@@ -77,6 +86,10 @@ impl CliError {
         match self {
             CliError::Run(_) => true,
             CliError::State(e) => e.is_transient(),
+            CliError::Pg(e) => e.is_transient(),
+            CliError::Replication(e) => e.is_transient(),
+            CliError::Puff(e) => e.is_transient(),
+            CliError::Config(e) => e.is_transient(),
             _ => false,
         }
     }

@@ -236,9 +236,7 @@ async fn run_cdc_inner(
     let router = Router::new(mappings);
     let tables: Vec<String> = tables.into_iter().collect();
 
-    let pg_client = pg::connect::connect(&env_config.database_url)
-        .await
-        .map_err(|e| CliError::Run(format!("failed to connect to postgres: {e}")))?;
+    let pg_client = pg::connect::connect(&env_config.database_url).await?;
 
     // Build transformers after PG connect so we can compute column reindex
     // mappings for configs that specify a column subset/reorder.
@@ -247,14 +245,7 @@ async fn run_cdc_inner(
         let transformer: Box<dyn Transformer> = if let Some(ref config_cols) = info.columns {
             // Fetch table columns in their natural (WAL) order
             let all_columns =
-                pg::column::resolve_column_info(&pg_client, &info.schema, &info.table)
-                    .await
-                    .map_err(|e| {
-                        CliError::Run(format!(
-                            "failed to resolve columns for {}.{}: {e}",
-                            info.schema, info.table
-                        ))
-                    })?;
+                pg::column::resolve_column_info(&pg_client, &info.schema, &info.table).await?;
 
             // Build reindex: for each config column, find its position in the table
             let reindex: Vec<usize> = config_cols
@@ -295,17 +286,11 @@ async fn run_cdc_inner(
     .await
     .map_err(|msg| CliError::Run(format!("pre-flight check failed: {msg}")))?;
 
-    pg::slot::ensure_slot(&pg_client, SLOT_NAME)
-        .await
-        .map_err(|e| CliError::Run(format!("failed to ensure replication slot: {e}")))?;
+    pg::slot::ensure_slot(&pg_client, SLOT_NAME).await?;
 
-    pg::publication::ensure_publication(&pg_client, PUBLICATION_NAME, &tables)
-        .await
-        .map_err(|e| CliError::Run(format!("failed to ensure publication: {e}")))?;
+    pg::publication::ensure_publication(&pg_client, PUBLICATION_NAME, &tables).await?;
 
-    pg::publication::ensure_replica_identity_full(&pg_client, &tables)
-        .await
-        .map_err(|e| CliError::Run(format!("failed to set replica identity: {e}")))?;
+    pg::publication::ensure_replica_identity_full(&pg_client, &tables).await?;
 
     tracing::info!(slot = SLOT_NAME, "replication slot ready");
     tracing::info!(publication = PUBLICATION_NAME, "publication ready");
@@ -350,14 +335,11 @@ async fn run_cdc_inner(
     let puff_client = TurbopufferClient::new(
         env_config.turbopuffer_api_key.clone(),
         env_config.turbopuffer_region.clone(),
-    )
-    .map_err(|e| CliError::Run(format!("failed to create turbopuffer client: {e}")))?;
+    )?;
 
     if !needs_backfill.is_empty() {
         let _backfill_span = tracing::info_span!("backfill").entered();
-        let watermark = pg::slot::get_current_wal_lsn(&pg_client)
-            .await
-            .map_err(|e| CliError::Run(format!("failed to get current WAL LSN: {e}")))?;
+        let watermark = pg::slot::get_current_wal_lsn(&pg_client).await?;
         tracing::info!(watermark_lsn = %pg::PgLsn::from(watermark), "starting backfill");
 
         for config in &needs_backfill {
@@ -440,9 +422,7 @@ async fn run_cdc_inner(
     // Here we stop holding the existing slot, and poll w/ exponential backoff for the new one.
     // Need to do this after publication setup / LSN resolution so we don't create
     // (and fail to clean one of these up) if those fail.
-    pg::slot::terminate_active_slot_backend(&pg_client, SLOT_NAME)
-        .await
-        .map_err(|e| CliError::Run(format!("failed to terminate stale slot backend: {e}")))?;
+    pg::slot::terminate_active_slot_backend(&pg_client, SLOT_NAME).await?;
 
     let mut backoff = Backoff::new(BackoffConfig {
         initial_delay_ms: 100,
@@ -452,18 +432,13 @@ async fn run_cdc_inner(
         jitter: true,
     });
     while pg::slot::get_active_pid(&pg_client, SLOT_NAME)
-        .await
-        .map_err(|e| CliError::Run(format!("failed to check slot active PID: {e}")))?
+        .await?
         .is_some()
     {
         match backoff.next_delay() {
             Some(delay) => {
                 tokio::time::sleep(delay).await;
-                pg::slot::terminate_active_slot_backend(&pg_client, SLOT_NAME)
-                    .await
-                    .map_err(|e| {
-                        CliError::Run(format!("failed to terminate stale slot backend: {e}"))
-                    })?;
+                pg::slot::terminate_active_slot_backend(&pg_client, SLOT_NAME).await?;
             }
             None => {
                 return Err(CliError::Run(format!(
@@ -524,9 +499,7 @@ async fn run_cdc_inner(
             status_interval: STATUS_INTERVAL,
         };
 
-        let mut stream = ReplicationStream::connect(stream_config)
-            .await
-            .map_err(|e| CliError::Run(format!("failed to connect replication stream: {e}")))?;
+        let mut stream = ReplicationStream::connect(stream_config).await?;
 
         let lsn_display = start_lsn
             .map(|l| pg::PgLsn::from(l).to_string())
@@ -547,7 +520,7 @@ async fn run_cdc_inner(
                     return Ok(());
                 }
                 Err(e) => {
-                    return Err(CliError::Run(format!("replication stream error: {e}")));
+                    return Err(e.into());
                 }
             };
 
@@ -694,17 +667,9 @@ async fn run_cdc_inner(
         // connect() races against slot release and can fail, taking down CDC
         // until a manual restart.
         {
-            let slot_client = pg::connect::connect(&env_config.database_url)
-                .await
-                .map_err(|e| {
-                    CliError::Run(format!("failed to connect for slot release check: {e}"))
-                })?;
+            let slot_client = pg::connect::connect(&env_config.database_url).await?;
 
-            pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME)
-                .await
-                .map_err(|e| {
-                    CliError::Run(format!("failed to terminate stale slot backend: {e}"))
-                })?;
+            pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME).await?;
 
             let mut backoff = Backoff::new(BackoffConfig {
                 initial_delay_ms: 100,
@@ -714,20 +679,13 @@ async fn run_cdc_inner(
                 jitter: true,
             });
             while pg::slot::get_active_pid(&slot_client, SLOT_NAME)
-                .await
-                .map_err(|e| CliError::Run(format!("failed to check slot active PID: {e}")))?
+                .await?
                 .is_some()
             {
                 match backoff.next_delay() {
                     Some(delay) => {
                         tokio::time::sleep(delay).await;
-                        pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME)
-                            .await
-                            .map_err(|e| {
-                                CliError::Run(format!(
-                                    "failed to terminate stale slot backend: {e}"
-                                ))
-                            })?;
+                        pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME).await?;
                     }
                     None => {
                         return Err(CliError::Run(format!(
