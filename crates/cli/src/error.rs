@@ -48,6 +48,9 @@ pub enum CliError {
     Tombstone(String),
 
     #[error("{0}")]
+    Remove(String),
+
+    #[error("{0}")]
     Generate(String),
 
     #[error("{0}")]
