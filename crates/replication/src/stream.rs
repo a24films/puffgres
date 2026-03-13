@@ -193,8 +193,6 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                 }));
             }
         } else if txn.events.len() >= self.max_transaction_events {
-            // Check BEFORE pushing to match the original semantics:
-            // max_transaction_events=N allows exactly N events.
             txn.too_large = true;
             txn.events.clear();
         } else {
@@ -518,7 +516,6 @@ mod tests {
 
         let batch = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch.ack_lsn, 200);
-        // simulate successful processing, then ack
         stream.ack();
         assert_eq!(stream.client.acked_lsns(), vec![200]);
     }
@@ -1230,5 +1227,165 @@ mod tests {
         assert_eq!(batch.events.len(), 1);
 
         // Total across all: 3 + 3 + 1 = 7
+    }
+
+    mod proptests {
+        use super::*;
+
+        fn build_txn_events(
+            n_events: usize,
+            xid: u32,
+            commit_lsn: u64,
+        ) -> Vec<Result<Option<ReplicationEvent>>> {
+            let mut events = Vec::new();
+            events.push(Ok(Some(ReplicationEvent::Begin {
+                final_lsn: Lsn(0),
+                xid,
+                commit_time_micros: 0,
+            })));
+            for _ in 0..n_events {
+                let mut buf = BytesMut::new();
+                buf.put_u8(b'I');
+                buf.put_u32(1); // relation_id
+                buf.put_u8(b'N');
+                buf.put_u16(1);
+                buf.put_u8(b't');
+                let val = b"42";
+                buf.put_u32(val.len() as u32);
+                buf.put_slice(val);
+                events.push(Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: buf.freeze(),
+                })));
+            }
+            events.push(Ok(Some(ReplicationEvent::Commit {
+                lsn: Lsn(commit_lsn),
+                end_lsn: Lsn(commit_lsn),
+                commit_time_micros: 0,
+            })));
+            events
+        }
+
+        #[tokio::test]
+        async fn sub_batch_total_equals_txn_size() {
+            // For various event counts and sub-batch sizes, verify that
+            // the total events across all sub-batches + final batch == n_events.
+            for n_events in [0, 1, 2, 5, 10, 50, 100] {
+                for sub_batch_size in [1, 2, 3, 7, 10, 50, 100, 200] {
+                    let events = build_txn_events(n_events, 1, 1000);
+                    let mut all_events = vec![Ok(Some(ReplicationEvent::XLogData {
+                        wal_start: Lsn(0),
+                        wal_end: Lsn(0),
+                        server_time_micros: 0,
+                        data: {
+                            let mut buf = BytesMut::new();
+                            buf.put_u8(b'R');
+                            buf.put_u32(1); // relation_id
+                            buf.put_slice(b"public\0");
+                            buf.put_slice(b"test\0");
+                            buf.put_u8(b'd');
+                            buf.put_u16(1);
+                            buf.put_u8(1);
+                            buf.put_slice(b"id\0");
+                            buf.put_u32(23);
+                            buf.put_i32(-1);
+                            buf.freeze()
+                        },
+                    }))];
+                    all_events.extend(events);
+
+                    let mut stream = ReplicationStream {
+                        client: MockTransport::new(all_events),
+                        relation_cache: RelationCache::new(),
+                        current_txn: None,
+                        pending_lsn: None,
+                        max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
+                        sub_batch_size: Some(sub_batch_size),
+                        watched_columns: HashMap::new(),
+                    };
+
+                    let mut total = 0usize;
+                    loop {
+                        match stream.recv_batch().await.unwrap() {
+                            Some(BatchResult::SubBatch(sb)) => {
+                                assert!(
+                                    sb.events.len() <= sub_batch_size,
+                                    "sub-batch exceeded size: {} > {} (n={}, sub={})",
+                                    sb.events.len(),
+                                    sub_batch_size,
+                                    n_events,
+                                    sub_batch_size,
+                                );
+                                total += sb.events.len();
+                            }
+                            Some(BatchResult::Batch(b)) => {
+                                total += b.events.len();
+                                break;
+                            }
+                            Some(other) => panic!("unexpected: {other:?}"),
+                            None => break,
+                        }
+                    }
+
+                    assert_eq!(
+                        total, n_events,
+                        "total mismatch for n_events={n_events}, sub_batch_size={sub_batch_size}"
+                    );
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn max_transaction_events_drops_correctly() {
+            // Verify that when a transaction exceeds the limit, we get
+            // TransactionTooLarge with the correct ack_lsn.
+            for limit in [1, 2, 5, 10] {
+                for n_events in [limit + 1, limit * 2, limit * 10] {
+                    let mut all_events = vec![Ok(Some(ReplicationEvent::XLogData {
+                        wal_start: Lsn(0),
+                        wal_end: Lsn(0),
+                        server_time_micros: 0,
+                        data: {
+                            let mut buf = BytesMut::new();
+                            buf.put_u8(b'R');
+                            buf.put_u32(1);
+                            buf.put_slice(b"public\0test\0");
+                            buf.put_u8(b'd');
+                            buf.put_u16(1);
+                            buf.put_u8(1);
+                            buf.put_slice(b"id\0");
+                            buf.put_u32(23);
+                            buf.put_i32(-1);
+                            buf.freeze()
+                        },
+                    }))];
+                    all_events.extend(build_txn_events(n_events, 1, 999));
+
+                    let mut stream = ReplicationStream {
+                        client: MockTransport::new(all_events),
+                        relation_cache: RelationCache::new(),
+                        current_txn: None,
+                        pending_lsn: None,
+                        max_transaction_events: limit,
+                        sub_batch_size: None,
+                        watched_columns: HashMap::new(),
+                    };
+
+                    match stream.recv_batch().await.unwrap() {
+                        Some(BatchResult::TransactionTooLarge { ack_lsn, .. }) => {
+                            assert_eq!(
+                                ack_lsn, 999,
+                                "ack_lsn mismatch for limit={limit}, n={n_events}"
+                            );
+                        }
+                        other => panic!(
+                            "expected TransactionTooLarge for limit={limit}, n={n_events}, got {other:?}"
+                        ),
+                    }
+                }
+            }
+        }
     }
 }
