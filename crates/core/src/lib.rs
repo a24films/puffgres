@@ -6,6 +6,8 @@ pub mod js_transform;
 pub mod mapping;
 pub mod router;
 pub mod row_convert;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_sink;
 pub mod transform;
 
 pub use action::Action;
