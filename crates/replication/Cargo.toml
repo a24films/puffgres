@@ -26,6 +26,9 @@ tokio-postgres.workspace = true
 proptest.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
 sysinfo = "0.35"
+state.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "decoder_bench"
