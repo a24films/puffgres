@@ -173,6 +173,23 @@ impl ReplicationStream {
 }
 
 impl<T: ReplicationTransport> ReplicationStream<T> {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn from_transport(
+        client: T,
+        max_transaction_events: usize,
+        sub_batch_size: Option<usize>,
+    ) -> Self {
+        Self {
+            client,
+            relation_cache: RelationCache::new(),
+            current_txn: None,
+            pending_lsn: None,
+            max_transaction_events,
+            sub_batch_size,
+            watched_columns: HashMap::new(),
+        }
+    }
+
     /// Push an event into the current transaction, returning a `SubBatch` if the
     /// sub-batch threshold is reached.
     fn push_event(&mut self, event: RowEvent) -> Option<BatchResult> {

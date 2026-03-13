@@ -2558,6 +2558,7 @@ dependencies = [
  "pg",
  "pgwire-replication",
  "proptest",
+ "replication",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3045,6 +3046,7 @@ name = "state"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "criterion",
  "diesel",
  "diesel_migrations",
  "libsqlite3-sys",
