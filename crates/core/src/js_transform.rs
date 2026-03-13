@@ -196,7 +196,16 @@ impl JsTransformer {
                         if let Some(reindex) = &self.column_reindex {
                             reindex
                                 .iter()
-                                .map(|&i| t.columns.get(i).and_then(&col_to_string))
+                                .map(|&i| {
+                                    if i >= t.columns.len() {
+                                        tracing::warn!(
+                                            index = i,
+                                            columns = t.columns.len(),
+                                            "column reindex out of bounds, producing null"
+                                        );
+                                    }
+                                    t.columns.get(i).and_then(&col_to_string)
+                                })
                                 .collect()
                         } else {
                             t.columns.iter().map(col_to_string).collect()
@@ -421,7 +430,16 @@ impl PassthroughTransformer {
                 if let Some(reindex) = &self.column_reindex {
                     reindex
                         .iter()
-                        .map(|&i| t.columns.get(i).and_then(&col_to_string))
+                        .map(|&i| {
+                            if i >= t.columns.len() {
+                                tracing::warn!(
+                                    index = i,
+                                    columns = t.columns.len(),
+                                    "column reindex out of bounds, producing null"
+                                );
+                            }
+                            t.columns.get(i).and_then(&col_to_string)
+                        })
                         .collect()
                 } else {
                     t.columns.iter().map(col_to_string).collect()

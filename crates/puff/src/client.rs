@@ -74,7 +74,19 @@ impl TurbopufferClient {
                             .iter()
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect::<HashMap<String, Value>>(),
-                        _ => HashMap::new(),
+                        other => {
+                            return Err(PuffError::Client(format!(
+                                "document must be a JSON object, got {}",
+                                match other {
+                                    Value::Array(_) => "array",
+                                    Value::String(_) => "string",
+                                    Value::Number(_) => "number",
+                                    Value::Bool(_) => "bool",
+                                    Value::Null => "null",
+                                    Value::Object(_) => unreachable!(),
+                                }
+                            )));
+                        }
                     };
                     row.insert("id".to_string(), id_to_value(id));
                     if let Some(vec) = vector {

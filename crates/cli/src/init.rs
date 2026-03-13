@@ -210,7 +210,11 @@ fn ensure_project_config(cwd: &std::path::Path, paths: &ProjectPaths) -> Result<
         config.environment_files = vec!["../.env".to_string()];
     }
 
-    let contents = toml::to_string_pretty(&config).expect("default ProjectConfig should serialize");
+    let contents = toml::to_string_pretty(&config).map_err(|e| {
+        CliError::Io(std::io::Error::other(format!(
+            "failed to serialize config: {e}"
+        )))
+    })?;
     fs::write(&paths.project_config, contents)?;
 
     Ok(())
