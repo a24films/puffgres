@@ -105,13 +105,15 @@ mod tests {
         write_transform(&config_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
 
         let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
+            content_hash: config::Config::content_hash_from_bytes(
+                &std::fs::read(config_path).unwrap(),
+            ),
             transform_hash: None,
             applied_at: Utc::now(),
             tombstone_applied_at: None,
