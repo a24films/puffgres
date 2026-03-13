@@ -114,9 +114,9 @@ pub(crate) async fn setup_pipeline(
         })?;
 
         if let Some(record) = db.get_config(&config.name)? {
-            let config_bytes = config_raw_bytes.get(&config.name).expect(
-                "config_raw_bytes populated for every applied config",
-            );
+            let config_bytes = config_raw_bytes
+                .get(&config.name)
+                .expect("config_raw_bytes populated for every applied config");
             let current_content_hash = Config::content_hash_from_bytes(config_bytes);
             if record.content_hash != current_content_hash {
                 return Err(CliError::RunValidation(format!(

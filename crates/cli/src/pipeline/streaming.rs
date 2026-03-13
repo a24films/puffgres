@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use backon::{BackoffBuilder, ExponentialBuilder};
 use chrono::Utc;
 use puff::TurbopufferClient;
 use puffgres_core::{DocumentId, Router, Transformer};
@@ -369,6 +368,13 @@ pub(crate) async fn run_streaming_loop(
                 m.replication_acks.add(1, &[]);
                 m.cdc_batch_duration
                     .record(batch_start.elapsed().as_millis() as f64, &[]);
+                // Replication lag: PG commit timestamp is microseconds since
+                // 2000-01-01. Convert to Unix epoch and compare to wall clock.
+                const PG_EPOCH_OFFSET_MICROS: i64 = 946_684_800_000_000;
+                let commit_unix_micros = batch.commit_time_micros + PG_EPOCH_OFFSET_MICROS;
+                let now_micros = Utc::now().timestamp_micros();
+                let lag_ms = (now_micros - commit_unix_micros) as f64 / 1000.0;
+                m.replication_lag_ms.record(lag_ms, &[]);
             }
 
             batch_count += 1;
@@ -394,44 +400,9 @@ pub(crate) async fn run_streaming_loop(
         drop(stream);
 
         // Wait for the replication slot to be released before reconnecting.
-        // After dropping the stream, Postgres may still consider the previous
-        // backend active for a short window. Without this backoff the new
-        // connect() races against slot release and can fail, taking down CDC
-        // until a manual restart.
         {
             let slot_client = pg::connect::connect(&env_config.database_url).await?;
-
-            pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME).await?;
-
-            let mut backoff = ExponentialBuilder::default()
-                .with_min_delay(std::time::Duration::from_millis(100))
-                .with_max_delay(std::time::Duration::from_secs(5))
-                .with_max_times(10)
-                .with_jitter()
-                .build();
-            while pg::slot::get_active_pid(&slot_client, SLOT_NAME)
-                .await?
-                .is_some()
-            {
-                match backoff.next() {
-                    Some(delay) => {
-                        tokio::select! {
-                            _ = tokio::time::sleep(delay) => {}
-                            _ = token.cancelled() => {
-                                tracing::info!("shutdown requested during schema-change slot wait");
-                                return Ok(());
-                            }
-                        }
-                        pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME).await?;
-                    }
-                    None => {
-                        return Err(CliError::Run(format!(
-                            "timed out waiting for replication slot '{}' to be released after schema change",
-                            SLOT_NAME
-                        )));
-                    }
-                }
-            }
+            super::setup::terminate_slot_and_wait(&slot_client, token.clone()).await?;
         }
 
         let mut checkpoint_lsns = Vec::new();
