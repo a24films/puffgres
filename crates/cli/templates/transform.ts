@@ -1,6 +1,8 @@
 // Transform for {{NAME}}
 //
-// Reads a JSON array of events from stdin, writes a JSON array of actions to stdout.
+// Reads newline-delimited JSON (NDJSON) from stdin. Each line is a JSON array
+// of events. For each line, write a JSON array of actions to stdout followed
+// by a newline.
 //
 // Each output action (one of):
 //   { type: "upsert", id: number | string, document: object, vector?: number[], distance_metric?: string, schema?: object }
@@ -12,7 +14,7 @@
 // schema defines attribute types for the namespace.
 // See https://turbopuffer.com/docs/write#schema for all options.
 
-import { readFileSync } from "fs";
+import { createInterface } from "readline";
 import { columns, parseRow } from "./schema";
 
 interface Event {
@@ -26,28 +28,32 @@ type Action =
   | { type: "delete"; id: number | string }
   | { type: "skip" };
 
-const input: Event[] = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
+const rl = createInterface({ input: process.stdin });
 
-const output: Action[] = input.map((event) => {
-  if (event.operation === "delete") {
-    return { type: "delete", id: event.id };
-  }
+for await (const line of rl) {
+  const input: Event[] = JSON.parse(line);
 
-  const row = parseRow(event.columns);
+  const output: Action[] = input.map((event) => {
+    if (event.operation === "delete") {
+      return { type: "delete", id: event.id };
+    }
 
-  return {
-    type: "upsert",
-    id: event.id,
-    document: {
-      // TODO: map row fields to document fields
-      // e.g. name: row.name,
-    },
-    // Build schema from columns for just the fields in your document.
-    // Each column has .name and .type (PrimitiveType). Add overrides as needed.
-    // schema: {
-    //   name: { type: columns.find(c => c.name === "name")!.type, full_text_search: true },
-    // },
-  };
-});
+    const row = parseRow(event.columns);
 
-process.stdout.write(JSON.stringify(output));
+    return {
+      type: "upsert",
+      id: event.id,
+      document: {
+        // TODO: map row fields to document fields
+        // e.g. name: row.name,
+      },
+      // Build schema from columns for just the fields in your document.
+      // Each column has .name and .type (PrimitiveType). Add overrides as needed.
+      // schema: {
+      //   name: { type: columns.find(c => c.name === "name")!.type, full_text_search: true },
+      // },
+    };
+  });
+
+  process.stdout.write(JSON.stringify(output) + "\n");
+}
