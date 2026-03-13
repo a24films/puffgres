@@ -32,3 +32,4 @@ testcontainers.workspace = true
 testcontainers-modules.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 toml.workspace = true
+proptest.workspace = true

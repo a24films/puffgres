@@ -213,4 +213,57 @@ mod tests {
     fn to_string_string() {
         assert_eq!(DocumentId::String("hello".to_string()).to_string(), "hello");
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn uint_roundtrip(n: u64) {
+                let id = DocumentId::Uint(n);
+                let text = id.to_string();
+                let parsed = DocumentId::from_text(&text, &IdType::Uint).unwrap();
+                prop_assert_eq!(id, parsed);
+            }
+
+            #[test]
+            fn int_roundtrip(n: i64) {
+                let id = DocumentId::Int(n);
+                let text = id.to_string();
+                let parsed = DocumentId::from_text(&text, &IdType::Int).unwrap();
+                prop_assert_eq!(id, parsed);
+            }
+
+            #[test]
+            fn string_roundtrip(s in "\\PC+") {
+                let id = DocumentId::String(s.clone());
+                let text = id.to_string();
+                let parsed = DocumentId::from_text(&text, &IdType::String).unwrap();
+                prop_assert_eq!(id, parsed);
+            }
+
+            #[test]
+            fn uuid_roundtrip(
+                a: u32, b: u16, c: u16, d in proptest::array::uniform8(any::<u8>())
+            ) {
+                let uuid = uuid::Uuid::from_fields(a, b, c, &d);
+                let id = DocumentId::Uuid(uuid);
+                let text = id.to_string();
+                let parsed = DocumentId::from_text(&text, &IdType::Uuid).unwrap();
+                prop_assert_eq!(id, parsed);
+            }
+
+            #[test]
+            fn from_text_never_panics(s in ".*", variant in 0u8..4) {
+                let id_type = match variant {
+                    0 => IdType::Uint,
+                    1 => IdType::Int,
+                    2 => IdType::Uuid,
+                    _ => IdType::String,
+                };
+                let _ = DocumentId::from_text(&s, &id_type);
+            }
+        }
+    }
 }
