@@ -20,3 +20,8 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-postgres.workspace = true
 proptest.workspace = true
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "decoder_bench"
+harness = false
