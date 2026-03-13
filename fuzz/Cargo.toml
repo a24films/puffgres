@@ -1,0 +1,40 @@
+[package]
+name = "puffgres-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+replication = { path = "../crates/replication" }
+puffgres-core = { path = "../crates/core" }
+config = { path = "../crates/config" }
+bytes = "1"
+serde_json = "1"
+
+# Prevent this from interfering with workspace
+[workspace]
+
+[[bin]]
+name = "fuzz_decoder"
+path = "fuzz_targets/fuzz_decoder.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_document_id"
+path = "fuzz_targets/fuzz_document_id.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_relation_cache"
+path = "fuzz_targets/fuzz_relation_cache.rs"
+doc = false
+
+[[bin]]
+name = "generate_seeds"
+path = "fuzz_targets/generate_seeds.rs"
+doc = false

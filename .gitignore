@@ -4,3 +4,4 @@ SPEC.md
 /fuzz/corpus/fuzz_relation_cache
 /fuzz/target
 /fuzz/corpus/fuzz_document_id
+/fuzz/corpus/fuzz_decoder
