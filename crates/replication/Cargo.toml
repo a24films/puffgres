@@ -14,7 +14,11 @@ serde.workspace = true
 thiserror.workspace = true
 url.workspace = true
 
+[features]
+test-utils = []
+
 [dev-dependencies]
+replication = { path = ".", features = ["test-utils"] }
 pg = { workspace = true, features = ["test-utils"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -24,4 +28,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "decoder_bench"
+harness = false
+
+[[bench]]
+name = "stream_bench"
 harness = false
