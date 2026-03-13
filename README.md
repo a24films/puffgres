@@ -8,4 +8,38 @@ A bit of Puffgres' design philosophy:
 - **Sync is maintained through "configs" which link Postgres tables to turbopuffer namespaces.** Each defines a mapping, and a TypeScript-based "transform," which lets us easily do operations like tokenization, embedding, and other manipulation. 
 - **Configs and transforms are immutable**. We avoid an abundance of thorny cases that come from letting us change a mapping (i.e. rows produced with two different set of transforms.). If we want to make a change, we should "tombstone" the old one and create a new one. 
 
-Read our [docs](TK) to get started. 
+Read our [docs](TK) to get started.
+
+## Development
+
+### Install
+
+```bash
+cargo install just
+just install
+
+# To overwrite an existing install
+just reinstall
+```
+
+### Testing
+
+```bash
+# Unit tests
+cargo test --workspace --lib
+
+# Integration tests (requires Postgres)
+cargo test --workspace
+```
+
+### Fuzzing
+
+Fuzz targets live in `fuzz/` and use [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz).
+
+```bash
+cargo install cargo-fuzz
+cargo +nightly fuzz run fuzz_decoder
+
+# Regenerate seed corpus
+cd fuzz && cargo run --bin generate_seeds
+```

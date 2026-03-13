@@ -1,0 +1,7 @@
+target/
+artifacts/
+Cargo.lock
+
+# Auto-generated corpus from fuzzing runs — only seed corpus is checked in
+corpus/fuzz_document_id/
+corpus/fuzz_relation_cache/
