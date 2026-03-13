@@ -21,6 +21,41 @@ use replication::{Operation, RowEvent};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Extract column values from a RowEvent tuple as text strings.
+///
+/// When `reindex` is provided, columns are reordered according to the mapping
+/// (e.g., from WAL order to schema.ts order). Out-of-bounds indices produce
+/// null values with a warning.
+fn extract_columns(event: &RowEvent, reindex: Option<&[usize]>) -> Vec<Option<String>> {
+    let tuple = event.new_tuple.as_ref().or(event.old_tuple.as_ref());
+    tuple
+        .map(|t| {
+            let col_to_string = |col: &replication::ColumnValue| {
+                col.as_bytes()
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .map(|s| s.to_string())
+            };
+            if let Some(reindex) = reindex {
+                reindex
+                    .iter()
+                    .map(|&i| {
+                        if i >= t.columns.len() {
+                            tracing::warn!(
+                                index = i,
+                                columns = t.columns.len(),
+                                "column reindex out of bounds, producing null"
+                            );
+                        }
+                        t.columns.get(i).and_then(&col_to_string)
+                    })
+                    .collect()
+            } else {
+                t.columns.iter().map(col_to_string).collect()
+            }
+        })
+        .unwrap_or_default()
+}
+
 // Wire types for the JS boundary. These are the JSON shapes that cross the
 // subprocess stdin/stdout. They're intentionally decoupled from the internal
 // Action/RowEvent types so the JS contract can evolve independently.
@@ -129,7 +164,9 @@ impl JsTransformer {
 
         // Drain stderr in a background task so the OS pipe buffer doesn't fill
         // and block the child process. Lines are collected into a shared buffer
-        // so they can be reported if the child exits unexpectedly.
+        // (capped at 100 lines) so they can be reported if the child exits
+        // unexpectedly.
+        const MAX_STDERR_LINES: usize = 100;
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let stderr_lines_handle = Arc::clone(&stderr_lines);
         tokio::spawn(async move {
@@ -137,7 +174,11 @@ impl JsTransformer {
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tracing::warn!(target: "transform_stderr", "{}", line);
-                stderr_lines_handle.lock().await.push(line);
+                let mut buf = stderr_lines_handle.lock().await;
+                if buf.len() >= MAX_STDERR_LINES {
+                    buf.remove(0);
+                }
+                buf.push(line);
             }
         });
 
@@ -185,33 +226,7 @@ impl JsTransformer {
                     DocumentId::String(s) => Value::String(s.clone()),
                 };
 
-                let tuple = event.new_tuple.as_ref().or(event.old_tuple.as_ref());
-                let columns: Vec<Option<String>> = tuple
-                    .map(|t| {
-                        let col_to_string = |col: &replication::ColumnValue| {
-                            col.as_bytes()
-                                .and_then(|b| std::str::from_utf8(b).ok())
-                                .map(|s| s.to_string())
-                        };
-                        if let Some(reindex) = &self.column_reindex {
-                            reindex
-                                .iter()
-                                .map(|&i| {
-                                    if i >= t.columns.len() {
-                                        tracing::warn!(
-                                            index = i,
-                                            columns = t.columns.len(),
-                                            "column reindex out of bounds, producing null"
-                                        );
-                                    }
-                                    t.columns.get(i).and_then(&col_to_string)
-                                })
-                                .collect()
-                        } else {
-                            t.columns.iter().map(col_to_string).collect()
-                        }
-                    })
-                    .unwrap_or_default();
+                let columns = extract_columns(event, self.column_reindex.as_deref());
 
                 JsEvent {
                     operation,
@@ -419,33 +434,7 @@ impl PassthroughTransformer {
     }
 
     fn columns_to_values(&self, event: &RowEvent) -> Vec<Option<String>> {
-        let tuple = event.new_tuple.as_ref().or(event.old_tuple.as_ref());
-        tuple
-            .map(|t| {
-                let col_to_string = |col: &replication::ColumnValue| {
-                    col.as_bytes()
-                        .and_then(|b| std::str::from_utf8(b).ok())
-                        .map(|s| s.to_string())
-                };
-                if let Some(reindex) = &self.column_reindex {
-                    reindex
-                        .iter()
-                        .map(|&i| {
-                            if i >= t.columns.len() {
-                                tracing::warn!(
-                                    index = i,
-                                    columns = t.columns.len(),
-                                    "column reindex out of bounds, producing null"
-                                );
-                            }
-                            t.columns.get(i).and_then(&col_to_string)
-                        })
-                        .collect()
-                } else {
-                    t.columns.iter().map(col_to_string).collect()
-                }
-            })
-            .unwrap_or_default()
+        extract_columns(event, self.column_reindex.as_deref())
     }
 }
 

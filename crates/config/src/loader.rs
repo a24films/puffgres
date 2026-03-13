@@ -12,6 +12,15 @@ impl Config {
         let content = fs::read_to_string(path)?;
         Self::from_toml(&content)
     }
+
+    pub fn from_file_bytes(path: &Path) -> Result<(Self, Vec<u8>), ConfigError> {
+        let bytes = fs::read(path)?;
+        let content = std::str::from_utf8(&bytes).map_err(|e| {
+            ConfigError::ParseError(format!("config file is not valid UTF-8: {e}"))
+        })?;
+        let config = Self::from_toml(content)?;
+        Ok((config, bytes))
+    }
 }
 
 pub struct ConfigLoader {
@@ -45,6 +54,34 @@ impl ConfigLoader {
                 source: Box::new(e),
             })?;
             configs.push((config_path, config));
+        }
+
+        Ok(configs)
+    }
+
+    pub fn load_all_with_bytes(
+        &self,
+    ) -> Result<Vec<(PathBuf, Config, Vec<u8>)>, ConfigError> {
+        if !self.config_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut configs = Vec::new();
+        let mut entries: Vec<_> = fs::read_dir(&self.config_dir)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_dir())
+            .collect();
+
+        entries.sort_by_key(|entry| entry.file_name());
+
+        for entry in entries {
+            let config_path = entry.path().join("config.toml");
+            let (config, bytes) =
+                Config::from_file_bytes(&config_path).map_err(|e| ConfigError::FileError {
+                    path: config_path.clone(),
+                    source: Box::new(e),
+                })?;
+            configs.push((config_path, config, bytes));
         }
 
         Ok(configs)
