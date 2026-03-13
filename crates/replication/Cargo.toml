@@ -25,6 +25,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-postgres.workspace = true
 proptest.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
+sysinfo = "0.35"
 
 [[bench]]
 name = "decoder_bench"
