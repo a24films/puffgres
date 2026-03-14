@@ -6,13 +6,20 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-utils = ["dep:axum", "dep:serde"]
+
 [dependencies]
 puffgres-core.workspace = true
 rs-puff.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "net", "sync", "time"] }
+axum = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true, features = ["v4"] }
+reqwest = { workspace = true, features = ["json"] }
+puff = { path = ".", features = ["test-utils"] }

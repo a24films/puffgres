@@ -1,6 +1,9 @@
 pub mod client;
 pub mod error;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod mock_server;
+
 pub use client::TurbopufferClient;
 pub use error::PuffError;
 
