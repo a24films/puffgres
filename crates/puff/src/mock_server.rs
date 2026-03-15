@@ -85,7 +85,7 @@ impl MockTurbopufferServer {
         });
 
         let app = Router::new()
-            .route("/v2/namespaces/{ns}/write", post(handle_write))
+            .route("/v2/namespaces/{ns}", post(handle_write))
             .route("/test/records/{ns}", get(handle_get_records))
             .route("/test/chaos", post(handle_set_chaos))
             .route("/test/stats", get(handle_get_stats))
@@ -241,7 +241,12 @@ async fn handle_write(
         }
     }
 
-    (StatusCode::OK, r#"{"status":"OK"}"#).into_response()
+    let rows_affected = upsert_count + delete_count;
+    (
+        StatusCode::OK,
+        format!(r#"{{"rows_affected":{rows_affected}}}"#),
+    )
+        .into_response()
 }
 
 async fn handle_get_records(
@@ -299,7 +304,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let resp = client
-            .post(format!("{}/v2/namespaces/test_ns/write", server.url()))
+            .post(format!("{}/v2/namespaces/test_ns", server.url()))
             .json(&serde_json::json!({
                 "upsert_rows": [{"id": 1, "title": "hello"}],
                 "deletes": [2]
@@ -334,7 +339,7 @@ mod tests {
             .await;
 
         let body = serde_json::json!({"upsert_rows": [{"id": 1}]});
-        let url = format!("{}/v2/namespaces/ns/write", server.url());
+        let url = format!("{}/v2/namespaces/ns", server.url());
 
         let r1 = client.post(&url).json(&body).send().await.unwrap();
         assert_eq!(r1.status(), 500);
@@ -364,7 +369,7 @@ mod tests {
             })
             .await;
 
-        let url = format!("{}/v2/namespaces/ns/write", server.url());
+        let url = format!("{}/v2/namespaces/ns", server.url());
         let body = serde_json::json!({"upsert_rows": [{"id": 1}]});
 
         let r1 = client.post(&url).json(&body).send().await.unwrap();
@@ -384,19 +389,19 @@ mod tests {
 
         let body = serde_json::json!({"upsert_rows": [{"id": 1}]});
         client
-            .post(format!("{}/v2/namespaces/ns_a/write", server.url()))
+            .post(format!("{}/v2/namespaces/ns_a", server.url()))
             .json(&body)
             .send()
             .await
             .unwrap();
         client
-            .post(format!("{}/v2/namespaces/ns_b/write", server.url()))
+            .post(format!("{}/v2/namespaces/ns_b", server.url()))
             .json(&body)
             .send()
             .await
             .unwrap();
         client
-            .post(format!("{}/v2/namespaces/ns_a/write", server.url()))
+            .post(format!("{}/v2/namespaces/ns_a", server.url()))
             .json(&body)
             .send()
             .await

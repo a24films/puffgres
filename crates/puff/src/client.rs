@@ -27,6 +27,12 @@ impl TurbopufferClient {
         Ok(Self { inner: client })
     }
 
+    pub fn with_base_url(api_key: String, base_url: String) -> Self {
+        Self {
+            inner: rs_puff::Client::with_base_url(api_key, base_url),
+        }
+    }
+
     pub fn from_env() -> Result<Self, PuffError> {
         let client = rs_puff::Client::from_env().map_err(|e| PuffError::Client(e.to_string()))?;
         Ok(Self { inner: client })
