@@ -21,7 +21,8 @@ A bit of Puffgres' design philosophy:
 - **The service should be able to stop or start at any time**. We should not rely on continuous execution for eventual consistency. The Postgres publication will continue notifying us of changes if we do not acknowledge previous ones; as such, we should only acknowledge when we are done processing.
 - **State lives in separate SQLite db**. Puffgres is designed around separating replication from the operations of the primary db. Keeping shared state in Postgres (which we did in an early working version) meant that rollbacks would also wipe Puffgres state, making it much harder to recover cleanly. There's just a few tables so we skipped an ORM / rusqlite was more than enough.
 - **The service should abstract away thorny cases**. Users should not need to consider retries, failures, batching, resumption, handoff (i.e. transitioning from a backfill to active logical replication, and not missing any rows in the transition). 
-- **Transformations should be stateless, have no side effects, and be totally composed in TS**. Userspace should be written in a maximally usable and accessible way, in TypeScript. Functions should simply assume they will get a batch of rows to upsert to turbopuffer (batched so we can bulk embed/upsert) and only need to handle the translation. This also lets us use the whole scope of excellent pre-existing libraries, and the TS ecosystem, for tokenization, embedding, etc. 
+- **Transformations should be stateless, have no side effects, and be totally composed in TS**. Userspace should be written in a maximally usable and accessible way, in TypeScript. Functions should simply assume they will get a batch of rows to upsert to turbopuffer (batched so we can bulk embed/upsert) and only need to handle the translation. This also lets us use the whole scope of excellent pre-existing libraries, and the TS ecosystem, for tokenization, embedding, etc.
+- **At-least-once delivery**. The pipeline writes to turbopuffer before checkpointing progress to SQLite. If the process crashes between those two steps, the same events get re-delivered on restart. This is safe because turbopuffer upserts are idempotent on document ID and transforms are expected to be deterministic pure functions of the input row — so replaying an event produces the same result.
 
 
 
@@ -186,7 +187,7 @@ I built a [very hacky](https://github.com/lucasgelfond/puffgres) version of this
 
 Puffgres is divided into several crates:
 - `state`, which manages Puffgres internal state in a SQLite database 
-- `config`, which handles all of the mappings from Postgres tables to Turbopuffer namespaces
+- `config`, which handles all of the mappings from Postgres tables to turbopuffer namespaces
 - `pg`, which sets up Postgres for logical replication and sets up the publication slot
 - `replication`, which handles the actual change stream
 - `core`, which routes new changes to their respective configs and deals with processing / retry logic
