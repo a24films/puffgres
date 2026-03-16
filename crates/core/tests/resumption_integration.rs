@@ -214,6 +214,7 @@ async fn cdc_resumption_after_crash() {
         publication_name: pub_name.to_string(),
         start_lsn: None,
         status_interval: Duration::from_secs(1),
+        max_transaction_events: None,
     })
     .await
     .expect("failed to connect replication stream");
@@ -277,6 +278,7 @@ async fn cdc_resumption_after_crash() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(checkpoint.lsn),
         status_interval: Duration::from_secs(1),
+        max_transaction_events: None,
     })
     .await
     .expect("failed to reconnect replication stream");
@@ -373,6 +375,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(watermark_lsn),
         status_interval: Duration::from_secs(1),
+        max_transaction_events: None,
     })
     .await
     .expect("failed to connect replication stream");
@@ -448,6 +451,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         publication_name: pub_name.to_string(),
         start_lsn: Some(streaming_ckpt.lsn),
         status_interval: Duration::from_secs(1),
+        max_transaction_events: None,
     })
     .await
     .expect("failed to reconnect replication stream");

@@ -35,6 +35,10 @@ pub struct ReplicationStreamConfig {
     pub publication_name: String,
     pub start_lsn: Option<u64>,
     pub status_interval: Duration,
+    /// Maximum number of events per transaction. Transactions exceeding this
+    /// limit are dropped and returned as `BatchResult::TransactionTooLarge`.
+    /// Defaults to 1,000,000.
+    pub max_transaction_events: Option<usize>,
 }
 
 /// All row events from a single committed transaction.
@@ -55,10 +59,23 @@ pub enum BatchResult {
     /// A tracked relation's schema changed. The caller should tear down
     /// and reconnect with fresh schema metadata.
     SchemaChanged(SchemaChanged),
+    /// A transaction exceeded `max_transaction_events`. The caller should
+    /// skip this transaction (log + DLQ) and advance past it.
+    TransactionTooLarge {
+        /// Commit LSN — must be acked to advance past the skipped transaction.
+        ack_lsn: u64,
+        /// Number of events that were in the transaction before it was dropped.
+        event_count: usize,
+    },
 }
+
+/// Default maximum events per transaction (1 million).
+const DEFAULT_MAX_TRANSACTION_EVENTS: usize = 1_000_000;
 
 struct TransactionState {
     events: Vec<RowEvent>,
+    /// Set to `true` when this transaction exceeded the event limit and was truncated.
+    too_large: bool,
 }
 
 /// Buffers row events per transaction via `recv_batch`.
@@ -67,6 +84,7 @@ pub struct ReplicationStream<T: ReplicationTransport = ReplicationClient> {
     relation_cache: RelationCache,
     current_txn: Option<TransactionState>,
     pending_lsn: Option<Lsn>,
+    max_transaction_events: usize,
 }
 
 impl ReplicationStream {
@@ -105,6 +123,9 @@ impl ReplicationStream {
             relation_cache: RelationCache::new(),
             current_txn: None,
             pending_lsn: None,
+            max_transaction_events: config
+                .max_transaction_events
+                .unwrap_or(DEFAULT_MAX_TRANSACTION_EVENTS),
         })
     }
 }
@@ -126,7 +147,10 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
 
             match event {
                 ReplicationEvent::Begin { .. } => {
-                    self.current_txn = Some(TransactionState { events: Vec::new() });
+                    self.current_txn = Some(TransactionState {
+                        events: Vec::new(),
+                        too_large: false,
+                    });
                 }
 
                 ReplicationEvent::XLogData { data, .. } => {
@@ -150,32 +174,53 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                         }
                         WalMessage::Insert(ins) => {
                             if let Some(txn) = &mut self.current_txn {
-                                txn.events.push(RowEvent {
-                                    relation_id: ins.relation_id,
-                                    operation: Operation::Insert,
-                                    new_tuple: Some(ins.tuple),
-                                    old_tuple: None,
-                                });
+                                if txn.too_large {
+                                    // Already marked — skip remaining events
+                                } else if txn.events.len() >= self.max_transaction_events {
+                                    txn.too_large = true;
+                                    txn.events.clear();
+                                } else {
+                                    txn.events.push(RowEvent {
+                                        relation_id: ins.relation_id,
+                                        operation: Operation::Insert,
+                                        new_tuple: Some(ins.tuple),
+                                        old_tuple: None,
+                                    });
+                                }
                             }
                         }
                         WalMessage::Update(upd) => {
                             if let Some(txn) = &mut self.current_txn {
-                                txn.events.push(RowEvent {
-                                    relation_id: upd.relation_id,
-                                    operation: Operation::Update,
-                                    new_tuple: Some(upd.new_tuple),
-                                    old_tuple: upd.old_tuple,
-                                });
+                                if txn.too_large {
+                                    // Already marked — skip remaining events
+                                } else if txn.events.len() >= self.max_transaction_events {
+                                    txn.too_large = true;
+                                    txn.events.clear();
+                                } else {
+                                    txn.events.push(RowEvent {
+                                        relation_id: upd.relation_id,
+                                        operation: Operation::Update,
+                                        new_tuple: Some(upd.new_tuple),
+                                        old_tuple: upd.old_tuple,
+                                    });
+                                }
                             }
                         }
                         WalMessage::Delete(del) => {
                             if let Some(txn) = &mut self.current_txn {
-                                txn.events.push(RowEvent {
-                                    relation_id: del.relation_id,
-                                    operation: Operation::Delete,
-                                    new_tuple: None,
-                                    old_tuple: Some(del.old_tuple),
-                                });
+                                if txn.too_large {
+                                    // Already marked — skip remaining events
+                                } else if txn.events.len() >= self.max_transaction_events {
+                                    txn.too_large = true;
+                                    txn.events.clear();
+                                } else {
+                                    txn.events.push(RowEvent {
+                                        relation_id: del.relation_id,
+                                        operation: Operation::Delete,
+                                        new_tuple: None,
+                                        old_tuple: Some(del.old_tuple),
+                                    });
+                                }
                             }
                         }
                         _ => {}
@@ -185,6 +230,12 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                 ReplicationEvent::Commit { end_lsn, .. } => {
                     if let Some(txn) = self.current_txn.take() {
                         self.pending_lsn = Some(end_lsn);
+                        if txn.too_large {
+                            return Ok(Some(BatchResult::TransactionTooLarge {
+                                ack_lsn: end_lsn.0,
+                                event_count: self.max_transaction_events,
+                            }));
+                        }
                         return Ok(Some(BatchResult::Batch(StreamingBatch {
                             events: txn.events,
                             ack_lsn: end_lsn.0,
@@ -292,6 +343,20 @@ mod tests {
             relation_cache: RelationCache::new(),
             current_txn: None,
             pending_lsn: None,
+            max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
+        }
+    }
+
+    fn make_stream_with_limit(
+        events: Vec<Result<Option<ReplicationEvent>>>,
+        max_events: usize,
+    ) -> ReplicationStream<MockTransport> {
+        ReplicationStream {
+            client: MockTransport::new(events),
+            relation_cache: RelationCache::new(),
+            current_txn: None,
+            pending_lsn: None,
+            max_transaction_events: max_events,
         }
     }
 
@@ -303,6 +368,7 @@ mod tests {
             publication_name: "my_pub".to_string(),
             start_lsn: Some(0x1234),
             status_interval: Duration::from_secs(10),
+            max_transaction_events: None,
         };
         assert_eq!(config.slot_name, "my_slot");
         assert_eq!(config.start_lsn, Some(0x1234));
@@ -557,5 +623,114 @@ mod tests {
         assert_eq!(batch1.ack_lsn, 200);
         let batch2 = expect_batch(stream.recv_batch().await.unwrap());
         assert_eq!(batch2.ack_lsn, 400);
+    }
+
+    /// Build raw pgoutput bytes for an Insert message with one text column.
+    fn encode_insert(relation_id: u32, value: &str) -> bytes::Bytes {
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'I');
+        buf.put_u32(relation_id);
+        buf.put_u8(b'N'); // new tuple marker
+        buf.put_u16(1); // 1 column
+        buf.put_u8(b't'); // text type
+        buf.put_u32(value.len() as u32);
+        buf.put_slice(value.as_bytes());
+        buf.freeze()
+    }
+
+    #[tokio::test]
+    async fn test_transaction_too_large() {
+        // Limit to 2 events
+        let insert1 = encode_insert(1, "a");
+        let insert2 = encode_insert(1, "b");
+        let insert3 = encode_insert(1, "c"); // This triggers the limit
+
+        let mut stream = make_stream_with_limit(
+            vec![
+                Ok(Some(ReplicationEvent::Begin {
+                    final_lsn: Lsn(0),
+                    xid: 1,
+                    commit_time_micros: 0,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: insert1,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: insert2,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: insert3,
+                })),
+                Ok(Some(ReplicationEvent::Commit {
+                    lsn: Lsn(100),
+                    end_lsn: Lsn(200),
+                    commit_time_micros: 0,
+                })),
+            ],
+            2,
+        );
+
+        match stream.recv_batch().await.unwrap().unwrap() {
+            BatchResult::TransactionTooLarge {
+                ack_lsn,
+                event_count,
+            } => {
+                assert_eq!(ack_lsn, 200);
+                assert_eq!(event_count, 2);
+            }
+            other => panic!("expected TransactionTooLarge, got: {other:?}"),
+        }
+
+        // Should still be able to ack and advance past it
+        stream.ack();
+        assert_eq!(stream.client.acked_lsns(), vec![200]);
+    }
+
+    #[tokio::test]
+    async fn test_transaction_within_limit() {
+        let insert1 = encode_insert(1, "a");
+        let insert2 = encode_insert(1, "b");
+
+        let mut stream = make_stream_with_limit(
+            vec![
+                Ok(Some(ReplicationEvent::Begin {
+                    final_lsn: Lsn(0),
+                    xid: 1,
+                    commit_time_micros: 0,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: insert1,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: insert2,
+                })),
+                Ok(Some(ReplicationEvent::Commit {
+                    lsn: Lsn(100),
+                    end_lsn: Lsn(200),
+                    commit_time_micros: 0,
+                })),
+            ],
+            2,
+        );
+
+        // 2 events with limit 2 should succeed
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.events.len(), 2);
+        assert_eq!(batch.ack_lsn, 200);
     }
 }
