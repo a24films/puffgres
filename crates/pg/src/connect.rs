@@ -83,9 +83,18 @@ fn root_certs() -> rustls::RootCertStore {
 }
 
 fn requires_tls(connection_string: &str) -> bool {
-    connection_string.contains("sslmode=require")
-        || connection_string.contains("sslmode=verify-ca")
-        || connection_string.contains("sslmode=verify-full")
+    // Parse as URL to extract sslmode from query params, avoiding false matches
+    // on passwords or other URL components that happen to contain "sslmode=".
+    if let Ok(url) = url::Url::parse(connection_string) {
+        return url.query_pairs().any(|(k, v)| {
+            k == "sslmode" && matches!(v.as_ref(), "require" | "verify-ca" | "verify-full")
+        });
+    }
+    // Fallback for non-URL connection strings: check key=value pairs
+    connection_string
+        .split(|c: char| c.is_whitespace())
+        .filter_map(|part| part.split_once('='))
+        .any(|(k, v)| k == "sslmode" && matches!(v, "require" | "verify-ca" | "verify-full"))
 }
 
 pub async fn validate_tables(client: &Client, tables: &[(&str, &str)]) -> Result<()> {
@@ -149,5 +158,50 @@ mod tests {
         assert_eq!(quote_identifier("simple"), "\"simple\"");
         assert_eq!(quote_identifier("with\"quote"), "\"with\"\"quote\"");
         assert_eq!(quote_identifier("CamelCase"), "\"CamelCase\"");
+    }
+
+    #[test]
+    fn tls_required_for_sslmode_require() {
+        assert!(requires_tls(
+            "postgresql://user:pass@host/db?sslmode=require"
+        ));
+    }
+
+    #[test]
+    fn tls_required_for_verify_full() {
+        assert!(requires_tls(
+            "postgresql://user:pass@host/db?sslmode=verify-full"
+        ));
+    }
+
+    #[test]
+    fn tls_not_required_for_prefer() {
+        assert!(!requires_tls(
+            "postgresql://user:pass@host/db?sslmode=prefer"
+        ));
+    }
+
+    #[test]
+    fn tls_not_required_when_absent() {
+        assert!(!requires_tls("postgresql://user:pass@host/db"));
+    }
+
+    #[test]
+    fn tls_not_triggered_by_password_containing_sslmode() {
+        assert!(!requires_tls("postgresql://user:sslmode=require@host/db"));
+    }
+
+    #[test]
+    fn tls_with_key_value_format() {
+        assert!(requires_tls(
+            "host=db.example.com sslmode=require dbname=mydb"
+        ));
+    }
+
+    #[test]
+    fn tls_required_when_later_param_overrides_prefer() {
+        assert!(requires_tls(
+            "postgresql://user:pass@host/db?sslmode=prefer&sslmode=require"
+        ));
     }
 }

@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use puffgres_cli::{CliError, EnvConfig, ProjectConfig, ProjectPaths};
 
 #[derive(Parser)]
-#[command(name = "puffgres")]
+#[command(name = "puffgres", version)]
 #[command(about = "Replicate Postgres to Turbopuffer")]
 struct Cli {
     #[command(subcommand)]
