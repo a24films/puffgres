@@ -24,6 +24,7 @@ mod tests {
     use super::*;
     use replication::{Operation, TupleData};
     use serde_json::json;
+    use std::sync::Arc;
 
     struct NoopTransformer;
 
@@ -64,7 +65,7 @@ mod tests {
         let event = RowEvent {
             relation_id: 1,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData { columns: vec![] }),
+            new_tuple: Some(Arc::new(TupleData { columns: vec![] })),
             old_tuple: None,
         };
         let id = DocumentId::Uint(1);
@@ -81,7 +82,7 @@ mod tests {
         let good_event = RowEvent {
             relation_id: 1,
             operation: Operation::Insert,
-            new_tuple: Some(TupleData { columns: vec![] }),
+            new_tuple: Some(Arc::new(TupleData { columns: vec![] })),
             old_tuple: None,
         };
         let bad_event = RowEvent {
