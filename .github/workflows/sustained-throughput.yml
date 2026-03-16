@@ -1,0 +1,70 @@
+name: Sustained Throughput
+
+on:
+  schedule:
+    - cron: '0 23 * * 1' # every Monday at 11pm UTC (7pm ET)
+  workflow_dispatch:
+
+jobs:
+  sustained-throughput:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: sustained-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            sustained-${{ runner.os }}-
+
+      - name: Build load tests (release)
+        run: |
+          cargo test -p replication --release --test load_sub_batch --no-run
+          cargo test -p replication --release --test load_latency --no-run
+          cargo test -p puffgres-core --release --test load_fanout --no-run
+
+      - name: Sustained sub-batch throughput (100M events)
+        run: |
+          set -o pipefail
+          cargo test -p replication --release --test load_sub_batch sub_batch_100m_events -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/sustained_sub_batch.txt
+
+      - name: Sustained routing throughput
+        run: |
+          set -o pipefail
+          cargo test -p puffgres-core --release --test load_fanout sustained_routing_60s -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/sustained_routing.txt
+
+      - name: Latency percentiles
+        run: |
+          set -o pipefail
+          cargo test -p replication --release --test load_latency -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/latency.txt
+
+      - name: Summary
+        run: |
+          echo "## Sustained Throughput Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Runner: \`ubuntu-latest\` (4-core, 16 GB RAM)" >> $GITHUB_STEP_SUMMARY
+          echo "Profile: \`--release\` (LTO, codegen-units=1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Sub-batch throughput (100M events)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/sustained_sub_batch.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Routing throughput" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/sustained_routing.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Latency percentiles" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/latency.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

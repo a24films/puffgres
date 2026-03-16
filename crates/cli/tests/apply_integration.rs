@@ -5,7 +5,7 @@ use puffgres_cli::EnvConfig;
 use puffgres_cli::apply::run_async;
 use puffgres_cli::test_utils::{
     PASSTHROUGH_TRANSFORM, VECTOR_NO_METRIC_TRANSFORM, VECTOR_WITH_METRIC_TRANSFORM, setup_project,
-    write_config, write_transform,
+    stub_schema, write_config, write_transform,
 };
 use state::StateDb;
 
@@ -52,8 +52,10 @@ async fn apply_and_idempotency() {
 
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
     write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+    stub_schema(&user_dir);
     let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
     write_transform(&film_dir, PASSTHROUGH_TRANSFORM);
+    stub_schema(&film_dir);
 
     // First apply: both configs written
     run_async(&paths, &env_config).await.unwrap();
@@ -81,6 +83,7 @@ async fn rejects_modified_config() {
 
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
     write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+    stub_schema(&user_dir);
     run_async(&paths, &env_config).await.unwrap();
 
     // Mutate the already-applied config
@@ -115,6 +118,7 @@ async fn rejects_nonexistent_table() {
 
     let ghost_dir = write_config(&paths, "ghost", "public", "nonexistent_table", "id", "uint");
     write_transform(&ghost_dir, PASSTHROUGH_TRANSFORM);
+    stub_schema(&ghost_dir);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -141,6 +145,7 @@ async fn rejects_nonexistent_id_column() {
     drop(pg_client);
     let col_dir = write_config(&paths, "col", "public", "col_test", "missing_col", "uint");
     write_transform(&col_dir, PASSTHROUGH_TRANSFORM);
+    stub_schema(&col_dir);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -167,6 +172,7 @@ async fn rejects_incompatible_id_type() {
     drop(pg_client);
     let typed_dir = write_config(&paths, "typed", "public", "type_test", "id", "uint");
     write_transform(&typed_dir, PASSTHROUGH_TRANSFORM);
+    stub_schema(&typed_dir);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -197,6 +203,7 @@ async fn rejects_vector_without_distance_metric() {
     drop(pg_client);
     let vec_dir = write_config(&paths, "vec", "public", "vec_test", "id", "uint");
     write_transform(&vec_dir, VECTOR_NO_METRIC_TRANSFORM);
+    stub_schema(&vec_dir);
 
     let err = run_async(&paths, &env_config).await.unwrap_err();
     assert!(
@@ -227,6 +234,7 @@ async fn accepts_vector_with_distance_metric() {
     drop(pg_client);
     let goodvec_dir = write_config(&paths, "goodvec", "public", "good_vec", "id", "uint");
     write_transform(&goodvec_dir, VECTOR_WITH_METRIC_TRANSFORM);
+    stub_schema(&goodvec_dir);
 
     let result = run_async(&paths, &env_config).await;
     assert!(result.is_ok(), "expected apply to succeed, got: {result:?}");
@@ -250,6 +258,7 @@ async fn accepts_empty_table_skips_dry_run() {
     drop(pg_client);
     let empty_dir = write_config(&paths, "empty", "public", "empty_apply", "id", "uint");
     write_transform(&empty_dir, PASSTHROUGH_TRANSFORM);
+    stub_schema(&empty_dir);
 
     let result = run_async(&paths, &env_config).await;
     assert!(

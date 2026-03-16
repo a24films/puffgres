@@ -148,7 +148,10 @@ impl ReplicationStream {
         )
         .with_port(parsed.port)
         .with_tls(tls)
-        .with_status_interval(config.status_interval);
+        .with_status_interval(config.status_interval)
+        // Keep idle wakeups aligned with feedback cadence so acked LSNs are
+        // flushed even when the stream goes quiet immediately after a commit.
+        .with_wakeup_interval(config.status_interval);
 
         if let Some(lsn) = config.start_lsn {
             repl_config = repl_config.with_start_lsn(Lsn(lsn));

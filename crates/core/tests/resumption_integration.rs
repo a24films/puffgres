@@ -203,7 +203,7 @@ async fn cdc_resumption_after_crash() {
         .await
         .expect("failed to create publication");
 
-    let (state_dir, mut state_db) = create_state_db();
+    let (state_dir, state_db) = create_state_db();
 
     // Insert 10 rows to generate CDC events
     insert_rows(&client, "resumption_items", 1..=10).await;
@@ -249,7 +249,7 @@ async fn cdc_resumption_after_crash() {
 
     // --- Simulate crash: drop and reopen state db ---
     drop(state_db);
-    let mut state_db2 = reopen_state_db(&state_dir);
+    let state_db2 = reopen_state_db(&state_dir);
 
     // Verify checkpoint survived
     let checkpoint = state_db2
@@ -414,7 +414,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
     drop(state_db);
 
     // --- Phase 3: restart after crash ---
-    let mut state_db2 = reopen_state_db(&state_dir);
+    let state_db2 = reopen_state_db(&state_dir);
 
     // Verify backfill is marked Completed -- it should NOT be re-run
     let backfill_progress = state_db2
