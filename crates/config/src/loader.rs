@@ -51,7 +51,10 @@ impl ConfigLoader {
     }
 
     pub fn compute_transform_hash(config_path: &Path) -> Result<Option<String>, ConfigError> {
-        let transform_path = config_path.parent().unwrap().join("transform.ts");
+        let transform_path = config_path
+            .parent()
+            .ok_or_else(|| ConfigError::ParseError("config path has no parent directory".into()))?
+            .join("transform.ts");
 
         if !transform_path.exists() {
             return Ok(None);

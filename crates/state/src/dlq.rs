@@ -129,7 +129,12 @@ impl StateDb {
             doc_id: entry.doc_id.as_deref(),
             error_message: &entry.error_message,
             error_kind: entry.error_kind.to_str(),
-            retry_count: i32::try_from(entry.retry_count).expect("retry_count exceeds i32::MAX"),
+            retry_count: i32::try_from(entry.retry_count).map_err(|_| {
+                StateError::InvalidState(format!(
+                    "retry_count {} exceeds i32::MAX",
+                    entry.retry_count
+                ))
+            })?,
             created_at: epoch::to_millis(&entry.created_at),
             last_retry_at: entry.last_retry_at.as_ref().map(epoch::to_millis),
             permanent_at: entry.permanent_at.as_ref().map(epoch::to_millis),

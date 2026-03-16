@@ -36,15 +36,13 @@ pub(crate) async fn setup_pipeline(
     let loader = ConfigLoader::new(&paths.configs);
     let all_configs = loader.load_all()?;
 
-    let applied_configs: Vec<_> = all_configs
-        .into_iter()
-        .filter(|(_, config)| {
-            db.get_config(&config.name)
-                .ok()
-                .flatten()
-                .is_some_and(|r| r.tombstone_applied_at.is_none())
-        })
-        .collect();
+    let mut applied_configs = Vec::new();
+    for item in all_configs {
+        let record = db.get_config(&item.1.name)?;
+        if record.is_some_and(|r| r.tombstone_applied_at.is_none()) {
+            applied_configs.push(item);
+        }
+    }
 
     if applied_configs.is_empty() {
         tracing::warn!("no applied configs \u{2014} run `puffgres apply` first");

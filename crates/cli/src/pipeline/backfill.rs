@@ -72,12 +72,18 @@ pub(crate) async fn check_and_run_backfills(
                 return Ok(watermark_lsns);
             }
 
-            let namespace = namespaces
-                .get(&config.name)
-                .expect("namespace missing for applied config");
-            let transformer = transformers
-                .get(&config.name)
-                .expect("transformer missing for applied config");
+            let namespace = namespaces.get(&config.name).ok_or_else(|| {
+                CliError::Run(format!(
+                    "internal error: no namespace for config '{}'",
+                    config.name
+                ))
+            })?;
+            let transformer = transformers.get(&config.name).ok_or_else(|| {
+                CliError::Run(format!(
+                    "internal error: no transformer for config '{}'",
+                    config.name
+                ))
+            })?;
 
             let backfill_config = BackfillConfig {
                 batch_size: project_config.batch_size(),

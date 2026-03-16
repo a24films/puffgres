@@ -39,17 +39,25 @@ impl ShutdownController {
 #[cfg(unix)]
 async fn wait_for_signal() {
     use tokio::signal::unix::{SignalKind, signal};
-    let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
-    let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-    tokio::select! {
-        _ = sigint.recv() => {}
-        _ = sigterm.recv() => {}
+    let sigint = signal(SignalKind::interrupt());
+    let sigterm = signal(SignalKind::terminate());
+    match (sigint, sigterm) {
+        (Ok(mut si), Ok(mut st)) => {
+            tokio::select! {
+                _ = si.recv() => {}
+                _ = st.recv() => {}
+            }
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::error!(error = %e, "failed to register signal handler, falling back to ctrl-c");
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 
 #[cfg(not(unix))]
 async fn wait_for_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to register ctrl-c handler");
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::error!(error = %e, "failed to register ctrl-c handler");
+    }
 }

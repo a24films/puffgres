@@ -32,12 +32,16 @@ async fn process_events(
     let config_events = router.route_batch(events, relation_cache);
 
     for (config_name, events) in &config_events {
-        let transformer = transformers
-            .get(*config_name)
-            .expect("transformer missing for applied config");
-        let namespace = namespaces
-            .get(*config_name)
-            .expect("namespace missing for applied config");
+        let transformer = transformers.get(*config_name).ok_or_else(|| {
+            CliError::Run(format!(
+                "internal error: no transformer for config '{config_name}'"
+            ))
+        })?;
+        let namespace = namespaces.get(*config_name).ok_or_else(|| {
+            CliError::Run(format!(
+                "internal error: no namespace for config '{config_name}'"
+            ))
+        })?;
 
         process_config_events(
             config_name,
