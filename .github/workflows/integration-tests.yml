@@ -8,12 +8,35 @@ on:
 jobs:
   integration-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run integration tests
-        run: cargo test --test connect_integration
-        working-directory: crates/pg
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: integration-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            integration-${{ runner.os }}-
+
+      - name: Run integration tests (all crates)
+        run: |
+          failed=0
+          for test_file in crates/*/tests/*_integration.rs; do
+            [ -f "$test_file" ] || continue
+            crate_dir=$(echo "$test_file" | cut -d/ -f1-2)
+            crate=$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$crate_dir/Cargo.toml" | head -1)
+            test_name=$(basename "$test_file" .rs)
+            echo "Running $crate::$test_name..."
+            if ! cargo test -p "$crate" --test "$test_name" -- --nocapture; then
+              failed=1
+            fi
+          done
+          exit $failed

@@ -1,0 +1,189 @@
+name: Fuzz, Benchmark & Chaos
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  benchmarks:
+    if: github.event.label.name == 'run-fuzz-benchmark'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: bench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            bench-${{ runner.os }}-
+
+      - name: Run decoder benchmarks
+        run: cargo bench --bench decoder_bench 2>&1 | tee /tmp/decoder.txt
+        working-directory: crates/replication
+
+      - name: Run stream benchmarks
+        run: cargo bench --bench stream_bench 2>&1 | tee /tmp/stream.txt
+        working-directory: crates/replication
+
+      - name: Run checkpoint benchmarks
+        run: cargo bench --bench checkpoint_bench 2>&1 | tee /tmp/checkpoint.txt
+        working-directory: crates/state
+
+      - name: Upload criterion report
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-report
+          path: target/criterion
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Decoder (replication)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/decoder.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Stream (replication)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/stream.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Checkpoint (state)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/checkpoint.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  load-tests:
+    if: github.event.label.name == 'run-fuzz-benchmark'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: load-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            load-${{ runner.os }}-
+
+      - name: Run load tests (release)
+        run: |
+          echo "## Load Tests" >> $GITHUB_STEP_SUMMARY
+          echo "Runner: \`ubuntu-latest\` (4-core, 16 GB RAM) | Profile: \`--release\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          failed=0
+          for test_file in crates/*/tests/load_*.rs; do
+            [ -f "$test_file" ] || continue
+            crate_dir=$(echo "$test_file" | cut -d/ -f1-2)
+            crate=$(basename "$crate_dir")
+            test_name=$(basename "$test_file" .rs)
+            echo "Running $crate::$test_name..."
+            if cargo test -p "$crate" --release --test "$test_name" -- --ignored --nocapture --test-threads=1 2>&1 | tee "/tmp/${test_name}.txt"; then
+              echo "### $crate / $test_name — passed" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### $crate / $test_name — **failed**" >> $GITHUB_STEP_SUMMARY
+              failed=1
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat "/tmp/${test_name}.txt" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+          exit $failed
+
+  chaos-tests:
+    if: github.event.label.name == 'run-fuzz-benchmark'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: chaos-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            chaos-${{ runner.os }}-
+
+      - name: Run chaos tests (release)
+        run: |
+          echo "## Chaos Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          failed=0
+          for test_file in crates/*/tests/chaos_*.rs; do
+            [ -f "$test_file" ] || continue
+            crate_dir=$(echo "$test_file" | cut -d/ -f1-2)
+            crate=$(basename "$crate_dir")
+            test_name=$(basename "$test_file" .rs)
+            echo "Running $crate::$test_name..."
+            if cargo test -p "$crate" --release --test "$test_name" -- --ignored --nocapture --test-threads=1 2>&1 | tee "/tmp/${test_name}.txt"; then
+              echo "### $crate / $test_name — passed" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### $crate / $test_name — **failed**" >> $GITHUB_STEP_SUMMARY
+              failed=1
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat "/tmp/${test_name}.txt" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+          exit $failed
+
+  fuzz:
+    if: github.event.label.name == 'run-fuzz-benchmark'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+
+      - name: Run all fuzz targets
+        working-directory: fuzz
+        run: |
+          echo "## Fuzz Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          failed=0
+          for target in $(cargo +nightly fuzz list); do
+            echo "Fuzzing $target for 120s..."
+            if cargo +nightly fuzz run "$target" -- -max_total_time=120 2>&1 | tee "/tmp/fuzz_${target}.txt"; then
+              echo "- **$target**: no crashes (120s)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **$target**: **crash detected**" >> $GITHUB_STEP_SUMMARY
+              failed=1
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -20 "/tmp/fuzz_${target}.txt" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+          exit $failed

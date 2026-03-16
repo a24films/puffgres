@@ -116,19 +116,32 @@ pub async fn validate_id_column_uniqueness(
 /// Query the actual PG column type and return the SQL cast expression needed
 /// for cursor comparisons. Returns e.g. `"::int8"`, `"::uuid"`, or `""` (no cast).
 ///
-/// Uses `format_type()` to get the human-readable type name, which handles
-/// domain types transparently — Postgres resolves the base type for us.
+/// Resolves domain types to their base type via `pg_type.typbasetype` so that
+/// e.g. `CREATE DOMAIN pos_int AS INTEGER` is treated as `integer`.
 pub async fn resolve_cursor_cast(client: &Client, config: &BatchQueryConfig) -> Result<String> {
     let query = r#"
-        SELECT format_type(atttypid, atttypmod)
-        FROM pg_catalog.pg_attribute a
-        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = $1
-          AND c.relname = $2
-          AND a.attname = $3
-          AND a.attnum > 0
-          AND NOT a.attisdropped
+        WITH RECURSIVE base_type AS (
+            SELECT a.atttypid AS typid, a.atttypmod AS typmod
+            FROM pg_catalog.pg_attribute a
+            JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relname = $2
+              AND a.attname = $3
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            UNION ALL
+            SELECT t.typbasetype, bt.typmod
+            FROM base_type bt
+            JOIN pg_catalog.pg_type t ON t.oid = bt.typid
+            WHERE t.typbasetype <> 0
+        )
+        SELECT format_type(typid, typmod)
+        FROM base_type
+        WHERE NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_type t
+            WHERE t.oid = base_type.typid AND t.typbasetype <> 0
+        )
     "#;
 
     let row = client

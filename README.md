@@ -10,6 +10,16 @@ A bit of Puffgres' design philosophy:
 
 Read our [docs](TK) to get started.
 
+## Performance
+
+Measured on GitHub Actions `ubuntu-latest` (4-core x86, 16 GB RAM) with `--release` builds (LTO, single codegen unit).
+
+- **Throughput**: >600K events/sec sustained over 100M events
+- **Batch latency**: p50 <10&micro;s, p99 <100&micro;s across 100K transactions
+- **Recovery**: <60ms to resume from checkpoint after crash
+- **Memory**: <160 bytes/event at scale, sub-linear RSS growth
+- **Fanout**: >1M events/sec routing across 1000 configs
+
 ## Development
 
 ### Install
@@ -30,6 +40,12 @@ cargo test --workspace --lib
 
 # Integration tests (requires Postgres)
 cargo test --workspace
+```
+
+### Benchmarks
+
+```bash
+cargo bench --package replication --bench decoder_bench
 ```
 
 ### Fuzzing
