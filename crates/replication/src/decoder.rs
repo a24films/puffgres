@@ -498,4 +498,70 @@ mod tests {
         // missing timestamp + xid
         assert!(decode(Bytes::from(buf)).is_err());
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn decode_never_panics(data: Vec<u8>) {
+                let _ = decode(Bytes::from(data));
+            }
+
+            #[test]
+            fn begin_roundtrip(final_lsn: u64, timestamp: i64, xid: u32) {
+                let mut buf = vec![b'B'];
+                buf.extend_from_slice(&final_lsn.to_be_bytes());
+                buf.extend_from_slice(&timestamp.to_be_bytes());
+                buf.extend_from_slice(&xid.to_be_bytes());
+
+                match decode(Bytes::from(buf)).unwrap() {
+                    WalMessage::Begin(b) => {
+                        prop_assert_eq!(b.final_lsn, final_lsn);
+                        prop_assert_eq!(b.timestamp, timestamp);
+                        prop_assert_eq!(b.xid, xid);
+                    }
+                    other => prop_assert!(false, "expected Begin, got {:?}", other),
+                }
+            }
+
+            #[test]
+            fn commit_roundtrip(commit_lsn: u64, end_lsn: u64, timestamp: i64) {
+                let mut buf = vec![b'C', 0];
+                buf.extend_from_slice(&commit_lsn.to_be_bytes());
+                buf.extend_from_slice(&end_lsn.to_be_bytes());
+                buf.extend_from_slice(&timestamp.to_be_bytes());
+
+                match decode(Bytes::from(buf)).unwrap() {
+                    WalMessage::Commit(c) => {
+                        prop_assert_eq!(c.commit_lsn, commit_lsn);
+                        prop_assert_eq!(c.end_lsn, end_lsn);
+                        prop_assert_eq!(c.timestamp, timestamp);
+                    }
+                    other => prop_assert!(false, "expected Commit, got {:?}", other),
+                }
+            }
+
+            #[test]
+            fn text_column_roundtrip(data in proptest::collection::vec(any::<u8>(), 0..1024)) {
+                let mut buf = vec![b'I'];
+                buf.extend_from_slice(&1u32.to_be_bytes()); // relation_id
+                buf.push(b'N');
+                // tuple: 1 text column
+                buf.extend_from_slice(&1u16.to_be_bytes());
+                buf.push(b't');
+                buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                buf.extend_from_slice(&data);
+
+                match decode(Bytes::from(buf)).unwrap() {
+                    WalMessage::Insert(ins) => {
+                        prop_assert_eq!(ins.tuple.columns.len(), 1);
+                        prop_assert_eq!(ins.tuple.columns[0].as_bytes().unwrap(), &data[..]);
+                    }
+                    other => prop_assert!(false, "expected Insert, got {:?}", other),
+                }
+            }
+        }
+    }
 }

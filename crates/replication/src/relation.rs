@@ -401,4 +401,64 @@ mod tests {
         let watched = vec!["id".to_string()];
         assert!(cache.schema_changed_for_columns(&type_changed, &watched));
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_column_info() -> impl Strategy<Value = ColumnInfo> {
+            (any::<bool>(), "[a-z]{1,8}", any::<u32>(), any::<i32>()).prop_map(
+                |(part_of_key, name, type_oid, type_modifier)| ColumnInfo {
+                    part_of_key,
+                    name,
+                    type_oid,
+                    type_modifier,
+                },
+            )
+        }
+
+        fn arb_relation_info() -> impl Strategy<Value = RelationInfo> {
+            (
+                any::<u32>(),
+                "[a-z]{1,8}",
+                "[a-z]{1,8}",
+                proptest::collection::vec(arb_column_info(), 0..8),
+            )
+                .prop_map(|(id, namespace, name, columns)| RelationInfo {
+                    id,
+                    namespace,
+                    name,
+                    replica_identity: ReplicaIdentity::Default,
+                    columns,
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn schema_changed_is_false_for_identical_relation(rel in arb_relation_info()) {
+                let mut cache = RelationCache::new();
+                cache.insert(rel.clone());
+                // Inserting the same relation again should not be detected as a change
+                prop_assert!(!cache.schema_changed(&rel));
+            }
+
+            #[test]
+            fn schema_changed_is_false_for_unknown_relation(rel in arb_relation_info()) {
+                let cache = RelationCache::new();
+                // A relation not in the cache is never "changed"
+                prop_assert!(!cache.schema_changed(&rel));
+            }
+
+            #[test]
+            fn insert_then_get_roundtrips(rel in arb_relation_info()) {
+                let mut cache = RelationCache::new();
+                let id = rel.id;
+                cache.insert(rel.clone());
+                let cached = cache.get(id).unwrap();
+                prop_assert_eq!(&cached.name, &rel.name);
+                prop_assert_eq!(&cached.namespace, &rel.namespace);
+                prop_assert_eq!(cached.columns.len(), rel.columns.len());
+            }
+        }
+    }
 }

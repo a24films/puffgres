@@ -65,6 +65,7 @@ tokio-postgres-rustls-improved = { version = "0.16", default-features = false, f
 rustls = { version = "0.23", features = ["ring"] }
 webpki-roots = "1.0"
 tokio-stream = { version = "0.1", features = ["sync"] }
+proptest = "1.10.0"
 tempfile = "3.26.0"
 temp-env = "0.3.6"
 testcontainers = "0.26.3"
