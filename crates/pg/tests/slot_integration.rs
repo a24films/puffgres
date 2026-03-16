@@ -138,6 +138,7 @@ async fn terminate_active_slot_backend_kills_stale_connection() {
         start_lsn: None,
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await

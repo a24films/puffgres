@@ -5,17 +5,20 @@ use pg::connect::connect;
 use pg::publication::ensure_publication;
 use pg::slot::ensure_slot;
 use pg::test_utils::setup_postgres_logical;
-use replication::{Operation, ReplicationError, ReplicationStream, ReplicationStreamConfig};
+use replication::{
+    BatchResult, Operation, ReplicationStream, ReplicationStreamConfig, SchemaChanged,
+    StreamingBatch,
+};
 
 const SLOT: &str = "schema_change_slot";
 const PUB: &str = "schema_change_pub";
 
-/// Wait for `recv_batch` to return a batch with at least one event,
+/// Wait for `recv_batch` to return a `Batch` with at least one event,
 /// retrying on empty keep-alive batches up to a timeout.
 async fn recv_batch_with_events(
     stream: &mut ReplicationStream,
     timeout: Duration,
-) -> replication::Result<Option<replication::StreamingBatch>> {
+) -> replication::Result<Option<StreamingBatch>> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -24,36 +27,37 @@ async fn recv_batch_with_events(
         }
 
         match tokio::time::timeout(remaining, stream.recv_batch()).await {
-            Ok(Ok(Some(batch))) if !batch.events.is_empty() => return Ok(Some(batch)),
-            Ok(Ok(Some(_))) => {
-                // Empty batch (e.g. DDL-only transaction) — keep going
-                continue;
+            Ok(Ok(Some(BatchResult::Batch(batch)))) if !batch.events.is_empty() => {
+                return Ok(Some(batch));
             }
-            Ok(other) => return other,
+            Ok(Ok(Some(BatchResult::Batch(_)))) => continue,
+            Ok(Ok(Some(_))) => continue,
+            Ok(Ok(None)) => return Ok(None),
+            Ok(Err(e)) => return Err(e),
             Err(_) => panic!("timed out waiting for a batch with events"),
         }
     }
 }
 
-/// Wait for `recv_batch` to return `Err(ReplicationError::SchemaChanged { .. })`.
+/// Wait for `recv_batch` to return `BatchResult::SchemaChanged`.
 /// Empty batches and non-empty batches are consumed along the way.
 async fn recv_until_schema_changed(
     stream: &mut ReplicationStream,
     timeout: Duration,
-) -> replication::Result<Option<replication::StreamingBatch>> {
+) -> Option<SchemaChanged> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            panic!("timed out waiting for SchemaChanged error");
+            panic!("timed out waiting for SchemaChanged signal");
         }
 
         match tokio::time::timeout(remaining, stream.recv_batch()).await {
-            Ok(Err(e @ ReplicationError::SchemaChanged { .. })) => return Err(e),
-            Ok(Err(e)) => return Err(e),
+            Ok(Ok(Some(BatchResult::SchemaChanged(sc)))) => return Some(sc),
+            Ok(Err(e)) => panic!("unexpected error: {e}"),
             Ok(Ok(Some(_))) => continue, // consume batches
-            Ok(Ok(None)) => return Ok(None),
-            Err(_) => panic!("timed out waiting for SchemaChanged error"),
+            Ok(Ok(None)) => return None,
+            Err(_) => panic!("timed out waiting for SchemaChanged signal"),
         }
     }
 }
@@ -94,6 +98,7 @@ async fn schema_change_triggers_error_on_alter_table() {
         start_lsn: None,
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await
@@ -131,16 +136,11 @@ async fn schema_change_triggers_error_on_alter_table() {
         .unwrap();
 
     // recv_batch should return SchemaChanged
-    let result = recv_until_schema_changed(&mut stream, Duration::from_secs(10)).await;
-    match &result {
-        Err(ReplicationError::SchemaChanged {
-            namespace, name, ..
-        }) => {
-            assert_eq!(namespace, "public");
-            assert_eq!(name, "test_schema");
-        }
-        other => panic!("expected SchemaChanged error, got: {other:?}"),
-    }
+    let sc = recv_until_schema_changed(&mut stream, Duration::from_secs(10))
+        .await
+        .expect("expected SchemaChanged signal");
+    assert_eq!(sc.namespace, "public");
+    assert_eq!(sc.name, "test_schema");
 
     // Verify the relation cache was updated with the new column
     let cache = stream.relation_cache();
@@ -195,6 +195,7 @@ async fn reconnect_after_schema_change_resumes_streaming() {
         start_lsn: None,
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await
@@ -226,12 +227,9 @@ async fn reconnect_after_schema_change_resumes_streaming() {
         .await
         .unwrap();
 
-    // Get SchemaChanged error
-    let result = recv_until_schema_changed(&mut stream, Duration::from_secs(10)).await;
-    assert!(
-        matches!(result, Err(ReplicationError::SchemaChanged { .. })),
-        "expected SchemaChanged, got: {result:?}",
-    );
+    // Get SchemaChanged signal
+    let sc = recv_until_schema_changed(&mut stream, Duration::from_secs(10)).await;
+    assert!(sc.is_some(), "expected SchemaChanged signal");
 
     // Drop stream #1, reconnect from the last acked LSN (simulating the run.rs reconnect loop).
     // Replication slots retain all un-acked WAL, so when we reconnect from the last
@@ -251,6 +249,7 @@ async fn reconnect_after_schema_change_resumes_streaming() {
         start_lsn: Some(last_acked_lsn),
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     })
     .await

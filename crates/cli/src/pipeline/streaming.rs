@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use backon::{BackoffBuilder, ExponentialBuilder};
 use chrono::Utc;
 use puff::TurbopufferClient;
-use puffgres_core::{Router, Transformer};
-use replication::{ReplicationStream, ReplicationStreamConfig};
+use puffgres_core::{DocumentId, Router, Transformer};
+use replication::{RelationCache, ReplicationStream, ReplicationStreamConfig, RowEvent};
 use state::{StateDb, StreamingCheckpoint};
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +14,105 @@ use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::observability::Metrics;
 use crate::project_config::ProjectConfig;
+
+/// Route, transform, and send a set of events to Turbopuffer. Shared between
+/// committed batches and streaming sub-batches.
+async fn process_events(
+    events: &[RowEvent],
+    relation_cache: &RelationCache,
+    router: &Router,
+    transformers: &HashMap<String, Box<dyn Transformer>>,
+    namespaces: &HashMap<String, String>,
+    puff_client: &TurbopufferClient,
+    db: &StateDb,
+    metrics: Option<&Metrics>,
+    events_processed: &mut HashMap<String, u64>,
+    dlq_lsn: u64,
+) -> Result<(), CliError> {
+    let config_events = router.route_batch(events, relation_cache);
+
+    for (config_name, events) in &config_events {
+        let transformer = transformers
+            .get(*config_name)
+            .expect("transformer missing for applied config");
+        let namespace = namespaces
+            .get(*config_name)
+            .expect("namespace missing for applied config");
+
+        process_config_events(
+            config_name,
+            events,
+            namespace,
+            transformer.as_ref(),
+            puff_client,
+            db,
+            metrics,
+            events_processed,
+            dlq_lsn,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn process_config_events(
+    config_name: &str,
+    events: &[(&RowEvent, DocumentId)],
+    namespace: &str,
+    transformer: &dyn Transformer,
+    puff_client: &TurbopufferClient,
+    db: &StateDb,
+    metrics: Option<&Metrics>,
+    events_processed: &mut HashMap<String, u64>,
+    dlq_lsn: u64,
+) -> Result<(), CliError> {
+    let transform_result = transformer.transform_batch(events).await;
+
+    match transform_result {
+        Err(e) => {
+            tracing::error!(config = %config_name, error = %e, "transform error, sending to DLQ");
+            if let Some(m) = metrics {
+                m.cdc_events_failed.add(events.len() as u64, &[]);
+            }
+            send_events_to_dlq(db, config_name, dlq_lsn, events, &e.to_string(), false)?;
+        }
+        Ok(actions) => {
+            let send_start = std::time::Instant::now();
+            match puff_client.send_batch(namespace, &actions).await {
+                Err(e) => {
+                    tracing::error!(config = %config_name, error = %e, "turbopuffer error, sending to DLQ");
+                    if let Some(m) = metrics {
+                        m.cdc_events_failed.add(events.len() as u64, &[]);
+                        m.turbopuffer_requests.add(1, &[]);
+                        m.turbopuffer_latency
+                            .record(send_start.elapsed().as_millis() as f64, &[]);
+                    }
+                    send_events_to_dlq(db, config_name, dlq_lsn, events, &e.to_string(), false)?;
+                }
+                Ok(()) => {
+                    let count = events_processed.entry(config_name.to_string()).or_insert(0);
+                    *count += events.len() as u64;
+
+                    if let Some(m) = metrics {
+                        m.cdc_events_processed.add(events.len() as u64, &[]);
+                        m.turbopuffer_requests.add(1, &[]);
+                        m.turbopuffer_latency
+                            .record(send_start.elapsed().as_millis() as f64, &[]);
+                    }
+
+                    tracing::info!(
+                        config = %config_name,
+                        namespace = %namespace,
+                        events = events.len(),
+                        total = *count,
+                        "batch sent",
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Outer loop: reconnects the replication stream on schema changes.
 /// When Postgres sends a Relation message with changed columns (e.g. ALTER TABLE),
@@ -114,6 +213,7 @@ pub(crate) async fn run_streaming_loop(
             start_lsn,
             status_interval: STATUS_INTERVAL,
             max_transaction_events: project_config.max_transaction_events(),
+            sub_batch_size: project_config.sub_batch_size(),
             watched_columns: watched_columns.clone(),
         };
 
@@ -159,6 +259,32 @@ pub(crate) async fn run_streaming_loop(
                     should_reconnect = true;
                     break;
                 }
+                replication::BatchResult::SubBatch(sub_batch) => {
+                    if sub_batch.events.is_empty() {
+                        continue;
+                    }
+                    let _span = tracing::info_span!(
+                        "cdc_sub_batch",
+                        txn_id = sub_batch.transaction_id,
+                        events = sub_batch.events.len()
+                    )
+                    .entered();
+                    // Process immediately for throughput; no checkpoint or ack yet.
+                    process_events(
+                        &sub_batch.events,
+                        stream.relation_cache(),
+                        router,
+                        transformers,
+                        namespaces,
+                        puff_client,
+                        db,
+                        metrics,
+                        &mut events_processed,
+                        0, // no ack_lsn for sub-batches
+                    )
+                    .await?;
+                    continue;
+                }
                 replication::BatchResult::TransactionTooLarge {
                     ack_lsn,
                     event_count,
@@ -168,7 +294,6 @@ pub(crate) async fn run_streaming_loop(
                         event_count,
                         "transaction exceeded max_transaction_events limit, skipping",
                     );
-                    // Save checkpoint so we don't replay this txn after restart
                     for (_, config) in applied_configs {
                         let checkpoint = StreamingCheckpoint {
                             config_name: config.name.clone(),
@@ -178,7 +303,6 @@ pub(crate) async fn run_streaming_loop(
                         };
                         db.save_streaming_checkpoint(&checkpoint)?;
                     }
-                    // Ack to advance past the oversized transaction
                     stream.ack();
 
                     // Still count toward DLQ replay cadence so oversized-only
@@ -201,88 +325,29 @@ pub(crate) async fn run_streaming_loop(
                 replication::BatchResult::Batch(batch) => batch,
             };
 
-            if batch.events.is_empty() {
-                stream.ack();
-                continue;
-            }
-
             let _batch_span = tracing::info_span!(
                 "cdc_batch",
                 lsn = batch.ack_lsn,
+                txn_id = batch.transaction_id,
                 events = batch.events.len()
             )
             .entered();
             let batch_start = std::time::Instant::now();
-            let config_events = router.route_batch(&batch.events, stream.relation_cache());
 
-            for (config_name, events) in &config_events {
-                let transformer = transformers
-                    .get(*config_name)
-                    .expect("transformer missing for applied config");
-                let namespace = namespaces
-                    .get(*config_name)
-                    .expect("namespace missing for applied config");
-
-                let transform_result = transformer.transform_batch(events.as_slice()).await;
-
-                match transform_result {
-                    Err(e) => {
-                        tracing::error!(config = %config_name, error = %e, "transform error, sending to DLQ");
-                        if let Some(m) = metrics {
-                            m.cdc_events_failed.add(events.len() as u64, &[]);
-                        }
-                        send_events_to_dlq(
-                            db,
-                            config_name,
-                            batch.ack_lsn,
-                            events,
-                            &e.to_string(),
-                            false,
-                        )?;
-                    }
-                    Ok(actions) => {
-                        let send_start = std::time::Instant::now();
-                        match puff_client.send_batch(namespace, &actions).await {
-                            Err(e) => {
-                                tracing::error!(config = %config_name, error = %e, "turbopuffer error, sending to DLQ");
-                                if let Some(m) = metrics {
-                                    m.cdc_events_failed.add(events.len() as u64, &[]);
-                                    m.turbopuffer_requests.add(1, &[]);
-                                    m.turbopuffer_latency
-                                        .record(send_start.elapsed().as_millis() as f64, &[]);
-                                }
-                                send_events_to_dlq(
-                                    db,
-                                    config_name,
-                                    batch.ack_lsn,
-                                    events,
-                                    &e.to_string(),
-                                    false,
-                                )?;
-                            }
-                            Ok(()) => {
-                                let count =
-                                    events_processed.entry(config_name.to_string()).or_insert(0);
-                                *count += events.len() as u64;
-
-                                if let Some(m) = metrics {
-                                    m.cdc_events_processed.add(events.len() as u64, &[]);
-                                    m.turbopuffer_requests.add(1, &[]);
-                                    m.turbopuffer_latency
-                                        .record(send_start.elapsed().as_millis() as f64, &[]);
-                                }
-
-                                tracing::info!(
-                                    config = %config_name,
-                                    namespace = %namespace,
-                                    events = events.len(),
-                                    total = *count,
-                                    "batch sent",
-                                );
-                            }
-                        }
-                    }
-                }
+            if !batch.events.is_empty() {
+                process_events(
+                    &batch.events,
+                    stream.relation_cache(),
+                    router,
+                    transformers,
+                    namespaces,
+                    puff_client,
+                    db,
+                    metrics,
+                    &mut events_processed,
+                    batch.ack_lsn,
+                )
+                .await?;
             }
 
             for (_, config) in applied_configs {
@@ -295,7 +360,6 @@ pub(crate) async fn run_streaming_loop(
                 db.save_streaming_checkpoint(&checkpoint)?;
             }
 
-            // Ack unconditionally -- failed events are in the DLQ for retry
             stream.ack();
             if let Some(m) = metrics {
                 m.replication_acks.add(1, &[]);

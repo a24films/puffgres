@@ -94,6 +94,7 @@ async fn run_replication_stream(
         start_lsn: config.start_lsn,
         status_interval: config.status_interval,
         max_transaction_events: None,
+        sub_batch_size: None,
         watched_columns: HashMap::new(),
     };
 

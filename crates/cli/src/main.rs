@@ -180,6 +180,7 @@ async fn run() -> (
                         start_lsn: None,
                         status_interval: std::time::Duration::from_secs(10),
                         max_transaction_events: None,
+                        sub_batch_size: None,
                         watched_columns: HashMap::new(),
                     })
                 }

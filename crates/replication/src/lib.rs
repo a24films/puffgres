@@ -13,6 +13,7 @@ pub use event::{ColumnValue, Operation, RowEvent, TupleData};
 pub use relation::{ColumnInfo, RelationCache, RelationInfo, ReplicaIdentity};
 pub use stream::{
     BatchResult, ReplicationStream, ReplicationStreamConfig, ReplicationTransport, StreamingBatch,
+    StreamingSubBatch,
 };
 
 pub type Result<T> = std::result::Result<T, ReplicationError>;

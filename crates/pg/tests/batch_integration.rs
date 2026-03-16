@@ -40,7 +40,7 @@ async fn insert_rows(client: &tokio_postgres::Client, count: usize) {
     }
 }
 
-async fn setup_test_table() -> (common::TestContext, tokio_postgres::Client) {
+async fn setup_test_table() -> (common::TestContext, pg::connect::PgConnection) {
     let ctx = setup_postgres().await;
     let client = connect(&ctx.connection_string)
         .await
