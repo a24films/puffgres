@@ -15,9 +15,8 @@ impl Config {
 
     pub fn from_file_bytes(path: &Path) -> Result<(Self, Vec<u8>), ConfigError> {
         let bytes = fs::read(path)?;
-        let content = std::str::from_utf8(&bytes).map_err(|e| {
-            ConfigError::ParseError(format!("config file is not valid UTF-8: {e}"))
-        })?;
+        let content = std::str::from_utf8(&bytes)
+            .map_err(|e| ConfigError::ParseError(format!("config file is not valid UTF-8: {e}")))?;
         let config = Self::from_toml(content)?;
         Ok((config, bytes))
     }
@@ -59,9 +58,7 @@ impl ConfigLoader {
         Ok(configs)
     }
 
-    pub fn load_all_with_bytes(
-        &self,
-    ) -> Result<Vec<(PathBuf, Config, Vec<u8>)>, ConfigError> {
+    pub fn load_all_with_bytes(&self) -> Result<Vec<(PathBuf, Config, Vec<u8>)>, ConfigError> {
         if !self.config_dir.exists() {
             return Ok(Vec::new());
         }

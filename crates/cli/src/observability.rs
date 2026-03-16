@@ -52,6 +52,7 @@ pub struct Metrics {
     pub turbopuffer_requests: Counter<u64>,
     pub turbopuffer_latency: Histogram<f64>,
     pub replication_acks: Counter<u64>,
+    pub replication_lag_ms: Gauge<f64>,
 }
 
 /// Sets up console-only tracing to stdout (no OTLP export).
@@ -250,6 +251,10 @@ fn build_metrics(meter: &Meter) -> Metrics {
         replication_acks: meter
             .u64_counter("puffgres.replication.acks")
             .with_description("Replication slot acks sent")
+            .build(),
+        replication_lag_ms: meter
+            .f64_gauge("puffgres.replication.lag_ms")
+            .with_description("Replication lag: time between PG commit and processing")
             .build(),
     }
 }

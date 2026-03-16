@@ -6,6 +6,7 @@
 - [Environment](./environment.md)
 - [Creating Your First Config](./creating-your-first-config.md)
 - [Deploying](./deploying.md)
+- [Delivery Guarantees](./guarantees.md)
 - [Architecture and Meta-Notes](./architecture-notes.md)
 - [Contributing](./contributing.md)
 - [Command Reference](./command-reference.md)

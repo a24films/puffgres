@@ -63,6 +63,9 @@ pub struct StreamingBatch {
     /// Transaction ID (xid). When preceded by `SubBatch`es with the same ID,
     /// this is the final chunk that commits the group.
     pub transaction_id: u64,
+    /// Commit timestamp as microseconds since 2000-01-01 00:00:00 UTC.
+    /// Used for computing replication lag.
+    pub commit_time_micros: i64,
 }
 
 /// A chunk of events from an in-progress transaction, yielded before commit
@@ -296,7 +299,11 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                     }
                 }
 
-                ReplicationEvent::Commit { end_lsn, .. } => {
+                ReplicationEvent::Commit {
+                    end_lsn,
+                    commit_time_micros,
+                    ..
+                } => {
                     if let Some(txn) = self.current_txn.take() {
                         self.pending_lsn = Some(end_lsn);
                         if txn.too_large {
@@ -309,6 +316,7 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
                             events: txn.events,
                             ack_lsn: end_lsn.0,
                             transaction_id: txn.xid,
+                            commit_time_micros,
                         })));
                     }
                 }
