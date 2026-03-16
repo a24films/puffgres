@@ -6,6 +6,7 @@ use crate::{PgError, Result};
 pub struct ColumnInfo {
     pub name: String,
     pub udt_name: String,
+    pub is_array: bool,
     pub ordinal_position: i32,
 }
 
@@ -62,10 +63,19 @@ pub async fn resolve_column_info(
 
     Ok(rows
         .into_iter()
-        .map(|r| ColumnInfo {
-            name: r.get(0),
-            udt_name: r.get(1),
-            ordinal_position: r.get(2),
+        .map(|r| {
+            let raw_type: String = r.get(1);
+            let (udt_name, is_array) = if let Some(elem) = raw_type.strip_prefix('_') {
+                (elem.to_string(), true)
+            } else {
+                (raw_type, false)
+            };
+            ColumnInfo {
+                name: r.get(0),
+                udt_name,
+                is_array,
+                ordinal_position: r.get(2),
+            }
         })
         .collect())
 }

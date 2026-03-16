@@ -41,15 +41,27 @@ pub fn resolve_schema_columns(
     }
 }
 
-/// Map a Postgres `udt_name` to its turbopuffer PrimitiveType.
-fn tpuf_type(udt_name: &str) -> &'static str {
-    match udt_name {
-        "int2" | "int4" | "int8" => "int",
-        "float4" | "float8" | "numeric" => "float",
-        "bool" => "bool",
-        "uuid" => "uuid",
-        "json" | "jsonb" => "json",
-        _ => "string",
+/// Map a Postgres `udt_name` (+ array flag) to a turbopuffer type string.
+///
+/// Scalar types: `"string"`, `"int"`, `"float"`, `"bool"`, `"uuid"`, `"datetime"`.
+/// Array types use turbopuffer's prefix notation: `"[]string"`, `"[]int"`, etc.
+///
+/// Note: `json`/`jsonb` columns are mapped to `"string"` since turbopuffer
+/// has no JSON type. The raw JSON text is stored as a string attribute.
+fn tpuf_type(udt_name: &str, is_array: bool) -> &'static str {
+    match (udt_name, is_array) {
+        ("int2" | "int4" | "int8", false) => "int",
+        ("int2" | "int4" | "int8", true) => "[]int",
+        ("float4" | "float8" | "numeric", false) => "float",
+        ("float4" | "float8" | "numeric", true) => "[]float",
+        ("bool", false) => "bool",
+        ("bool", true) => "[]bool",
+        ("uuid", false) => "uuid",
+        ("uuid", true) => "[]uuid",
+        ("timestamp" | "timestamptz" | "date", false) => "datetime",
+        ("timestamp" | "timestamptz" | "date", true) => "[]datetime",
+        (_, false) => "string",
+        (_, true) => "[]string",
     }
 }
 
@@ -90,7 +102,7 @@ pub fn generate_schema_content(input: &SchemaInput) -> String {
         out.push_str(&format!(
             "  {{ name: \"{}\", type: \"{}\" }},\n",
             ts_escape(&col.name),
-            tpuf_type(&col.udt_name)
+            tpuf_type(&col.udt_name, col.is_array)
         ));
     }
     out.push_str("] as const satisfies readonly Column[];\n");
@@ -258,16 +270,19 @@ mod tests {
             ColumnInfo {
                 name: "id".to_string(),
                 udt_name: "int4".to_string(),
+                is_array: false,
                 ordinal_position: 1,
             },
             ColumnInfo {
                 name: "name".to_string(),
                 udt_name: "text".to_string(),
+                is_array: false,
                 ordinal_position: 2,
             },
             ColumnInfo {
                 name: "email".to_string(),
                 udt_name: "varchar".to_string(),
+                is_array: false,
                 ordinal_position: 3,
             },
         ]
@@ -306,6 +321,7 @@ mod tests {
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 udt_name: "uuid".to_string(),
+                is_array: false,
                 ordinal_position: 1,
             }],
         };
@@ -353,16 +369,20 @@ mod tests {
 
     #[test]
     fn tpuf_type_mappings() {
-        assert_eq!(tpuf_type("int4"), "int");
-        assert_eq!(tpuf_type("int8"), "int");
-        assert_eq!(tpuf_type("float8"), "float");
-        assert_eq!(tpuf_type("numeric"), "float");
-        assert_eq!(tpuf_type("bool"), "bool");
-        assert_eq!(tpuf_type("uuid"), "uuid");
-        assert_eq!(tpuf_type("json"), "json");
-        assert_eq!(tpuf_type("jsonb"), "json");
-        assert_eq!(tpuf_type("text"), "string");
-        assert_eq!(tpuf_type("varchar"), "string");
+        assert_eq!(tpuf_type("int4", false), "int");
+        assert_eq!(tpuf_type("int8", false), "int");
+        assert_eq!(tpuf_type("float8", false), "float");
+        assert_eq!(tpuf_type("numeric", false), "float");
+        assert_eq!(tpuf_type("bool", false), "bool");
+        assert_eq!(tpuf_type("uuid", false), "uuid");
+        assert_eq!(tpuf_type("timestamp", false), "datetime");
+        assert_eq!(tpuf_type("timestamptz", false), "datetime");
+        assert_eq!(tpuf_type("date", false), "datetime");
+        // json/jsonb have no turbopuffer equivalent, mapped to string
+        assert_eq!(tpuf_type("json", false), "string");
+        assert_eq!(tpuf_type("jsonb", false), "string");
+        assert_eq!(tpuf_type("text", false), "string");
+        assert_eq!(tpuf_type("varchar", false), "string");
     }
 
     #[test]
@@ -374,11 +394,13 @@ mod tests {
                 ColumnInfo {
                     name: "user-id".to_string(),
                     udt_name: "int4".to_string(),
+                    is_array: false,
                     ordinal_position: 1,
                 },
                 ColumnInfo {
                     name: r#"a"b"#.to_string(),
                     udt_name: "text".to_string(),
+                    is_array: false,
                     ordinal_position: 2,
                 },
             ],
@@ -393,5 +415,77 @@ mod tests {
             content.contains(r#"name: "a\"b""#),
             "should escape quotes: {content}"
         );
+    }
+
+    #[test]
+    fn generate_schema_content_array_columns() {
+        let input = SchemaInput {
+            schema: "public".to_string(),
+            table: "posts".to_string(),
+            columns: vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    udt_name: "int4".to_string(),
+                    is_array: false,
+                    ordinal_position: 1,
+                },
+                ColumnInfo {
+                    name: "tags".to_string(),
+                    udt_name: "text".to_string(),
+                    is_array: true,
+                    ordinal_position: 2,
+                },
+                ColumnInfo {
+                    name: "scores".to_string(),
+                    udt_name: "int4".to_string(),
+                    is_array: true,
+                    ordinal_position: 3,
+                },
+                ColumnInfo {
+                    name: "flags".to_string(),
+                    udt_name: "bool".to_string(),
+                    is_array: true,
+                    ordinal_position: 4,
+                },
+            ],
+        };
+        let content = generate_schema_content(&input);
+
+        // Scalar column keeps its scalar type
+        assert!(
+            content.contains(r#"{ name: "id", type: "int" },"#),
+            "scalar column should have plain type: {content}"
+        );
+        // Array columns use turbopuffer's []<type> prefix notation
+        assert!(
+            content.contains(r#"{ name: "tags", type: "[]string" },"#),
+            "text[] should be []string: {content}"
+        );
+        assert!(
+            content.contains(r#"{ name: "scores", type: "[]int" },"#),
+            "int4[] should be []int: {content}"
+        );
+        assert!(
+            content.contains(r#"{ name: "flags", type: "[]bool" },"#),
+            "bool[] should be []bool: {content}"
+        );
+    }
+
+    #[test]
+    fn tpuf_type_array_mappings() {
+        assert_eq!(tpuf_type("text", true), "[]string");
+        assert_eq!(tpuf_type("varchar", true), "[]string");
+        assert_eq!(tpuf_type("int4", true), "[]int");
+        assert_eq!(tpuf_type("int8", true), "[]int");
+        assert_eq!(tpuf_type("float8", true), "[]float");
+        assert_eq!(tpuf_type("numeric", true), "[]float");
+        assert_eq!(tpuf_type("bool", true), "[]bool");
+        assert_eq!(tpuf_type("uuid", true), "[]uuid");
+        assert_eq!(tpuf_type("timestamp", true), "[]datetime");
+        assert_eq!(tpuf_type("timestamptz", true), "[]datetime");
+        assert_eq!(tpuf_type("date", true), "[]datetime");
+        // json/jsonb arrays → []string (no turbopuffer json type)
+        assert_eq!(tpuf_type("json", true), "[]string");
+        assert_eq!(tpuf_type("jsonb", true), "[]string");
     }
 }
