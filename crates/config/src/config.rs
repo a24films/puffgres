@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::ConfigError;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub name: String,
@@ -36,11 +34,13 @@ pub enum IdType {
 }
 
 impl Config {
-    /// Compute content hash for immutability checking
-    pub fn content_hash(&self) -> Result<String, ConfigError> {
-        let serialized = toml::to_string(self)?;
-        let hash = Sha256::digest(serialized.as_bytes());
-        Ok(format!("{:x}", hash))
+    /// Compute content hash from raw file bytes.
+    ///
+    /// Hashing the original bytes (rather than re-serializing) ensures the hash
+    /// is stable across `toml` crate versions. Callers should pass the bytes
+    /// from `fs::read(config_path)`.
+    pub fn content_hash_from_bytes(raw: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(raw))
     }
 }
 
@@ -84,12 +84,10 @@ mod tests {
     }
 
     #[test]
-    fn content_hash_consistent() {
-        let config1 = load_fixture("valid");
-        let config2 = config1.clone();
-
-        let hash1 = config1.content_hash().unwrap();
-        let hash2 = config2.content_hash().unwrap();
+    fn content_hash_from_bytes_consistent() {
+        let bytes = std::fs::read("tests/fixtures/valid.toml").unwrap();
+        let hash1 = Config::content_hash_from_bytes(&bytes);
+        let hash2 = Config::content_hash_from_bytes(&bytes);
 
         assert_eq!(hash1, hash2);
         assert!(!hash1.is_empty());
@@ -98,12 +96,11 @@ mod tests {
 
     #[test]
     fn content_hash_changes_with_content() {
-        let config1 = load_fixture("valid");
-        let mut config2 = config1.clone();
-        config2.namespace = "different".to_string();
+        let bytes1 = std::fs::read("tests/fixtures/valid.toml").unwrap();
+        let bytes2 = std::fs::read("tests/fixtures/full.toml").unwrap();
 
-        let hash1 = config1.content_hash().unwrap();
-        let hash2 = config2.content_hash().unwrap();
+        let hash1 = Config::content_hash_from_bytes(&bytes1);
+        let hash2 = Config::content_hash_from_bytes(&bytes2);
 
         assert_ne!(hash1, hash2);
     }

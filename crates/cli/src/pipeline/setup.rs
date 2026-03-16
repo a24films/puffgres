@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 
 use backon::{BackoffBuilder, ExponentialBuilder};
-use config::ConfigLoader;
+use config::{Config, ConfigLoader};
 use puffgres_core::{JsTransformer, Mapping, Router, Transformer};
 use sha2::{Digest, Sha256};
 use state::{BackfillProgress, BackfillStatus, StateDb};
@@ -34,13 +34,15 @@ pub(crate) async fn setup_pipeline(
     CliError,
 > {
     let loader = ConfigLoader::new(&paths.configs);
-    let all_configs = loader.load_all()?;
+    let all_configs_with_bytes = loader.load_all_with_bytes()?;
 
     let mut applied_configs = Vec::new();
-    for item in all_configs {
-        let record = db.get_config(&item.1.name)?;
+    let mut config_raw_bytes: HashMap<String, Vec<u8>> = HashMap::new();
+    for (path, config, bytes) in all_configs_with_bytes {
+        let record = db.get_config(&config.name)?;
         if record.is_some_and(|r| r.tombstone_applied_at.is_none()) {
-            applied_configs.push(item);
+            config_raw_bytes.insert(config.name.clone(), bytes);
+            applied_configs.push((path, config));
         }
     }
 
@@ -112,12 +114,10 @@ pub(crate) async fn setup_pipeline(
         })?;
 
         if let Some(record) = db.get_config(&config.name)? {
-            let current_content_hash = config.content_hash().map_err(|e| {
-                CliError::RunValidation(format!(
-                    "failed to compute content hash for config '{}': {e}",
-                    config.name,
-                ))
-            })?;
+            let config_bytes = config_raw_bytes.get(&config.name).expect(
+                "config_raw_bytes populated for every applied config",
+            );
+            let current_content_hash = Config::content_hash_from_bytes(config_bytes);
             if record.content_hash != current_content_hash {
                 return Err(CliError::RunValidation(format!(
                     "config '{}' has been modified since last apply.\n  content hash: expected {}, got {}\n  Run 'puffgres apply' to apply the changes.",

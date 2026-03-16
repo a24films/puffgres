@@ -379,7 +379,7 @@ mod tests {
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
+            content_hash: config::Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some(transform_hash),
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,
@@ -450,12 +450,12 @@ mod tests {
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let db = state::StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
+            content_hash: config::Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some("stale_hash".to_string()),
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,

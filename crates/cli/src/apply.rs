@@ -40,13 +40,14 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
     let mut new_configs: Vec<(PathBuf, Config, String, String)> = Vec::new();
 
     for (config_path, config) in &configs {
-        let content_hash = match config.content_hash() {
-            Ok(h) => h,
+        let config_bytes = match fs::read(config_path) {
+            Ok(b) => b,
             Err(e) => {
                 errors.push(format!("{}: {e}", config_path.display()));
                 continue;
             }
         };
+        let content_hash = Config::content_hash_from_bytes(&config_bytes);
         if let Some(existing) = db.get_config(&config.name)? {
             if existing.content_hash == content_hash {
                 // Also verify transform file hasn't been modified
@@ -257,7 +258,7 @@ mod tests {
             name: cfg.name.clone(),
 
             namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
+            content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
@@ -289,7 +290,7 @@ mod tests {
                 name: cfg.name.clone(),
 
                 namespace: cfg.namespace.clone(),
-                content_hash: cfg.content_hash().unwrap(),
+                content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
                 transform_hash: Some(transform_hash),
                 applied_at: Utc::now(),
                 tombstone_applied_at: None,
@@ -315,7 +316,7 @@ mod tests {
             name: cfg.name.clone(),
 
             namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
+            content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some("abc".into()),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
@@ -360,7 +361,7 @@ type = "uint"
             name: cfg.name.clone(),
 
             namespace: cfg.namespace.clone(),
-            content_hash: cfg.content_hash().unwrap(),
+            content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some(transform_hash),
             applied_at: Utc::now(),
             tombstone_applied_at: None,
@@ -385,8 +386,8 @@ type = "uint"
         write_transform(&film_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
-        let cfg = &loader.load_all().unwrap()[0].1;
-        let content_hash = cfg.content_hash().unwrap();
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let content_hash = Config::content_hash_from_bytes(&fs::read(config_path).unwrap());
 
         let db = StateDb::open(&state_db_path).unwrap();
         db.insert_config(&ConfigRecord {
