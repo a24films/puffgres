@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +41,11 @@ pub struct ReplicationStreamConfig {
     /// limit are dropped and returned as `BatchResult::TransactionTooLarge`.
     /// Defaults to 1,000,000.
     pub max_transaction_events: Option<usize>,
+    /// Columns watched per table (`schema.table` → column names).
+    /// Schema changes that only add columns NOT in this set are silently accepted.
+    /// If a table has no entry (or the entry is empty), all column changes trigger
+    /// a `SchemaChanged` signal.
+    pub watched_columns: HashMap<String, Vec<String>>,
 }
 
 /// All row events from a single committed transaction.
@@ -86,6 +92,7 @@ pub struct ReplicationStream<T: ReplicationTransport = ReplicationClient> {
     current_txn: Option<TransactionState>,
     pending_lsn: Option<Lsn>,
     max_transaction_events: usize,
+    watched_columns: HashMap<String, Vec<String>>,
 }
 
 impl ReplicationStream {
@@ -127,6 +134,7 @@ impl ReplicationStream {
             max_transaction_events: config
                 .max_transaction_events
                 .unwrap_or(DEFAULT_MAX_TRANSACTION_EVENTS),
+            watched_columns: config.watched_columns,
         })
     }
 }
@@ -159,16 +167,29 @@ impl<T: ReplicationTransport> ReplicationStream<T> {
 
                     match msg {
                         WalMessage::Relation(info) => {
-                            if self.relation_cache.schema_changed(&info) {
+                            let key = format!("{}.{}", info.namespace, info.name);
+                            let is_breaking = if let Some(cols) = self.watched_columns.get(&key) {
+                                self.relation_cache.schema_changed_for_columns(&info, cols)
+                            } else {
+                                self.relation_cache.schema_changed(&info)
+                            };
+
+                            // Even a "non-breaking" schema change is unsafe if we already
+                            // buffered rows for this relation in the current transaction.
+                            // Those rows were encoded with the OLD column layout and would
+                            // be misinterpreted when decoded with the new schema.
+                            let has_buffered_rows = self.current_txn.as_ref().is_some_and(|txn| {
+                                txn.events.iter().any(|e| e.relation_id == info.id)
+                            });
+                            let columns_changed = self.relation_cache.schema_changed(&info);
+
+                            if is_breaking || (columns_changed && has_buffered_rows) {
                                 let signal = SchemaChanged {
                                     relation_id: info.id,
                                     namespace: info.namespace.clone(),
                                     name: info.name.clone(),
                                 };
                                 self.relation_cache.insert(info);
-                                // Signal the caller to tear down and reconnect with a
-                                // fresh stream. Postgres replication slots retain all
-                                // un-acked WAL, so no messages are lost on reconnect.
                                 return Ok(Some(BatchResult::SchemaChanged(signal)));
                             }
                             self.relation_cache.insert(info);
@@ -345,6 +366,7 @@ mod tests {
             current_txn: None,
             pending_lsn: None,
             max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
+            watched_columns: HashMap::new(),
         }
     }
 
@@ -358,6 +380,7 @@ mod tests {
             current_txn: None,
             pending_lsn: None,
             max_transaction_events: max_events,
+            watched_columns: HashMap::new(),
         }
     }
 
@@ -370,6 +393,7 @@ mod tests {
             start_lsn: Some(0x1234),
             status_interval: Duration::from_secs(10),
             max_transaction_events: None,
+            watched_columns: HashMap::new(),
         };
         assert_eq!(config.slot_name, "my_slot");
         assert_eq!(config.start_lsn, Some(0x1234));
@@ -694,6 +718,176 @@ mod tests {
         // Should still be able to ack and advance past it
         stream.ack();
         assert_eq!(stream.client.acked_lsns(), vec![200]);
+    }
+
+    fn make_stream_with_watched(
+        events: Vec<Result<Option<ReplicationEvent>>>,
+        watched_columns: HashMap<String, Vec<String>>,
+    ) -> ReplicationStream<MockTransport> {
+        ReplicationStream {
+            client: MockTransport::new(events),
+            relation_cache: RelationCache::new(),
+            current_txn: None,
+            pending_lsn: None,
+            max_transaction_events: DEFAULT_MAX_TRANSACTION_EVENTS,
+            watched_columns,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nonbreaking_schema_change_mid_transaction_forces_reconnect() {
+        let col_id = ColumnInfo {
+            part_of_key: true,
+            name: "id".to_string(),
+            type_oid: 23,
+            type_modifier: -1,
+        };
+        let col_email = ColumnInfo {
+            part_of_key: false,
+            name: "email".to_string(),
+            type_oid: 25,
+            type_modifier: -1,
+        };
+
+        // v1: just "id"
+        let rel_v1 = encode_relation(1, "public", "users", std::slice::from_ref(&col_id));
+        // v2: "id" + "email" (additive, non-breaking for watched=["id"])
+        let rel_v2 = encode_relation(1, "public", "users", &[col_id.clone(), col_email]);
+        let insert = encode_insert(1, "42");
+
+        let mut watched = HashMap::new();
+        watched.insert("public.users".to_string(), vec!["id".to_string()]);
+
+        let mut stream = make_stream_with_watched(
+            vec![
+                // First transaction: seed the relation cache
+                Ok(Some(ReplicationEvent::Begin {
+                    final_lsn: Lsn(0),
+                    xid: 1,
+                    commit_time_micros: 0,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: rel_v1,
+                })),
+                Ok(Some(ReplicationEvent::Commit {
+                    lsn: Lsn(100),
+                    end_lsn: Lsn(200),
+                    commit_time_micros: 0,
+                })),
+                // Second transaction: insert with old schema, then schema change
+                Ok(Some(ReplicationEvent::Begin {
+                    final_lsn: Lsn(0),
+                    xid: 2,
+                    commit_time_micros: 0,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(200),
+                    wal_end: Lsn(200),
+                    server_time_micros: 0,
+                    data: insert,
+                })),
+                // Relation update mid-transaction (additive: adds "email")
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(300),
+                    wal_end: Lsn(300),
+                    server_time_micros: 0,
+                    data: rel_v2,
+                })),
+                Ok(Some(ReplicationEvent::Commit {
+                    lsn: Lsn(400),
+                    end_lsn: Lsn(500),
+                    commit_time_micros: 0,
+                })),
+            ],
+            watched,
+        );
+
+        // First batch: seeds the cache
+        let batch = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch.ack_lsn, 200);
+
+        // Second batch: even though "email" is not watched, the relation change
+        // mid-transaction with buffered rows must force SchemaChanged to avoid
+        // decoding pre-Relation rows with the wrong column layout.
+        match stream.recv_batch().await.unwrap().unwrap() {
+            BatchResult::SchemaChanged(sc) => {
+                assert_eq!(sc.relation_id, 1);
+            }
+            other => panic!("expected SchemaChanged, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nonbreaking_schema_change_without_buffered_rows_is_safe() {
+        let col_id = ColumnInfo {
+            part_of_key: true,
+            name: "id".to_string(),
+            type_oid: 23,
+            type_modifier: -1,
+        };
+        let col_email = ColumnInfo {
+            part_of_key: false,
+            name: "email".to_string(),
+            type_oid: 25,
+            type_modifier: -1,
+        };
+
+        let rel_v1 = encode_relation(1, "public", "users", std::slice::from_ref(&col_id));
+        let rel_v2 = encode_relation(1, "public", "users", &[col_id.clone(), col_email]);
+
+        let mut watched = HashMap::new();
+        watched.insert("public.users".to_string(), vec!["id".to_string()]);
+
+        let mut stream = make_stream_with_watched(
+            vec![
+                // First transaction: seed the cache
+                Ok(Some(ReplicationEvent::Begin {
+                    final_lsn: Lsn(0),
+                    xid: 1,
+                    commit_time_micros: 0,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(0),
+                    wal_end: Lsn(0),
+                    server_time_micros: 0,
+                    data: rel_v1,
+                })),
+                Ok(Some(ReplicationEvent::Commit {
+                    lsn: Lsn(100),
+                    end_lsn: Lsn(200),
+                    commit_time_micros: 0,
+                })),
+                // Second transaction: schema change BEFORE any rows (safe)
+                Ok(Some(ReplicationEvent::Begin {
+                    final_lsn: Lsn(0),
+                    xid: 2,
+                    commit_time_micros: 0,
+                })),
+                Ok(Some(ReplicationEvent::XLogData {
+                    wal_start: Lsn(200),
+                    wal_end: Lsn(200),
+                    server_time_micros: 0,
+                    data: rel_v2,
+                })),
+                Ok(Some(ReplicationEvent::Commit {
+                    lsn: Lsn(300),
+                    end_lsn: Lsn(400),
+                    commit_time_micros: 0,
+                })),
+            ],
+            watched,
+        );
+
+        // First batch: seeds the cache
+        let batch1 = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch1.ack_lsn, 200);
+
+        // Second batch: non-breaking change with no buffered rows → safe, no SchemaChanged
+        let batch2 = expect_batch(stream.recv_batch().await.unwrap());
+        assert_eq!(batch2.ack_lsn, 400);
     }
 
     #[tokio::test]

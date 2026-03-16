@@ -32,12 +32,40 @@ pub(crate) async fn run_streaming_loop(
     mut start_lsn: Option<u64>,
 ) -> Result<(), CliError> {
     let mut events_processed: HashMap<String, u64> = HashMap::new();
+    // Build watched columns map: schema.table → columns referenced by any config.
+    // Schema changes that only touch columns outside this set are silently accepted.
+    // Tables where ANY config has columns = None get no entry, so all changes are breaking.
+    let mut watched_columns: HashMap<String, Vec<String>> = HashMap::new();
+
+    // Tables with at least one columns = None config must watch everything.
+    let watch_all: std::collections::HashSet<String> = applied_configs
+        .iter()
+        .filter(|(_, c)| c.columns.is_none())
+        .map(|(_, c)| format!("{}.{}", c.source.schema, c.source.table))
+        .collect();
+
     for (_, config) in applied_configs {
         let count = db
             .get_streaming_checkpoint(&config.name)?
             .map(|c| c.events_processed)
             .unwrap_or(0);
         events_processed.insert(config.name.clone(), count);
+
+        let key = format!("{}.{}", config.source.schema, config.source.table);
+        if watch_all.contains(&key) {
+            continue;
+        }
+        if let Some(ref cols) = config.columns {
+            let entry = watched_columns.entry(key).or_default();
+            if !entry.contains(&config.id.column) {
+                entry.push(config.id.column.clone());
+            }
+            for col in cols {
+                if !entry.contains(col) {
+                    entry.push(col.clone());
+                }
+            }
+        }
     }
 
     // Auto-clean stale permanent DLQ entries
@@ -85,6 +113,7 @@ pub(crate) async fn run_streaming_loop(
             start_lsn,
             status_interval: STATUS_INTERVAL,
             max_transaction_events: project_config.max_transaction_events(),
+            watched_columns: watched_columns.clone(),
         };
 
         let mut stream = ReplicationStream::connect(stream_config).await?;

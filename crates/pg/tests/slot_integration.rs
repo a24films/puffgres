@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use pg::connect::connect;
@@ -137,6 +138,7 @@ async fn terminate_active_slot_backend_kills_stale_connection() {
         start_lsn: None,
         status_interval: Duration::from_secs(10),
         max_transaction_events: None,
+        watched_columns: HashMap::new(),
     })
     .await
     .unwrap();
