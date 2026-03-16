@@ -11,6 +11,7 @@ name = "puffgres"
 path = "src/main.rs"
 
 [dependencies]
+backon.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true

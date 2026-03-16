@@ -7,11 +7,11 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+backon.workspace = true
 bytes.workspace = true
 config.workspace = true
 derive_more.workspace = true
 pg.workspace = true
-rand.workspace = true
 replication.workspace = true
 serde.workspace = true
 state.workspace = true

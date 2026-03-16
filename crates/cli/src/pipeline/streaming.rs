@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use backon::{BackoffBuilder, ExponentialBuilder};
 use chrono::Utc;
 use puff::TurbopufferClient;
-use puffgres_core::{Backoff, BackoffConfig, Router, Transformer};
+use puffgres_core::{Router, Transformer};
 use replication::{ReplicationStream, ReplicationStreamConfig};
 use state::{StateDb, StreamingCheckpoint};
 use tokio_util::sync::CancellationToken;
@@ -334,18 +335,17 @@ pub(crate) async fn run_streaming_loop(
 
             pg::slot::terminate_active_slot_backend(&slot_client, SLOT_NAME).await?;
 
-            let mut backoff = Backoff::new(BackoffConfig {
-                initial_delay_ms: 100,
-                max_delay_ms: 5_000,
-                max_retries: 10,
-                multiplier: 2.0,
-                jitter: true,
-            });
+            let mut backoff = ExponentialBuilder::default()
+                .with_min_delay(std::time::Duration::from_millis(100))
+                .with_max_delay(std::time::Duration::from_secs(5))
+                .with_max_times(10)
+                .with_jitter()
+                .build();
             while pg::slot::get_active_pid(&slot_client, SLOT_NAME)
                 .await?
                 .is_some()
             {
-                match backoff.next_delay() {
+                match backoff.next() {
                     Some(delay) => {
                         tokio::select! {
                             _ = tokio::time::sleep(delay) => {}

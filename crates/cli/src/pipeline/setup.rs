@@ -1,8 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 
+use backon::{BackoffBuilder, ExponentialBuilder};
 use config::ConfigLoader;
-use puffgres_core::{Backoff, BackoffConfig, JsTransformer, Mapping, Router, Transformer};
+use puffgres_core::{JsTransformer, Mapping, Router, Transformer};
 use sha2::{Digest, Sha256};
 use state::{BackfillProgress, BackfillStatus, StateDb};
 use tokio_util::sync::CancellationToken;
@@ -228,13 +229,12 @@ pub(crate) async fn terminate_slot_and_wait(
 ) -> Result<(), CliError> {
     pg::slot::terminate_active_slot_backend(pg_client, SLOT_NAME).await?;
 
-    let mut backoff = Backoff::new(BackoffConfig {
-        initial_delay_ms: 100,
-        max_delay_ms: 5_000,
-        max_retries: 10,
-        multiplier: 2.0,
-        jitter: true,
-    });
+    let mut backoff = ExponentialBuilder::default()
+        .with_min_delay(std::time::Duration::from_millis(100))
+        .with_max_delay(std::time::Duration::from_secs(5))
+        .with_max_times(10)
+        .with_jitter()
+        .build();
     while pg::slot::get_active_pid(pg_client, SLOT_NAME)
         .await?
         .is_some()
@@ -243,7 +243,7 @@ pub(crate) async fn terminate_slot_and_wait(
             tracing::info!("shutdown requested, aborting slot-release wait");
             return Ok(());
         }
-        match backoff.next_delay() {
+        match backoff.next() {
             Some(delay) => {
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}
