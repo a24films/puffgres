@@ -1,8 +1,9 @@
+use std::future::Future;
 use std::ops::RangeInclusive;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::json;
 
 use config::IdType;
@@ -37,14 +38,19 @@ impl CollectingSink {
     }
 }
 
-#[async_trait]
 impl BackfillSink for CollectingSink {
-    async fn write(&self, _namespace: &str, actions: &[Action]) -> Result<(), CoreError> {
-        self.writes
-            .lock()
-            .expect("lock poisoned")
-            .push(actions.to_vec());
-        Ok(())
+    fn write<'a>(
+        &'a self,
+        _namespace: &'a str,
+        actions: &'a [Action],
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.writes
+                .lock()
+                .expect("lock poisoned")
+                .push(actions.to_vec());
+            Ok(())
+        })
     }
 }
 
@@ -65,42 +71,48 @@ impl FailingAfterSink {
     }
 }
 
-#[async_trait]
 impl BackfillSink for FailingAfterSink {
-    async fn write(&self, namespace: &str, actions: &[Action]) -> Result<(), CoreError> {
-        let prev = self.writes_remaining.fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |n| if n > 0 { Some(n - 1) } else { None },
-        );
-        if prev.is_err() {
-            return Err(CoreError::pipeline("simulated crash".to_string()));
-        }
-        self.inner.write(namespace, actions).await
+    fn write<'a>(
+        &'a self,
+        namespace: &'a str,
+        actions: &'a [Action],
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            let prev = self.writes_remaining.fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| if n > 0 { Some(n - 1) } else { None },
+            );
+            if prev.is_err() {
+                return Err(CoreError::pipeline("simulated crash".to_string()));
+            }
+            self.inner.write(namespace, actions).await
+        })
     }
 }
 
 pub struct PassthroughTransformer;
 
-#[async_trait]
 impl Transformer for PassthroughTransformer {
-    async fn transform_batch(
-        &self,
-        events: &[(&RowEvent, DocumentId)],
-    ) -> Result<Vec<Action>, CoreError> {
-        Ok(events
-            .iter()
-            .map(|(event, id)| match event.operation {
-                Operation::Delete => Action::Delete { id: id.clone() },
-                _ => Action::Upsert {
-                    id: id.clone(),
-                    document: json!({}),
-                    vector: None,
-                    distance_metric: None,
-                    schema: None,
-                },
-            })
-            .collect())
+    fn transform_batch<'a>(
+        &'a self,
+        events: &'a [(&'a RowEvent, DocumentId)],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Action>, CoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(events
+                .iter()
+                .map(|(event, id)| match event.operation {
+                    Operation::Delete => Action::Delete { id: id.clone() },
+                    _ => Action::Upsert {
+                        id: id.clone(),
+                        document: json!({}),
+                        vector: None,
+                        distance_metric: None,
+                        schema: None,
+                    },
+                })
+                .collect())
+        })
     }
 }
 
