@@ -14,7 +14,7 @@ pub use backfill::{BackfillConfig, BackfillOutcome, BackfillResult, BackfillSink
 pub use backoff::{Backoff, BackoffConfig};
 pub use error::CoreError;
 pub use id::DocumentId;
-pub use js_transform::JsTransformer;
+pub use js_transform::{JsTransformer, PassthroughTransformer};
 pub use mapping::Mapping;
 pub use replication::{ColumnValue, Operation, RelationCache, RelationInfo, RowEvent, TupleData};
 pub use router::Router;
