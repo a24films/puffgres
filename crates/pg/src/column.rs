@@ -21,22 +21,34 @@ pub async fn resolve_column_info(
     table: &str,
 ) -> Result<Vec<ColumnInfo>> {
     let query = r#"
-        WITH RECURSIVE base_type(root_oid, typname, typtype, typbasetype) AS (
-            SELECT t.oid, t.typname, t.typtype, t.typbasetype
+        WITH RECURSIVE base_type(root_oid, resolved_oid, typname, typtype, typbasetype) AS (
+            SELECT t.oid, t.oid, t.typname, t.typtype, t.typbasetype
             FROM pg_catalog.pg_type t
             WHERE t.typtype = 'd'
           UNION ALL
-            SELECT b.root_oid, bt.typname, bt.typtype, bt.typbasetype
+            SELECT b.root_oid, bt.oid, bt.typname, bt.typtype, bt.typbasetype
             FROM pg_catalog.pg_type bt
             JOIN base_type b ON b.typbasetype = bt.oid
             WHERE b.typtype = 'd'
         )
         SELECT a.attname::text,
-               COALESCE(bt.typname::text, t.typname::text),
+               CASE
+                 WHEN COALESCE(resolved.typcategory, t.typcategory) = 'A'
+                 THEN COALESCE(elem_bt.typname, elem.typname)::text || '[]'
+                 ELSE COALESCE(bt.typname::text, t.typname::text)
+               END,
                a.attnum::int
         FROM pg_catalog.pg_attribute a
         JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
         LEFT JOIN base_type bt ON bt.root_oid = a.atttypid AND bt.typtype <> 'd'
+        -- resolved type after domain unwrapping (to check if it's an array)
+        LEFT JOIN pg_catalog.pg_type resolved ON resolved.oid = bt.resolved_oid
+        -- element type of the array
+        LEFT JOIN pg_catalog.pg_type elem
+          ON elem.oid = COALESCE(resolved.typelem, t.typelem)
+         AND COALESCE(resolved.typcategory, t.typcategory) = 'A'
+        -- element type might itself be a domain; resolve it
+        LEFT JOIN base_type elem_bt ON elem_bt.root_oid = elem.oid AND elem_bt.typtype <> 'd'
         JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = $1
@@ -82,20 +94,29 @@ pub async fn validate_column(
     column: &str,
 ) -> Result<String> {
     let query = r#"
-        WITH RECURSIVE base_type(root_oid, typname, typtype, typbasetype) AS (
-            SELECT t.oid, t.typname, t.typtype, t.typbasetype
+        WITH RECURSIVE base_type(root_oid, resolved_oid, typname, typtype, typbasetype) AS (
+            SELECT t.oid, t.oid, t.typname, t.typtype, t.typbasetype
             FROM pg_catalog.pg_type t
             WHERE t.typtype = 'd'
           UNION ALL
-            SELECT b.root_oid, bt.typname, bt.typtype, bt.typbasetype
+            SELECT b.root_oid, bt.oid, bt.typname, bt.typtype, bt.typbasetype
             FROM pg_catalog.pg_type bt
             JOIN base_type b ON b.typbasetype = bt.oid
             WHERE b.typtype = 'd'
         )
-        SELECT COALESCE(bt.typname::text, t.typname::text)
+        SELECT CASE
+                 WHEN COALESCE(resolved.typcategory, t.typcategory) = 'A'
+                 THEN COALESCE(elem_bt.typname, elem.typname)::text || '[]'
+                 ELSE COALESCE(bt.typname::text, t.typname::text)
+               END
         FROM pg_catalog.pg_attribute a
         JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
         LEFT JOIN base_type bt ON bt.root_oid = a.atttypid AND bt.typtype <> 'd'
+        LEFT JOIN pg_catalog.pg_type resolved ON resolved.oid = bt.resolved_oid
+        LEFT JOIN pg_catalog.pg_type elem
+          ON elem.oid = COALESCE(resolved.typelem, t.typelem)
+         AND COALESCE(resolved.typcategory, t.typcategory) = 'A'
+        LEFT JOIN base_type elem_bt ON elem_bt.root_oid = elem.oid AND elem_bt.typtype <> 'd'
         JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = $1

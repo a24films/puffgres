@@ -41,8 +41,8 @@ pub fn resolve_schema_columns(
     }
 }
 
-/// Map a Postgres `udt_name` to its turbopuffer PrimitiveType.
-fn tpuf_type(udt_name: &str) -> &'static str {
+/// Map a Postgres scalar `udt_name` to its turbopuffer PrimitiveType.
+fn tpuf_scalar_type(udt_name: &str) -> &'static str {
     match udt_name {
         "int2" | "int4" | "int8" => "int",
         "float4" | "float8" | "numeric" => "float",
@@ -51,6 +51,23 @@ fn tpuf_type(udt_name: &str) -> &'static str {
         "json" | "jsonb" => "json",
         _ => "string",
     }
+}
+
+/// Map a Postgres `udt_name` to its turbopuffer type, handling arrays.
+///
+/// Array types are represented as `element_type[]` (e.g. `int4[]`, `text[]`).
+fn tpuf_type(udt_name: &str) -> &'static str {
+    if let Some(element) = udt_name.strip_suffix("[]") {
+        return match tpuf_scalar_type(element) {
+            "int" => "int[]",
+            "float" => "float[]",
+            "bool" => "bool[]",
+            "uuid" => "uuid[]",
+            "json" => "json[]",
+            _ => "string[]",
+        };
+    }
+    tpuf_scalar_type(udt_name)
 }
 
 /// Escape a string for use inside a TS double-quoted string literal.
@@ -363,6 +380,50 @@ mod tests {
         assert_eq!(tpuf_type("jsonb"), "json");
         assert_eq!(tpuf_type("text"), "string");
         assert_eq!(tpuf_type("varchar"), "string");
+    }
+
+    #[test]
+    fn tpuf_type_array_mappings() {
+        assert_eq!(tpuf_type("int4[]"), "int[]");
+        assert_eq!(tpuf_type("int8[]"), "int[]");
+        assert_eq!(tpuf_type("float8[]"), "float[]");
+        assert_eq!(tpuf_type("numeric[]"), "float[]");
+        assert_eq!(tpuf_type("bool[]"), "bool[]");
+        assert_eq!(tpuf_type("uuid[]"), "uuid[]");
+        assert_eq!(tpuf_type("json[]"), "json[]");
+        assert_eq!(tpuf_type("jsonb[]"), "json[]");
+        assert_eq!(tpuf_type("text[]"), "string[]");
+        assert_eq!(tpuf_type("varchar[]"), "string[]");
+    }
+
+    #[test]
+    fn generate_schema_content_with_array_columns() {
+        let input = SchemaInput {
+            schema: "public".to_string(),
+            table: "items".to_string(),
+            columns: vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    udt_name: "int4".to_string(),
+                    ordinal_position: 1,
+                },
+                ColumnInfo {
+                    name: "tags".to_string(),
+                    udt_name: "text[]".to_string(),
+                    ordinal_position: 2,
+                },
+                ColumnInfo {
+                    name: "scores".to_string(),
+                    udt_name: "float8[]".to_string(),
+                    ordinal_position: 3,
+                },
+            ],
+        };
+        let content = generate_schema_content(&input);
+
+        assert!(content.contains(r#"{ name: "id", type: "int" },"#));
+        assert!(content.contains(r#"{ name: "tags", type: "string[]" },"#));
+        assert!(content.contains(r#"{ name: "scores", type: "float[]" },"#));
     }
 
     #[test]

@@ -211,3 +211,110 @@ async fn validate_column_nested_domain() {
         "nested domain (my_label -> base_text -> text) should resolve to text"
     );
 }
+
+#[tokio::test]
+async fn resolve_column_info_array_types() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE array_cols (id INTEGER PRIMARY KEY, tags TEXT[], scores FLOAT8[], flags BOOLEAN[])",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let cols = resolve_column_info(&client, "public", "array_cols")
+        .await
+        .unwrap();
+    assert_eq!(cols.len(), 4);
+    assert_eq!(cols[0].name, "id");
+    assert_eq!(cols[0].udt_name, "int4");
+    assert_eq!(cols[1].name, "tags");
+    assert_eq!(
+        cols[1].udt_name, "text[]",
+        "text array should resolve to text[]"
+    );
+    assert_eq!(cols[2].name, "scores");
+    assert_eq!(
+        cols[2].udt_name, "float8[]",
+        "float8 array should resolve to float8[]"
+    );
+    assert_eq!(cols[3].name, "flags");
+    assert_eq!(
+        cols[3].udt_name, "bool[]",
+        "boolean array should resolve to bool[]"
+    );
+}
+
+#[tokio::test]
+async fn resolve_column_info_array_of_domain() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute("CREATE DOMAIN my_uuid AS UUID", &[])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "CREATE TABLE array_domain_cols (id INTEGER PRIMARY KEY, uids my_uuid[])",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let cols = resolve_column_info(&client, "public", "array_domain_cols")
+        .await
+        .unwrap();
+    assert_eq!(cols[1].name, "uids");
+    assert_eq!(
+        cols[1].udt_name, "uuid[]",
+        "array of domain should resolve element type to base type"
+    );
+}
+
+#[tokio::test]
+async fn validate_column_array_type() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE validate_array (id INTEGER PRIMARY KEY, tags TEXT[])",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let udt = validate_column(&client, "public", "validate_array", "tags")
+        .await
+        .unwrap();
+    assert_eq!(
+        udt, "text[]",
+        "validate_column should return text[] for text array"
+    );
+}
+
+#[tokio::test]
+async fn validate_column_array_of_domain() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute("CREATE DOMAIN my_int AS INTEGER", &[])
+        .await
+        .unwrap();
+    client
+        .execute(
+            "CREATE TABLE validate_array_domain (id INTEGER PRIMARY KEY, vals my_int[])",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let udt = validate_column(&client, "public", "validate_array_domain", "vals")
+        .await
+        .unwrap();
+    assert_eq!(
+        udt, "int4[]",
+        "validate_column should resolve domain element and return int4[]"
+    );
+}
