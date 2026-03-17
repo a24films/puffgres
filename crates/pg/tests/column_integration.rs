@@ -231,11 +231,20 @@ async fn resolve_column_info_array_types() {
     assert_eq!(cols[0].name, "id");
     assert_eq!(cols[0].udt_name, "int4");
     assert_eq!(cols[1].name, "tags");
-    assert_eq!(cols[1].udt_name, "text[]", "text array should resolve to text[]");
+    assert_eq!(
+        cols[1].udt_name, "text[]",
+        "text array should resolve to text[]"
+    );
     assert_eq!(cols[2].name, "scores");
-    assert_eq!(cols[2].udt_name, "float8[]", "float8 array should resolve to float8[]");
+    assert_eq!(
+        cols[2].udt_name, "float8[]",
+        "float8 array should resolve to float8[]"
+    );
     assert_eq!(cols[3].name, "flags");
-    assert_eq!(cols[3].udt_name, "bool[]", "boolean array should resolve to bool[]");
+    assert_eq!(
+        cols[3].udt_name, "bool[]",
+        "boolean array should resolve to bool[]"
+    );
 }
 
 #[tokio::test]
@@ -279,7 +288,10 @@ async fn validate_column_array_type() {
     let udt = validate_column(&client, "public", "validate_array", "tags")
         .await
         .unwrap();
-    assert_eq!(udt, "text[]", "validate_column should return text[] for text array");
+    assert_eq!(
+        udt, "text[]",
+        "validate_column should return text[] for text array"
+    );
 }
 
 #[tokio::test]
