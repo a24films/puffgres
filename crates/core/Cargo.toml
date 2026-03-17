@@ -23,6 +23,9 @@ tokio-postgres.workspace = true
 tokio-util.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 
+[features]
+test-utils = []
+
 [dev-dependencies]
 chrono.workspace = true
 tokio-util.workspace = true
