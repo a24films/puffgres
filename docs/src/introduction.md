@@ -1,3 +1,5 @@
+# puffgres
+
 puffgres is a logical replication service that keeps Postgres entities mirrored in turbopuffer. Rather than duplicating application code every time you modify a vector (and risking partial successes that keep data out of sync), your Postgres changes automatically update.
 
 ## Design principles

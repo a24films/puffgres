@@ -13,7 +13,7 @@ puffgres is a Rust workspace divided into several crates under `crates/`:
 - **`replication`** — the change data capture stream. Decodes the Postgres logical replication protocol (pgoutput), manages relation caching, schema change detection, transaction batching, and sub-batch streaming for large transactions.
 - **`state`** — SQLite state management via Diesel. Tracks applied configs, replication checkpoints, backfill progress, and dead letter queue entries. Runs in WAL mode.
 
-Documentation lives in `docs/` and is built with [mdbook](https://rust-lang.github.io/mdBook/).
+Documentation lives in `docs/src/` and is published to the [GitHub wiki](https://github.com/a24films/puffgres/wiki) via CI. The Command Reference page is auto-generated from `puffgres --help` output.
 
 ## Meta-notes
 
