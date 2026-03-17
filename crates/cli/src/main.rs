@@ -18,8 +18,8 @@ enum Command {
     Init,
     /// Create a new table config
     New {
-        /// Name for the config (e.g. "user", "film")
-        name: String,
+        /// Name for the config (omit for interactive wizard)
+        name: Option<String>,
     },
     /// Validate all configs against the live database without applying
     Check,
@@ -97,7 +97,7 @@ async fn run() -> (
             Ok(p) => p,
             Err(e) => return (Err(e), None),
         };
-        return (puffgres_cli::new::run(&paths, name), None);
+        return (puffgres_cli::new::run(&paths, name.as_deref()), None);
     }
 
     // All remaining commands need at least ProjectPaths
