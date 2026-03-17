@@ -93,4 +93,37 @@ impl CliError {
             _ => false,
         }
     }
+
+    pub fn is_tls_unclean_close(&self) -> bool {
+        match self {
+            CliError::Replication(_) | CliError::Pg(_) => {
+                let msg = self.to_string().to_lowercase();
+                msg.contains("close_notify") || msg.contains("unexpected eof")
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_unclean_close_detection() {
+        let err = CliError::Replication(replication::ReplicationError::Connection(
+            "io error: peer closed connection without sending TLS close_notify".into(),
+        ));
+        assert!(err.is_tls_unclean_close());
+
+        let err = CliError::Replication(replication::ReplicationError::Stream(
+            "unexpected eof".into(),
+        ));
+        assert!(err.is_tls_unclean_close());
+
+        let err = CliError::Replication(replication::ReplicationError::Stream(
+            "connection reset by peer".into(),
+        ));
+        assert!(!err.is_tls_unclean_close());
+    }
 }

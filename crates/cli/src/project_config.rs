@@ -27,6 +27,10 @@ pub struct ProjectConfig {
     /// as they arrive, giving natural backpressure. The commit finalizes the group.
     #[serde(default)]
     pub sub_batch_size: Option<usize>,
+    /// Logging level for unclean TLS shutdowns (missing close_notify).
+    /// Supported values: "error", "warn", "silent".
+    #[serde(default)]
+    pub tls_unclean_close_level: Option<String>,
 }
 
 impl ProjectConfig {
@@ -109,6 +113,14 @@ impl ProjectConfig {
         self.sub_batch_size
     }
 
+    pub fn tls_unclean_close_level(&self) -> &str {
+        match self.tls_unclean_close_level.as_deref() {
+            Some("warn") => "warn",
+            Some("silent") => "silent",
+            _ => "error",
+        }
+    }
+
     pub fn resolve_env_paths(&self, root: &Path) -> Vec<PathBuf> {
         self.environment_files
             .iter()
@@ -129,6 +141,7 @@ impl Default for ProjectConfig {
             dlq_permanent_max_age_hours: Some(72),
             max_transaction_events: None,
             sub_batch_size: None,
+            tls_unclean_close_level: None,
         }
     }
 }
@@ -209,6 +222,7 @@ dlq_replay_interval = 20
 dlq_replay_batch_size = 100
 dlq_max_retries = 3
 dlq_permanent_max_age_hours = 48
+tls_unclean_close_level = "warn"
 "#;
         let config: ProjectConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.environment_files, vec![".env"]);
@@ -218,6 +232,7 @@ dlq_permanent_max_age_hours = 48
         assert_eq!(config.dlq_replay_batch_size(), 100);
         assert_eq!(config.dlq_max_retries(), 3);
         assert_eq!(config.dlq_permanent_max_age_hours(), 48);
+        assert_eq!(config.tls_unclean_close_level(), "warn");
     }
 
     #[test]
