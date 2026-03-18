@@ -54,6 +54,7 @@ pub struct Metrics {
     pub replication_acks: Counter<u64>,
     pub replication_lag_ms: Gauge<f64>,
     pub tls_unclean_close: Counter<u64>,
+    pub connection_failures: Counter<u64>,
 }
 
 /// Sets up console-only tracing to stdout (no OTLP export).
@@ -260,6 +261,10 @@ fn build_metrics(meter: &Meter) -> Metrics {
         tls_unclean_close: meter
             .u64_counter("puffgres.tls.unclean_close")
             .with_description("Unclean TLS shutdowns (missing close_notify)")
+            .build(),
+        connection_failures: meter
+            .u64_counter("puffgres.replication.connection_failures")
+            .with_description("Replication or Postgres connection failures")
             .build(),
     }
 }

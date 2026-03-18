@@ -69,9 +69,14 @@ async fn generate_check_lifecycle() {
     assert!(content.contains("parseRow"));
 
     // 2. Check should succeed
-    check_async(&paths, &env_config.database_url, &env_config.state_db_path)
-        .await
-        .unwrap();
+    check_async(
+        &paths,
+        &env_config.database_url,
+        &env_config.state_db_path,
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await
+    .unwrap();
 
     // 3. ALTER TABLE to add a column → check should fail (schema drift)
     let pg_client = pg::connect::connect(&env_config.database_url)
@@ -83,8 +88,13 @@ async fn generate_check_lifecycle() {
         .unwrap();
     drop(pg_client);
 
-    let check_result =
-        check_async(&paths, &env_config.database_url, &env_config.state_db_path).await;
+    let check_result = check_async(
+        &paths,
+        &env_config.database_url,
+        &env_config.state_db_path,
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await;
     assert!(
         check_result.is_err(),
         "check should fail after ALTER TABLE: {check_result:?}"
@@ -107,9 +117,14 @@ async fn generate_check_lifecycle() {
     );
 
     // 5. Check should succeed again
-    check_async(&paths, &env_config.database_url, &env_config.state_db_path)
-        .await
-        .unwrap();
+    check_async(
+        &paths,
+        &env_config.database_url,
+        &env_config.state_db_path,
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

@@ -18,9 +18,14 @@ async fn named_dry_run_fails_with_no_configs() {
         dlq_max_age_hours: None,
     };
 
-    let err = run_async(&paths, &env_config, Some("nonexistent_0001"))
-        .await
-        .unwrap_err();
+    let err = run_async(
+        &paths,
+        &env_config,
+        Some("nonexistent_0001"),
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("no config found matching"),
         "expected missing-config error, got: {err}"

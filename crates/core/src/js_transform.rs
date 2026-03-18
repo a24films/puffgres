@@ -114,11 +114,15 @@ pub struct JsTransformer {
 
 impl JsTransformer {
     pub fn new(script_path: PathBuf, id_type: IdType) -> Self {
+        Self::new_with_timeout(script_path, id_type, DEFAULT_TIMEOUT)
+    }
+
+    pub fn new_with_timeout(script_path: PathBuf, id_type: IdType, timeout: Duration) -> Self {
         Self {
             script_path,
             id_type,
             column_reindex: None,
-            timeout: DEFAULT_TIMEOUT,
+            timeout,
             process: Mutex::new(None),
         }
     }
@@ -129,19 +133,42 @@ impl JsTransformer {
         id_type: IdType,
         column_reindex: Vec<usize>,
     ) -> Self {
+        Self::with_column_reindex_and_timeout(script_path, id_type, column_reindex, DEFAULT_TIMEOUT)
+    }
+
+    pub fn with_column_reindex_and_timeout(
+        script_path: PathBuf,
+        id_type: IdType,
+        column_reindex: Vec<usize>,
+        timeout: Duration,
+    ) -> Self {
         Self {
             script_path,
             id_type,
             column_reindex: Some(column_reindex),
-            timeout: DEFAULT_TIMEOUT,
+            timeout,
             process: Mutex::new(None),
         }
     }
 
     fn spawn_child(&self) -> Result<ChildProcess, CoreError> {
+        let node_options = match std::env::var("NODE_OPTIONS") {
+            Ok(existing)
+                if existing
+                    .split_whitespace()
+                    .any(|arg| arg == "--no-deprecation") =>
+            {
+                existing
+            }
+            Ok(existing) if existing.trim().is_empty() => "--no-deprecation".to_string(),
+            Ok(existing) => format!("{existing} --no-deprecation"),
+            Err(_) => "--no-deprecation".to_string(),
+        };
+
         let mut child = Command::new("pnpx")
             .arg("tsx")
             .arg(&self.script_path)
+            .env("NODE_OPTIONS", node_options)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -764,6 +791,17 @@ mod tests {
         let parsed: Vec<Value> = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(parsed[0]["columns"], json!([null, "1"]));
+    }
+
+    #[test]
+    fn new_with_timeout_uses_custom_timeout() {
+        let t = JsTransformer::new_with_timeout(
+            PathBuf::from("transform.ts"),
+            IdType::Uint,
+            Duration::from_secs(45),
+        );
+
+        assert_eq!(t.timeout, Duration::from_secs(45));
     }
 
     #[tokio::test]

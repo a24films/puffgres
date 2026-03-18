@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use config::{Config, IdType};
 use pg::Client;
@@ -22,6 +23,7 @@ pub async fn preflight_check(
     state_db_path: &Path,
     configs: &[(PathBuf, Config)],
     pg_client: Option<&Client>,
+    transform_timeout: Duration,
 ) -> Result<(), String> {
     if configs.is_empty() {
         return Ok(());
@@ -234,7 +236,7 @@ pub async fn preflight_check(
         };
 
         if let Some((column_names, values)) = sample {
-            match dry_run_transform(path, config, &column_names, &values).await {
+            match dry_run_transform(path, config, &column_names, &values, transform_timeout).await {
                 Ok(_) => {
                     transform_status = "transform ok";
                 }

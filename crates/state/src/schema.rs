@@ -43,6 +43,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    runtime_state (key) {
+        key -> Text,
+        value -> Text,
+        updated_at -> BigInt,
+    }
+}
+
+diesel::table! {
     streaming_checkpoints (config_name) {
         config_name -> Text,
         lsn -> BigInt,
@@ -59,5 +67,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     backfill_progress,
     configs,
     dlq,
+    runtime_state,
     streaming_checkpoints,
 );

@@ -31,6 +31,8 @@ pub struct ProjectConfig {
     /// Supported values: "error", "warn", "silent".
     #[serde(default)]
     pub tls_unclean_close_level: Option<String>,
+    #[serde(default)]
+    pub transform_timeout_secs: Option<u64>,
 }
 
 impl ProjectConfig {
@@ -78,6 +80,11 @@ impl ProjectConfig {
                 "sub_batch_size must be at least 1 in puffgres.toml".to_string(),
             ));
         }
+        if self.transform_timeout_secs == Some(0) {
+            return Err(CliError::RunValidation(
+                "transform_timeout_secs must be at least 1 in puffgres.toml".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -121,6 +128,10 @@ impl ProjectConfig {
         }
     }
 
+    pub fn transform_timeout_secs(&self) -> u64 {
+        self.transform_timeout_secs.unwrap_or(30)
+    }
+
     pub fn resolve_env_paths(&self, root: &Path) -> Vec<PathBuf> {
         self.environment_files
             .iter()
@@ -142,6 +153,7 @@ impl Default for ProjectConfig {
             max_transaction_events: None,
             sub_batch_size: None,
             tls_unclean_close_level: None,
+            transform_timeout_secs: None,
         }
     }
 }
@@ -223,6 +235,7 @@ dlq_replay_batch_size = 100
 dlq_max_retries = 3
 dlq_permanent_max_age_hours = 48
 tls_unclean_close_level = "warn"
+transform_timeout_secs = 45
 "#;
         let config: ProjectConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.environment_files, vec![".env"]);
@@ -233,6 +246,7 @@ tls_unclean_close_level = "warn"
         assert_eq!(config.dlq_max_retries(), 3);
         assert_eq!(config.dlq_permanent_max_age_hours(), 48);
         assert_eq!(config.tls_unclean_close_level(), "warn");
+        assert_eq!(config.transform_timeout_secs(), 45);
     }
 
     #[test]
@@ -329,6 +343,25 @@ tls_unclean_close_level = "warn"
         assert!(
             err.contains("dlq_replay_interval"),
             "error should mention dlq_replay_interval: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_transform_timeout_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("puffgres.toml");
+        std::fs::write(
+            &path,
+            "environment_files = [\".env\"]\ntransform_timeout_secs = 0\n",
+        )
+        .unwrap();
+
+        let result = ProjectConfig::load(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("transform_timeout_secs"),
+            "error should mention transform_timeout_secs: {err}"
         );
     }
 }

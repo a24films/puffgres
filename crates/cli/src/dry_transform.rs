@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use config::Config;
 use puffgres_core::{Action, JsTransformer, Transformer, values_to_event};
@@ -9,9 +10,14 @@ pub async fn dry_run_transform(
     config: &Config,
     column_names: &[String],
     values: &[Option<String>],
+    transform_timeout: Duration,
 ) -> Result<Vec<puffgres_core::Action>, String> {
     let transform_path = config_path.parent().unwrap().join("transform.ts");
-    let transformer = JsTransformer::new(transform_path, config.id.id_type.clone());
+    let transformer = JsTransformer::new_with_timeout(
+        transform_path,
+        config.id.id_type.clone(),
+        transform_timeout,
+    );
 
     let (event, doc_id) =
         values_to_event(column_names, values, &config.id.column, &config.id.id_type)

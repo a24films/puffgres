@@ -58,7 +58,9 @@ async fn apply_and_idempotency() {
     stub_schema(&film_dir);
 
     // First apply: both configs written
-    run_async(&paths, &env_config).await.unwrap();
+    run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap();
 
     let db = StateDb::open(&state_db_path).unwrap();
     assert_eq!(db.list_configs().unwrap().len(), 2);
@@ -72,7 +74,9 @@ async fn apply_and_idempotency() {
     assert_eq!(film.namespace, "film");
 
     // Second apply: idempotent, no errors, same count
-    run_async(&paths, &env_config).await.unwrap();
+    run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap();
     assert_eq!(db.list_configs().unwrap().len(), 2);
 }
 
@@ -84,7 +88,9 @@ async fn rejects_modified_config() {
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
     write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
     stub_schema(&user_dir);
-    run_async(&paths, &env_config).await.unwrap();
+    run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap();
 
     // Mutate the already-applied config
     let config_toml = user_dir.join("config.toml");
@@ -104,7 +110,9 @@ type = "uint"
     )
     .unwrap();
 
-    let err = run_async(&paths, &env_config).await.unwrap_err();
+    let err = run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("modified"),
         "expected immutability error, got: {err}"
@@ -120,7 +128,9 @@ async fn rejects_nonexistent_table() {
     write_transform(&ghost_dir, PASSTHROUGH_TRANSFORM);
     stub_schema(&ghost_dir);
 
-    let err = run_async(&paths, &env_config).await.unwrap_err();
+    let err = run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("error"),
         "expected apply error, got: {err}"
@@ -147,7 +157,9 @@ async fn rejects_nonexistent_id_column() {
     write_transform(&col_dir, PASSTHROUGH_TRANSFORM);
     stub_schema(&col_dir);
 
-    let err = run_async(&paths, &env_config).await.unwrap_err();
+    let err = run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("error"),
         "expected apply error for missing column, got: {err}"
@@ -174,7 +186,9 @@ async fn rejects_incompatible_id_type() {
     write_transform(&typed_dir, PASSTHROUGH_TRANSFORM);
     stub_schema(&typed_dir);
 
-    let err = run_async(&paths, &env_config).await.unwrap_err();
+    let err = run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("error"),
         "expected apply error for incompatible id type, got: {err}"
@@ -205,7 +219,9 @@ async fn rejects_vector_without_distance_metric() {
     write_transform(&vec_dir, VECTOR_NO_METRIC_TRANSFORM);
     stub_schema(&vec_dir);
 
-    let err = run_async(&paths, &env_config).await.unwrap_err();
+    let err = run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("error"),
         "expected apply error for vector without distance_metric, got: {err}"
@@ -236,7 +252,7 @@ async fn accepts_vector_with_distance_metric() {
     write_transform(&goodvec_dir, VECTOR_WITH_METRIC_TRANSFORM);
     stub_schema(&goodvec_dir);
 
-    let result = run_async(&paths, &env_config).await;
+    let result = run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default()).await;
     assert!(result.is_ok(), "expected apply to succeed, got: {result:?}");
 }
 
@@ -260,7 +276,7 @@ async fn accepts_empty_table_skips_dry_run() {
     write_transform(&empty_dir, PASSTHROUGH_TRANSFORM);
     stub_schema(&empty_dir);
 
-    let result = run_async(&paths, &env_config).await;
+    let result = run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default()).await;
     assert!(
         result.is_ok(),
         "expected apply to succeed on empty table, got: {result:?}"

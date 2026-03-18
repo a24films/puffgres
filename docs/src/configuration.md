@@ -13,6 +13,7 @@ dlq_permanent_max_age_hours = 72
 # max_transaction_events = 1000000
 # sub_batch_size = 1000000
 # tls_unclean_close_level = "warn"
+# transform_timeout_secs = 30
 ```
 
 ## Reference
@@ -56,3 +57,7 @@ When set, large transactions are streamed in sub-batches of this size instead of
 ### `tls_unclean_close_level`
 
 Logging level for unclean TLS shutdowns (missing `close_notify`). Supported values: `error`, `warn`, `silent`. Default: **error**.
+
+### `transform_timeout_secs`
+
+How long puffgres waits for a single `transform.ts` batch response before killing and respawning the worker process. Default: **30** seconds.
