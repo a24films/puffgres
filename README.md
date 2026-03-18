@@ -14,11 +14,14 @@ Read our [docs](TK) to get started.
 
 Measured on GitHub Actions `ubuntu-latest` (4-core x86, 16 GB RAM) with `--release` builds (LTO, single codegen unit).
 
+We’ve tested puffgres in production on tables with a few million rows, and it should scale well beyond that. If you implement this at large scale or hit bumps, feel free to shoot me an [email](mailto:lgelfond@a24films.com). Initial benchmarking on GitHub Actions runners shows:
+
 - **Throughput**: >600K events/sec sustained over 100M events
 - **Batch latency**: p50 <10&micro;s, p99 <100&micro;s across 100K transactions
 - **Recovery**: <60ms to resume from checkpoint after crash
-- **Memory**: <160 bytes/event at scale, sub-linear RSS growth
-- **Fanout**: >1M events/sec routing across 1000 configs
+- **Memory**: <160 bytes/event at scale, and total memory usage grows sub-linearly with event volume
+- **End-to-end throughput with fanout**: TK source events/sec across 1000 configs
+- **Router fanout**: >1M source events/sec across 1000 configs
 
 ## Development
 
