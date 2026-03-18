@@ -11,6 +11,14 @@ use crate::error::CliError;
 use crate::paths::ProjectPaths;
 use crate::validate::preflight_check;
 
+fn summarize_config_errors(errors: &[String]) -> String {
+    format!(
+        "{} config(s) had errors:\n{}",
+        errors.len(),
+        errors.join("\n")
+    )
+}
+
 pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::Apply(format!("failed to create async runtime: {e}")))?;
@@ -122,10 +130,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
         for err in &errors {
             println!("Error: {}", err);
         }
-        return Err(CliError::Apply(format!(
-            "{} config(s) had errors",
-            errors.len()
-        )));
+        return Err(CliError::Apply(summarize_config_errors(&errors)));
     }
 
     // Pre-flight validation on new configs (static + transforms + namespaces + Postgres)

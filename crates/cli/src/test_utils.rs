@@ -88,51 +88,80 @@ pub fn write_transform(config_dir: &Path, script: &str) {
     fs::write(config_dir.join("transform.ts"), script).unwrap();
 }
 
+pub fn stub_schema(config_dir: &Path) {
+    fs::write(
+        config_dir.join("schema.ts"),
+        "/* stub schema for tests */\nexport {};\n",
+    )
+    .unwrap();
+}
+
 use std::path::Path;
 
 pub const PASSTHROUGH_TRANSFORM: &str = r#"
-import { readFileSync } from "fs";
-const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
-const output = input.map((event: any) => {
-  if (event.operation === "delete") {
-    return { type: "delete", id: event.id };
+import { createInterface } from "readline";
+
+const rl = createInterface({ input: process.stdin });
+
+void (async () => {
+  for await (const line of rl) {
+    const input = JSON.parse(line);
+    const output = input.map((event: any) => {
+      if (event.operation === "delete") {
+        return { type: "delete", id: event.id };
+      }
+      return { type: "upsert", id: event.id, document: { raw: event.columns } };
+    });
+    process.stdout.write(JSON.stringify(output) + "\n");
   }
-  return { type: "upsert", id: event.id, document: { raw: event.columns } };
-});
-process.stdout.write(JSON.stringify(output));
+})();
 "#;
 
 pub const VECTOR_NO_METRIC_TRANSFORM: &str = r#"
-import { readFileSync } from "fs";
-const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
-const output = input.map((event: any) => {
-  if (event.operation === "delete") {
-    return { type: "delete", id: event.id };
+import { createInterface } from "readline";
+
+const rl = createInterface({ input: process.stdin });
+
+void (async () => {
+  for await (const line of rl) {
+    const input = JSON.parse(line);
+    const output = input.map((event: any) => {
+      if (event.operation === "delete") {
+        return { type: "delete", id: event.id };
+      }
+      return {
+        type: "upsert",
+        id: event.id,
+        document: {},
+        vector: [0.1, 0.2, 0.3],
+      };
+    });
+    process.stdout.write(JSON.stringify(output) + "\n");
   }
-  return {
-    type: "upsert",
-    id: event.id,
-    document: {},
-    vector: [0.1, 0.2, 0.3],
-  };
-});
-process.stdout.write(JSON.stringify(output));
+})();
 "#;
 
 pub const VECTOR_WITH_METRIC_TRANSFORM: &str = r#"
-import { readFileSync } from "fs";
-const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
-const output = input.map((event: any) => {
-  if (event.operation === "delete") {
-    return { type: "delete", id: event.id };
+import { createInterface } from "readline";
+
+const rl = createInterface({ input: process.stdin });
+
+void (async () => {
+  for await (const line of rl) {
+    const input = JSON.parse(line);
+    const output = input.map((event: any) => {
+      if (event.operation === "delete") {
+        return { type: "delete", id: event.id };
+      }
+      return {
+        type: "upsert",
+        id: event.id,
+        document: {},
+        vector: [0.1, 0.2, 0.3],
+        distance_metric: "cosine_distance",
+      };
+    });
+    process.stdout.write(JSON.stringify(output) + "\n");
   }
-  return {
-    type: "upsert",
-    id: event.id,
-    document: {},
-    vector: [0.1, 0.2, 0.3],
-    distance_metric: "cosine_distance",
-  };
-});
-process.stdout.write(JSON.stringify(output));
+})();
 "#;

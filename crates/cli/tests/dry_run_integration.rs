@@ -57,15 +57,22 @@ fn write_transform(config_dir: &Path, script: &str) {
 }
 
 const PASSTHROUGH_TRANSFORM: &str = r#"
-import { readFileSync } from "fs";
-const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
-const output = input.map((event: any) => {
-  if (event.operation === "delete") {
-    return { type: "delete", id: event.id };
+import { createInterface } from "readline";
+
+const rl = createInterface({ input: process.stdin });
+
+void (async () => {
+  for await (const line of rl) {
+    const input = JSON.parse(line);
+    const output = input.map((event: any) => {
+      if (event.operation === "delete") {
+        return { type: "delete", id: event.id };
+      }
+      return { type: "upsert", id: event.id, document: { raw: event.columns } };
+    });
+    process.stdout.write(JSON.stringify(output) + "\n");
   }
-  return { type: "upsert", id: event.id, document: { raw: event.columns } };
-});
-process.stdout.write(JSON.stringify(output));
+})();
 "#;
 
 fn write_vector_transform(config_dir: &Path, include_distance: bool) {
@@ -76,15 +83,22 @@ fn write_vector_transform(config_dir: &Path, include_distance: bool) {
     };
     let script = format!(
         r#"
-import {{ readFileSync }} from "fs";
-const input = JSON.parse(readFileSync("/dev/stdin", "utf-8"));
-const output = input.map((event: any) => {{
-  if (event.operation === "delete") {{
-    return {{ type: "delete", id: event.id }};
+import {{ createInterface }} from "readline";
+
+const rl = createInterface({{ input: process.stdin }});
+
+void (async () => {{
+  for await (const line of rl) {{
+    const input = JSON.parse(line);
+    const output = input.map((event: any) => {{
+      if (event.operation === "delete") {{
+        return {{ type: "delete", id: event.id }};
+      }}
+      return {{ type: "upsert", id: event.id, vector: [1.0, 2.0, 3.0]{distance_field}, document: {{ raw: event.columns }} }};
+    }});
+    process.stdout.write(JSON.stringify(output) + "\n");
   }}
-  return {{ type: "upsert", id: event.id, vector: [1.0, 2.0, 3.0]{distance_field}, document: {{ raw: event.columns }} }};
-}});
-process.stdout.write(JSON.stringify(output));
+}})();
 "#
     );
     fs::write(config_dir.join("transform.ts"), script).unwrap();

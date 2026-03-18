@@ -155,7 +155,7 @@ fn fanout_scaling_comparison() {
 fn sustained_routing_60s() {
     let configs = 3;
     let batch_size = 10;
-    let target_duration = Duration::from_secs(10); // 10s for test speed; bump to 60s for real load testing
+    let target_duration = Duration::from_secs(60);
 
     let mut cache = RelationCache::new();
     cache.insert(make_relation(1, "test_table"));
