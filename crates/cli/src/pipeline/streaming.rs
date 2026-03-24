@@ -14,6 +14,18 @@ use crate::error::CliError;
 use crate::observability::Metrics;
 use crate::project_config::ProjectConfig;
 
+/// Returns true if the config should skip this batch because it has already
+/// been checkpointed past this LSN.
+fn should_skip_config(
+    config_name: &str,
+    batch_lsn: u64,
+    config_checkpoint_lsns: &HashMap<String, u64>,
+) -> bool {
+    config_checkpoint_lsns
+        .get(config_name)
+        .is_some_and(|&cp_lsn| batch_lsn <= cp_lsn)
+}
+
 /// Route, transform, and send a set of events to Turbopuffer. Shared between
 /// committed batches and streaming sub-batches.
 async fn process_events(
@@ -27,10 +39,15 @@ async fn process_events(
     metrics: Option<&Metrics>,
     events_processed: &mut HashMap<String, u64>,
     dlq_lsn: u64,
+    config_checkpoint_lsns: &HashMap<String, u64>,
+    batch_lsn: u64,
 ) -> Result<(), CliError> {
     let config_events = router.route_batch(events, relation_cache);
 
     for (config_name, events) in &config_events {
+        if should_skip_config(config_name, batch_lsn, config_checkpoint_lsns) {
+            continue;
+        }
         let transformer = transformers.get(*config_name).ok_or_else(|| {
             CliError::Run(format!(
                 "internal error: no transformer for config '{config_name}'"
@@ -135,6 +152,7 @@ pub(crate) async fn run_streaming_loop(
     mut start_lsn: Option<u64>,
 ) -> Result<(), CliError> {
     let mut events_processed: HashMap<String, u64> = HashMap::new();
+    let mut config_checkpoint_lsns: HashMap<String, u64> = HashMap::new();
     // Build watched columns map: schema.table → columns referenced by any config.
     // Schema changes that only touch columns outside this set are silently accepted.
     // Tables where ANY config has columns = None get no entry, so all changes are breaking.
@@ -148,10 +166,11 @@ pub(crate) async fn run_streaming_loop(
         .collect();
 
     for (_, config) in applied_configs {
-        let count = db
-            .get_streaming_checkpoint(&config.name)?
-            .map(|c| c.events_processed)
-            .unwrap_or(0);
+        let checkpoint = db.get_streaming_checkpoint(&config.name)?;
+        let count = checkpoint.as_ref().map(|c| c.events_processed).unwrap_or(0);
+        if let Some(ref cp) = checkpoint {
+            config_checkpoint_lsns.insert(config.name.clone(), cp.lsn);
+        }
         events_processed.insert(config.name.clone(), count);
 
         let key = format!("{}.{}", config.source.schema, config.source.table);
@@ -273,6 +292,7 @@ pub(crate) async fn run_streaming_loop(
                     )
                     .entered();
                     // Process immediately for throughput; no checkpoint or ack yet.
+                    let no_checkpoints = HashMap::new();
                     process_events(
                         &sub_batch.events,
                         stream.relation_cache(),
@@ -284,6 +304,8 @@ pub(crate) async fn run_streaming_loop(
                         metrics,
                         &mut events_processed,
                         0, // no ack_lsn for sub-batches
+                        &no_checkpoints,
+                        0,
                     )
                     .await?;
                     continue;
@@ -349,6 +371,8 @@ pub(crate) async fn run_streaming_loop(
                     metrics,
                     &mut events_processed,
                     batch.ack_lsn,
+                    &config_checkpoint_lsns,
+                    batch.ack_lsn,
                 )
                 .await?;
             }
@@ -361,6 +385,7 @@ pub(crate) async fn run_streaming_loop(
                     updated_at: Utc::now(),
                 };
                 db.save_streaming_checkpoint(&checkpoint)?;
+                config_checkpoint_lsns.insert(config.name.clone(), batch.ack_lsn);
             }
 
             stream.ack();
@@ -415,4 +440,50 @@ pub(crate) async fn run_streaming_loop(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_skip_when_batch_lsn_below_checkpoint() {
+        let mut checkpoints = HashMap::new();
+        checkpoints.insert("config_a".to_string(), 1000);
+
+        assert!(should_skip_config("config_a", 500, &checkpoints));
+    }
+
+    #[test]
+    fn should_skip_when_batch_lsn_equals_checkpoint() {
+        let mut checkpoints = HashMap::new();
+        checkpoints.insert("config_a".to_string(), 1000);
+
+        assert!(should_skip_config("config_a", 1000, &checkpoints));
+    }
+
+    #[test]
+    fn should_not_skip_when_batch_lsn_above_checkpoint() {
+        let mut checkpoints = HashMap::new();
+        checkpoints.insert("config_a".to_string(), 1000);
+
+        assert!(!should_skip_config("config_a", 1001, &checkpoints));
+    }
+
+    #[test]
+    fn should_not_skip_when_config_has_no_checkpoint() {
+        let checkpoints = HashMap::new();
+
+        assert!(!should_skip_config("new_config", 500, &checkpoints));
+    }
+
+    #[test]
+    fn independent_configs_skip_independently() {
+        let mut checkpoints = HashMap::new();
+        checkpoints.insert("old_config".to_string(), 5000);
+
+        let batch_lsn = 3000;
+        assert!(should_skip_config("old_config", batch_lsn, &checkpoints));
+        assert!(!should_skip_config("new_config", batch_lsn, &checkpoints));
+    }
 }
