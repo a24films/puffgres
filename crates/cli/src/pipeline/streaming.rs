@@ -170,6 +170,14 @@ pub(crate) async fn run_streaming_loop(
         let count = checkpoint.as_ref().map(|c| c.events_processed).unwrap_or(0);
         if let Some(ref cp) = checkpoint {
             config_checkpoint_lsns.insert(config.name.clone(), cp.lsn);
+        } else if let Some(bp) = db.get_backfill_progress(&config.name)? {
+            // Seed skip state for new configs: they have no streaming checkpoint
+            // yet but completed backfill with a watermark LSN. Without this,
+            // should_skip_config would never skip them and they'd re-process
+            // every historical batch from start_lsn up to their watermark.
+            if let Some(wlsn) = bp.watermark_lsn {
+                config_checkpoint_lsns.insert(config.name.clone(), wlsn);
+            }
         }
         events_processed.insert(config.name.clone(), count);
 
@@ -378,6 +386,12 @@ pub(crate) async fn run_streaming_loop(
             }
 
             for (_, config) in applied_configs {
+                // Only advance the checkpoint if this config actually processed
+                // this batch (i.e. was not skipped). Otherwise we'd collapse the
+                // skip window and defeat per-config catch-up on replay.
+                if should_skip_config(&config.name, batch.ack_lsn, &config_checkpoint_lsns) {
+                    continue;
+                }
                 let checkpoint = StreamingCheckpoint {
                     config_name: config.name.clone(),
                     lsn: batch.ack_lsn,
