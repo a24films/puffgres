@@ -12,6 +12,7 @@ dlq_max_retries = 5
 dlq_permanent_max_age_hours = 72
 # max_transaction_events = 1000000
 # sub_batch_size = 1000000
+# tls_unclean_close_level = "warn"
 ```
 
 ## Reference
@@ -51,3 +52,7 @@ Maximum number of events allowed in a single Postgres transaction. Transactions 
 ### `sub_batch_size`
 
 When set, large transactions are streamed in sub-batches of this size instead of buffering the entire transaction in memory. The pipeline processes chunks as they arrive, giving natural backpressure. The commit finalizes the group. Unset by default (entire transaction is buffered).
+
+### `tls_unclean_close_level`
+
+Logging level for unclean TLS shutdowns (missing `close_notify`). Supported values: `error`, `warn`, `silent`. Default: **error**.

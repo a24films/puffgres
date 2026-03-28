@@ -131,18 +131,13 @@ impl ReplicationStream {
     pub async fn connect(config: ReplicationStreamConfig) -> Result<Self> {
         let parsed = parse_connection_string(&config.connection_string)?;
 
-        let tls = match parsed.sslmode.as_deref() {
-            Some("require") => TlsConfig::require(),
-            Some("verify-ca") => TlsConfig::verify_ca(None),
-            Some("verify-full") => TlsConfig::verify_full(None),
-            _ => TlsConfig::disabled(),
-        };
+        let tls = tls_config_for_sslmode(parsed.sslmode.as_deref());
 
         let mut repl_config = ReplicationConfig::new(
-            parsed.host,
-            parsed.user,
-            parsed.password,
-            parsed.database,
+            parsed.host.clone(),
+            parsed.user.clone(),
+            parsed.password.clone(),
+            parsed.database.clone(),
             config.slot_name,
             config.publication_name,
         )
@@ -157,9 +152,13 @@ impl ReplicationStream {
             repl_config = repl_config.with_start_lsn(Lsn(lsn));
         }
 
-        let client = ReplicationClient::connect(repl_config)
-            .await
-            .map_err(|e| ReplicationError::Connection(e.to_string()))?;
+        let client = ReplicationClient::connect(repl_config).await.map_err(|e| {
+            let sslmode = parsed.sslmode.as_deref().unwrap_or("disable");
+            ReplicationError::Connection(format!(
+                "{e} (host={}, port={}, sslmode={sslmode})",
+                parsed.host, parsed.port
+            ))
+        })?;
 
         Ok(Self {
             client,
@@ -172,6 +171,15 @@ impl ReplicationStream {
             sub_batch_size: config.sub_batch_size,
             watched_columns: config.watched_columns,
         })
+    }
+}
+
+fn tls_config_for_sslmode(sslmode: Option<&str>) -> TlsConfig {
+    match sslmode {
+        Some("require") => TlsConfig::require(),
+        Some("verify-ca") => TlsConfig::verify_ca(None),
+        Some("verify-full") => TlsConfig::verify_full(None),
+        _ => TlsConfig::disabled(),
     }
 }
 
@@ -496,6 +504,27 @@ mod tests {
         };
         assert_eq!(config.slot_name, "my_slot");
         assert_eq!(config.start_lsn, Some(0x1234));
+    }
+
+    #[test]
+    fn tls_config_maps_sslmodes() {
+        assert_eq!(tls_config_for_sslmode(None), TlsConfig::disabled());
+        assert_eq!(
+            tls_config_for_sslmode(Some("prefer")),
+            TlsConfig::disabled()
+        );
+        assert_eq!(
+            tls_config_for_sslmode(Some("require")),
+            TlsConfig::require()
+        );
+        assert_eq!(
+            tls_config_for_sslmode(Some("verify-ca")),
+            TlsConfig::verify_ca(None)
+        );
+        assert_eq!(
+            tls_config_for_sslmode(Some("verify-full")),
+            TlsConfig::verify_full(None)
+        );
     }
 
     #[tokio::test]

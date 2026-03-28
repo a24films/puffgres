@@ -56,6 +56,8 @@ pub(crate) fn prefixed_namespace(prefix: &Option<String>, namespace: &str) -> St
 async fn retry_loop<F, Fut>(
     builder: ExponentialBuilder,
     token: CancellationToken,
+    metrics: Option<&Metrics>,
+    tls_unclean_close_level: &str,
     mut f: F,
 ) -> Result<(), CliError>
 where
@@ -80,7 +82,37 @@ where
                     tracing::info!("shutdown requested during error recovery, exiting");
                     break Ok(());
                 }
-                tracing::error!(error = %e, "CDC loop exited with error, restarting...");
+                if e.is_tls_unclean_close() {
+                    if let Some(metrics) = metrics {
+                        metrics.tls_unclean_close.add(1, &[]);
+                    }
+                    if tls_unclean_close_level != "silent" {
+                        if tls_unclean_close_level == "warn" {
+                            tracing::warn!(
+                                error = %e,
+                                error_debug = ?e,
+                                retryable = e.is_retryable(),
+                                tls_unclean_close = true,
+                                "CDC loop exited due to unclean TLS shutdown, reconnecting"
+                            );
+                        } else {
+                            tracing::error!(
+                                error = %e,
+                                error_debug = ?e,
+                                retryable = e.is_retryable(),
+                                tls_unclean_close = true,
+                                "CDC loop exited due to unclean TLS shutdown, reconnecting"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::error!(
+                        error = %e,
+                        error_debug = ?e,
+                        retryable = e.is_retryable(),
+                        "CDC loop exited with error, restarting..."
+                    );
+                }
                 if let Some(delay) = backoff.next() {
                     tracing::info!(
                         delay_ms = delay.as_millis() as u64,
@@ -117,6 +149,8 @@ pub async fn run_async(
             .with_max_times(usize::MAX)
             .with_jitter(),
         token.clone(),
+        metrics,
+        project_config.tls_unclean_close_level(),
         || run_cdc_inner(paths, env_config, project_config, metrics, token.clone()),
     )
     .await
@@ -216,6 +250,8 @@ mod tests {
                 .with_max_delay(Duration::from_millis(1))
                 .with_max_times(5),
             CancellationToken::new(),
+            None,
+            "error",
             || {
                 let n = attempts.fetch_add(1, Ordering::SeqCst);
                 async move {
@@ -241,6 +277,8 @@ mod tests {
                 .with_max_delay(Duration::from_millis(1))
                 .with_max_times(3),
             CancellationToken::new(),
+            None,
+            "error",
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async { Err(CliError::Run("permanent".into())) }
@@ -261,6 +299,8 @@ mod tests {
                 .with_max_delay(Duration::from_millis(1))
                 .with_max_times(5),
             CancellationToken::new(),
+            None,
+            "error",
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async { Err(CliError::RunValidation("config drift".into())) }
@@ -281,6 +321,8 @@ mod tests {
                 .with_max_delay(Duration::from_millis(1))
                 .with_max_times(5),
             CancellationToken::new(),
+            None,
+            "error",
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async { Ok(()) }

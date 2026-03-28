@@ -269,6 +269,10 @@ async fn run() -> (
         Ok(c) => c,
         Err(e) => return (Err(e), None),
     };
+    tracing::info!(
+        state_db_path = %env_config.state_db_path.display(),
+        "state db path resolved"
+    );
 
     let (telemetry, metrics) = if let Some(endpoint) = &env_config.otel_endpoint {
         match puffgres_cli::observability::init(endpoint, env_config.otel_headers.as_deref()) {
