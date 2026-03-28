@@ -49,6 +49,14 @@ pub(crate) async fn setup_pipeline(
         }
     }
 
+    // Clear DLQ entries for tombstoned configs so they don't accumulate.
+    for config in db.list_tombstoned_configs()? {
+        let cleared = db.clear_dlq(Some(&config.name))?;
+        if cleared > 0 {
+            tracing::info!(config = %config.name, cleared, "cleared DLQ entries for tombstoned config");
+        }
+    }
+
     if applied_configs.is_empty() {
         tracing::warn!("no applied configs \u{2014} run `puffgres apply` first");
         return Ok(None);

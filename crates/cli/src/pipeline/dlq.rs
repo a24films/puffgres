@@ -11,8 +11,9 @@ use crate::observability::Metrics;
 use crate::project_config::ProjectConfig;
 
 /// Serialize routed events and insert them into the DLQ.
-/// `permanent` = true for transform errors (bad data won't fix itself on retry),
-/// false for sink errors (transient network/server failures).
+/// `permanent` = true for errors that will never succeed on retry,
+/// false for errors that should be retried (including transform errors,
+/// which are marked permanent after `dlq_max_retries` during DLQ replay).
 pub(crate) fn send_events_to_dlq(
     db: &StateDb,
     config_name: &str,
