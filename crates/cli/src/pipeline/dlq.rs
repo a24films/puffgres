@@ -36,9 +36,17 @@ pub(crate) fn send_events_to_dlq(
     Ok(())
 }
 
-/// Fetch retryable DLQ entries and attempt to re-transform + re-send them.
-/// On success: delete the entry. On failure: increment retry count, mark permanent
-/// if max retries exhausted.
+/// Deserialized DLQ entry ready for batched replay.
+struct PreparedEntry<'a> {
+    entry: &'a DlqEntry,
+    event: RowEvent,
+    doc_id: DocumentId,
+}
+
+/// Fetch retryable DLQ entries and attempt to re-transform + re-send them,
+/// batched by config to minimize round-trips to the transformer and sink.
+/// On success: delete the entries. On failure: increment retry count, mark
+/// permanent if max retries exhausted.
 #[tracing::instrument(name = "replay_dlq", skip_all)]
 pub(crate) async fn replay_dlq(
     db: &StateDb,
@@ -56,27 +64,19 @@ pub(crate) async fn replay_dlq(
 
     tracing::info!(entries = entries.len(), "replaying DLQ entries");
 
-    for entry in &entries {
-        if token.is_cancelled() {
-            tracing::info!("shutdown requested, aborting DLQ replay");
-            return Ok(());
-        }
+    // Group entries by config, filtering out permanently-broken ones.
+    let mut by_config: HashMap<&str, Vec<PreparedEntry<'_>>> = HashMap::new();
 
-        let transformer = match transformers.get(&entry.config_name) {
-            Some(t) => t,
-            None => {
-                tracing::warn!(dlq_id = entry.id, config = %entry.config_name, "config no longer exists, marking permanent");
-                db.mark_permanent(entry.id, "config no longer exists")?;
-                continue;
-            }
-        };
-        let namespace = match namespaces.get(&entry.config_name) {
-            Some(ns) => ns,
-            None => {
-                db.mark_permanent(entry.id, "namespace no longer exists")?;
-                continue;
-            }
-        };
+    for entry in &entries {
+        if !transformers.contains_key(&entry.config_name) {
+            tracing::warn!(dlq_id = entry.id, config = %entry.config_name, "config no longer exists, marking permanent");
+            db.mark_permanent(entry.id, "config no longer exists")?;
+            continue;
+        }
+        if !namespaces.contains_key(&entry.config_name) {
+            db.mark_permanent(entry.id, "namespace no longer exists")?;
+            continue;
+        }
 
         let event: RowEvent = match serde_json::from_str(&entry.event_json) {
             Ok(e) => e,
@@ -91,55 +91,94 @@ pub(crate) async fn replay_dlq(
             Some(json) => match serde_json::from_str::<DocumentId>(json) {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!(
-                        "  DLQ entry {}: failed to deserialize doc_id, marking permanent: {e}",
-                        entry.id
-                    );
+                    tracing::warn!(dlq_id = entry.id, error = %e, "failed to deserialize DLQ doc_id, marking permanent");
                     db.mark_permanent(entry.id, &format!("doc_id deserialization failed: {e}"))?;
                     continue;
                 }
             },
-            // Legacy entries written before doc_id was stored.
             None => {
-                eprintln!(
-                    "  DLQ entry {}: missing doc_id (legacy entry), marking permanent",
-                    entry.id
+                tracing::warn!(
+                    dlq_id = entry.id,
+                    "missing doc_id (legacy entry), marking permanent"
                 );
                 db.mark_permanent(entry.id, "missing doc_id (legacy entry)")?;
                 continue;
             }
         };
-        let transform_result = transformer.transform_batch(&[(&event, doc_id)]).await;
+
+        by_config
+            .entry(&entry.config_name)
+            .or_default()
+            .push(PreparedEntry {
+                entry,
+                event,
+                doc_id,
+            });
+    }
+
+    for (config_name, prepared) in &by_config {
+        if token.is_cancelled() {
+            tracing::info!("shutdown requested, aborting DLQ replay");
+            return Ok(());
+        }
+
+        let transformer = &transformers[*config_name];
+        let namespace = &namespaces[*config_name];
+
+        let batch: Vec<(&RowEvent, DocumentId)> = prepared
+            .iter()
+            .map(|p| (&p.event, p.doc_id.clone()))
+            .collect();
+
+        let transform_result = transformer.transform_batch(&batch).await;
 
         match transform_result {
             Err(e) => {
-                if entry.retry_count + 1 >= project_config.dlq_max_retries() {
-                    tracing::warn!(dlq_id = entry.id, error = %e, "DLQ max retries exhausted, marking permanent");
-                    db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))?;
-                } else {
-                    db.increment_retry(entry.id)?;
+                tracing::warn!(config = %config_name, error = %e, entries = prepared.len(), "DLQ batch transform failed");
+                for p in prepared {
+                    if p.entry.retry_count + 1 >= project_config.dlq_max_retries() {
+                        tracing::warn!(
+                            dlq_id = p.entry.id,
+                            "DLQ max retries exhausted, marking permanent"
+                        );
+                        db.mark_permanent(p.entry.id, &format!("max retries exhausted: {e}"))?;
+                    } else {
+                        db.increment_retry(p.entry.id)?;
+                    }
                 }
                 if let Some(m) = metrics {
-                    m.dlq_replay_failed.add(1, &[]);
+                    m.dlq_replay_failed.add(prepared.len() as u64, &[]);
                 }
             }
             Ok(actions) => match puff_client.send_batch(namespace, &actions).await {
                 Err(e) => {
-                    if entry.retry_count + 1 >= project_config.dlq_max_retries() {
-                        tracing::warn!(dlq_id = entry.id, error = %e, "DLQ max retries exhausted, marking permanent");
-                        db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))?;
-                    } else {
-                        db.increment_retry(entry.id)?;
+                    tracing::warn!(config = %config_name, error = %e, entries = prepared.len(), "DLQ batch send failed");
+                    for p in prepared {
+                        if p.entry.retry_count + 1 >= project_config.dlq_max_retries() {
+                            tracing::warn!(
+                                dlq_id = p.entry.id,
+                                "DLQ max retries exhausted, marking permanent"
+                            );
+                            db.mark_permanent(p.entry.id, &format!("max retries exhausted: {e}"))?;
+                        } else {
+                            db.increment_retry(p.entry.id)?;
+                        }
                     }
                     if let Some(m) = metrics {
-                        m.dlq_replay_failed.add(1, &[]);
+                        m.dlq_replay_failed.add(prepared.len() as u64, &[]);
                     }
                 }
                 Ok(()) => {
-                    db.delete_dlq_entry(entry.id)?;
-                    tracing::info!(dlq_id = entry.id, "DLQ entry replayed successfully");
+                    for p in prepared {
+                        db.delete_dlq_entry(p.entry.id)?;
+                    }
+                    tracing::info!(
+                        config = %config_name,
+                        entries = prepared.len(),
+                        "DLQ entries replayed successfully"
+                    );
                     if let Some(m) = metrics {
-                        m.dlq_replayed.add(1, &[]);
+                        m.dlq_replayed.add(prepared.len() as u64, &[]);
                     }
                 }
             },
