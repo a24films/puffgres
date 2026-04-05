@@ -36,6 +36,14 @@ impl PgError {
             PgError::QueryError(msg)
         }
     }
+
+    pub fn from_replication_err(msg: String, source: &tokio_postgres::Error) -> Self {
+        if is_connection_error(source) {
+            PgError::ConnectionError(msg)
+        } else {
+            PgError::ReplicationError(msg)
+        }
+    }
 }
 
 fn is_connection_error(e: &tokio_postgres::Error) -> bool {
@@ -72,5 +80,10 @@ mod tests {
     #[test]
     fn query_error_is_permanent() {
         assert!(!PgError::QueryError("permission denied".into()).is_transient());
+    }
+
+    #[test]
+    fn replication_error_is_transient() {
+        assert!(PgError::ReplicationError("stream ended".into()).is_transient());
     }
 }

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use config::Config;
 
@@ -6,22 +7,15 @@ use crate::dry_transform::dry_run_transform;
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
-
-pub fn run(
-    paths: &ProjectPaths,
-    env_config: &EnvConfig,
-    name: Option<&str>,
-) -> Result<(), CliError> {
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| CliError::DryRun(format!("failed to create async runtime: {e}")))?;
-    rt.block_on(run_async(paths, env_config, name))
-}
+use crate::project_config::ProjectConfig;
 
 pub async fn run_async(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     name: Option<&str>,
+    project_config: &ProjectConfig,
 ) -> Result<(), CliError> {
+    let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
     let loader = config::ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;
 
@@ -119,7 +113,15 @@ pub async fn run_async(
 
         match sample {
             Some((column_names, values)) => {
-                match dry_run_transform(config_path, config, &column_names, &values).await {
+                match dry_run_transform(
+                    config_path,
+                    config,
+                    &column_names,
+                    &values,
+                    transform_timeout,
+                )
+                .await
+                {
                     Ok(actions) => {
                         println!("{display}: transform returned {} action(s):", actions.len());
                         for action in &actions {

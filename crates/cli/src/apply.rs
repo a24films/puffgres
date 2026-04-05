@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use chrono::Utc;
 use config::Config;
@@ -9,6 +10,7 @@ use state::{ConfigRecord, StateDb};
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
+use crate::project_config::ProjectConfig;
 use crate::validate::preflight_check;
 
 fn summarize_config_errors(errors: &[String]) -> String {
@@ -19,13 +21,22 @@ fn summarize_config_errors(errors: &[String]) -> String {
     )
 }
 
-pub fn run(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
+pub fn run(
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    project_config: &ProjectConfig,
+) -> Result<(), CliError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::Apply(format!("failed to create async runtime: {e}")))?;
-    rt.block_on(run_async(paths, env_config))
+    rt.block_on(run_async(paths, env_config, project_config))
 }
 
-pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(), CliError> {
+pub async fn run_async(
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    project_config: &ProjectConfig,
+) -> Result<(), CliError> {
+    let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
     if let Some(parent) = env_config.state_db_path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)?;
@@ -146,6 +157,7 @@ pub async fn run_async(paths: &ProjectPaths, env_config: &EnvConfig) -> Result<(
             &env_config.state_db_path,
             &new_config_refs,
             None,
+            transform_timeout,
         )
         .await
         .map_err(CliError::Apply)?;
@@ -216,7 +228,7 @@ mod tests {
     #[test]
     fn no_configs_succeeds() {
         let (_dir, paths, state_db_path) = setup_project();
-        run(&paths, &dummy_env(state_db_path)).unwrap();
+        run(&paths, &dummy_env(state_db_path), &ProjectConfig::default()).unwrap();
     }
 
     #[test]
@@ -224,7 +236,7 @@ mod tests {
         let (_dir, paths, state_db_path) = setup_project();
         write_config(&paths, "user", "public", "users", "id", "uint");
 
-        let err = run(&paths, &dummy_env(state_db_path)).unwrap_err();
+        let err = run(&paths, &dummy_env(state_db_path), &ProjectConfig::default()).unwrap_err();
         assert!(
             err.to_string().contains("had errors"),
             "expected missing transform error, got: {err}"
@@ -240,7 +252,12 @@ mod tests {
         // Create a config without a transform
         write_config(&paths, "bad", "public", "bad", "id", "uint");
 
-        run(&paths, &dummy_env(state_db_path.clone())).unwrap_err();
+        run(
+            &paths,
+            &dummy_env(state_db_path.clone()),
+            &ProjectConfig::default(),
+        )
+        .unwrap_err();
 
         let db = StateDb::open(&state_db_path).unwrap();
         assert!(db.get_config("user").unwrap().is_none());
@@ -272,7 +289,7 @@ mod tests {
         .unwrap();
 
         // Config is unchanged → skipped, no PG validation needed
-        run(&paths, &dummy_env(state_db_path)).unwrap();
+        run(&paths, &dummy_env(state_db_path), &ProjectConfig::default()).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 1);
     }
 
@@ -304,7 +321,7 @@ mod tests {
             .unwrap();
         }
 
-        run(&paths, &dummy_env(state_db_path)).unwrap();
+        run(&paths, &dummy_env(state_db_path), &ProjectConfig::default()).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 2);
     }
 
@@ -344,7 +361,7 @@ type = "uint"
         .to_string();
         fs::write(config_path, content).unwrap();
 
-        let err = run(&paths, &dummy_env(state_db_path)).unwrap_err();
+        let err = run(&paths, &dummy_env(state_db_path), &ProjectConfig::default()).unwrap_err();
         assert!(
             err.to_string().contains("had errors"),
             "expected immutability error, got: {err}"
@@ -377,7 +394,7 @@ type = "uint"
         // Delete the transform file so it can't be read
         fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
-        let err = run(&paths, &dummy_env(state_db_path)).unwrap_err();
+        let err = run(&paths, &dummy_env(state_db_path), &ProjectConfig::default()).unwrap_err();
         assert!(
             err.to_string().contains("had errors"),
             "expected unreadable transform error, got: {err}"

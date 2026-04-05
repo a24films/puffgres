@@ -8,7 +8,7 @@ We deploy on Railway. The setup looks like:
 
 1. Create a new service pointed at your repo, with the root directory set to `puffgres/`.
 2. Set your environment variables (see [Environment](./environment.md)).
-3. Create a persistent volume called `puffgres-volume` and set `PUFFGRES_STATE_PATH` to `/puffgres-volume/data/puffgres-state.db`. This keeps your SQLite state across deploys.
+3. Create a persistent volume called `puffgres-volume` and set `PUFFGRES_STATE_DB` to `/puffgres-volume/data/puffgres-state.db`. This keeps your SQLite state across deploys.
 
 ## CI
 

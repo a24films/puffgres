@@ -64,7 +64,12 @@ pub(crate) async fn check_and_run_backfills(
     if !needs_backfill.is_empty() {
         let _backfill_span = tracing::info_span!("backfill").entered();
         let watermark = pg::slot::get_current_wal_lsn(pg_client).await?;
-        tracing::info!(watermark_lsn = %pg::PgLsn::from(watermark), "starting backfill");
+        let watermark_text = pg::PgLsn::from(watermark).to_string();
+        tracing::info!(
+            watermark_lsn = watermark,
+            watermark_lsn_text = %watermark_text,
+            "starting backfill"
+        );
 
         for config in &needs_backfill {
             if token.is_cancelled() {
@@ -127,6 +132,8 @@ pub(crate) async fn check_and_run_backfills(
                     tracing::info!(
                         config = %config.name,
                         rows = result.processed_rows,
+                        watermark_lsn = watermark,
+                        watermark_lsn_text = %watermark_text,
                         "backfill complete",
                     );
                     if let Some(m) = metrics {

@@ -11,10 +11,10 @@ async fn publication_exists(client: &Client, publication_name: &str) -> Result<b
         )
         .await
         .map_err(|e| {
-            PgError::ReplicationError(format!(
-                "Failed to check publication '{}': {}",
-                publication_name, e
-            ))
+            PgError::from_replication_err(
+                format!("Failed to check publication '{}': {}", publication_name, e),
+                &e,
+            )
         })?;
 
     Ok(row.get(0))
@@ -43,10 +43,10 @@ async fn create_publication(
     );
 
     client.execute(&query, &[]).await.map_err(|e| {
-        PgError::ReplicationError(format!(
-            "Failed to create publication '{}': {}",
-            publication_name, e
-        ))
+        PgError::from_replication_err(
+            format!("Failed to create publication '{}': {}", publication_name, e),
+            &e,
+        )
     })?;
 
     Ok(())
@@ -56,10 +56,10 @@ pub async fn drop_publication(client: &Client, publication_name: &str) -> Result
     let query = format!("DROP PUBLICATION {}", quote_identifier(publication_name));
 
     client.execute(&query, &[]).await.map_err(|e| {
-        PgError::ReplicationError(format!(
-            "Failed to drop publication '{}': {}",
-            publication_name, e
-        ))
+        PgError::from_replication_err(
+            format!("Failed to drop publication '{}': {}", publication_name, e),
+            &e,
+        )
     })?;
 
     Ok(())
@@ -130,10 +130,13 @@ pub async fn add_tables_to_publication(
     );
 
     client.execute(&query, &[]).await.map_err(|e| {
-        PgError::ReplicationError(format!(
-            "Failed to add tables to publication '{}': {}",
-            publication_name, e
-        ))
+        PgError::from_replication_err(
+            format!(
+                "Failed to add tables to publication '{}': {}",
+                publication_name, e
+            ),
+            &e,
+        )
     })?;
 
     Ok(())
@@ -166,10 +169,13 @@ pub async fn remove_tables_from_publication(
     );
 
     client.execute(&query, &[]).await.map_err(|e| {
-        PgError::ReplicationError(format!(
-            "Failed to remove tables from publication '{}': {}",
-            publication_name, e
-        ))
+        PgError::from_replication_err(
+            format!(
+                "Failed to remove tables from publication '{}': {}",
+                publication_name, e
+            ),
+            &e,
+        )
     })?;
 
     Ok(())
@@ -185,10 +191,9 @@ pub async fn remove_tables_from_publication(
 pub async fn ensure_replica_identity_full(client: &Client, tables: &[String]) -> Result<()> {
     // Table/schema names are SQL identifiers and cannot be parameterized;
     // we use quote_identifier() which matches PG's quote_ident() algorithm.
-    client
-        .execute("BEGIN", &[])
-        .await
-        .map_err(|e| PgError::ReplicationError(format!("Failed to begin transaction: {e}")))?;
+    client.execute("BEGIN", &[]).await.map_err(|e| {
+        PgError::from_replication_err(format!("Failed to begin transaction: {e}"), &e)
+    })?;
 
     for table in tables {
         let qualified = match table.split_once('.') {
@@ -201,17 +206,16 @@ pub async fn ensure_replica_identity_full(client: &Client, tables: &[String]) ->
         let query = format!("ALTER TABLE {qualified} REPLICA IDENTITY FULL");
         if let Err(e) = client.execute(&query, &[]).await {
             let _ = client.execute("ROLLBACK", &[]).await;
-            return Err(PgError::ReplicationError(format!(
-                "Failed to set REPLICA IDENTITY FULL on '{}': {}",
-                table, e
-            )));
+            return Err(PgError::from_replication_err(
+                format!("Failed to set REPLICA IDENTITY FULL on '{}': {}", table, e),
+                &e,
+            ));
         }
     }
 
-    client
-        .execute("COMMIT", &[])
-        .await
-        .map_err(|e| PgError::ReplicationError(format!("Failed to commit transaction: {e}")))?;
+    client.execute("COMMIT", &[]).await.map_err(|e| {
+        PgError::from_replication_err(format!("Failed to commit transaction: {e}"), &e)
+    })?;
 
     Ok(())
 }
@@ -227,10 +231,13 @@ pub async fn get_publication_tables(
         )
         .await
         .map_err(|e| {
-            PgError::ReplicationError(format!(
-                "Failed to get tables for publication '{}': {}",
-                publication_name, e
-            ))
+            PgError::from_replication_err(
+                format!(
+                    "Failed to get tables for publication '{}': {}",
+                    publication_name, e
+                ),
+                &e,
+            )
         })?;
 
     Ok(rows

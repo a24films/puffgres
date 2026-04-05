@@ -229,7 +229,7 @@ async fn run() -> (
 
     // Tier 5: Check only needs DATABASE_URL + state_db_path (no TURBOPUFFER_API_KEY)
     if let Command::Check = cli.command {
-        let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
+        let project_config = match ProjectConfig::load(&paths.project_config) {
             Ok(c) => c,
             Err(e) => return (Err(e), None),
         };
@@ -254,7 +254,8 @@ async fn run() -> (
         };
 
         return (
-            puffgres_cli::check::run_async(&paths, &database_url, &state_db_path).await,
+            puffgres_cli::check::run_async(&paths, &database_url, &state_db_path, &project_config)
+                .await,
             None,
         );
     }
@@ -296,9 +297,12 @@ async fn run() -> (
             puffgres_cli::remove::run_async(&paths, &env_config, name.as_deref(), last).await
         }
         Command::DryRun { name } => {
-            puffgres_cli::dry_run::run_async(&paths, &env_config, name.as_deref()).await
+            puffgres_cli::dry_run::run_async(&paths, &env_config, name.as_deref(), &project_config)
+                .await
         }
-        Command::Apply => puffgres_cli::apply::run_async(&paths, &env_config).await,
+        Command::Apply => {
+            puffgres_cli::apply::run_async(&paths, &env_config, &project_config).await
+        }
         Command::Run => {
             puffgres_cli::pipeline::run_async(
                 &paths,

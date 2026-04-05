@@ -105,6 +105,17 @@ where
                             );
                         }
                     }
+                } else if is_connection_failure(&e) {
+                    if let Some(metrics) = metrics {
+                        metrics.connection_failures.add(1, &[]);
+                    }
+                    tracing::warn!(
+                        error = %e,
+                        error_debug = ?e,
+                        retryable = e.is_retryable(),
+                        sentry_alert_candidate = true,
+                        "connection failed, reconnecting"
+                    );
                 } else {
                     tracing::error!(
                         error = %e,
@@ -131,6 +142,16 @@ where
             }
         }
     }
+}
+
+fn is_connection_failure(error: &CliError) -> bool {
+    matches!(
+        error,
+        CliError::Pg(pg::PgError::ConnectionError(_))
+            | CliError::Pg(pg::PgError::PostgresError(_))
+            | CliError::Replication(replication::ReplicationError::Connection(_))
+            | CliError::Replication(replication::ReplicationError::Stream(_))
+    )
 }
 
 pub async fn run_async(
@@ -164,15 +185,26 @@ async fn run_cdc_inner(
     metrics: Option<&Metrics>,
     token: CancellationToken,
 ) -> Result<(), CliError> {
+    let state_db_existed = env_config.state_db_path.exists();
     if let Some(parent) = env_config.state_db_path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)?;
         }
     }
     let db = state::StateDb::open(&env_config.state_db_path)?;
+    db.verify_startup_roundtrip()?;
+
+    if !state_db_existed {
+        tracing::warn!(
+            state_db_path = %env_config.state_db_path.display(),
+            "state database did not exist before startup — created a new one. \
+             If PUFFGRES_STATE_DB is set, verify the path and volume mount are correct. \
+             Backfills will re-run from scratch."
+        );
+    }
 
     let Some((applied_configs, router, _tables, namespaces, transformers, pg_client)) =
-        setup::setup_pipeline(paths, env_config, &db).await?
+        setup::setup_pipeline(paths, env_config, project_config, &db).await?
     else {
         return Ok(());
     };
@@ -348,6 +380,25 @@ mod tests {
     fn prefixed_namespace_empty_prefix_treated_as_none() {
         let prefix = Some("".to_string());
         assert_eq!(prefixed_namespace(&prefix, "user"), "user");
+    }
+
+    #[test]
+    fn detects_connection_failures() {
+        assert!(is_connection_failure(&CliError::Pg(
+            pg::PgError::ConnectionError("timeout".into())
+        )));
+        assert!(is_connection_failure(&CliError::Replication(
+            replication::ReplicationError::Connection("reset".into())
+        )));
+        assert!(is_connection_failure(&CliError::Replication(
+            replication::ReplicationError::Stream("connection reset by peer".into())
+        )));
+        assert!(!is_connection_failure(&CliError::Pg(
+            pg::PgError::ReplicationError("slot already exists".into())
+        )));
+        assert!(!is_connection_failure(&CliError::RunValidation(
+            "config drift".into()
+        )));
     }
 
     use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};

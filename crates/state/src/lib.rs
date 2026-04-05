@@ -12,6 +12,7 @@ mod test_helpers;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use diesel::SqliteConnection;
 use diesel::prelude::*;
@@ -90,10 +91,58 @@ impl StateDb {
         self.transaction(|conn| {
             diesel::delete(schema::dlq::table).execute(conn)?;
             diesel::delete(schema::backfill_progress::table).execute(conn)?;
+            diesel::delete(schema::runtime_state::table).execute(conn)?;
             diesel::delete(schema::streaming_checkpoints::table).execute(conn)?;
             diesel::delete(schema::configs::table).execute(conn)?;
             Ok(())
         })
+    }
+
+    pub fn verify_startup_roundtrip(&self) -> Result<(), StateError> {
+        let pid = std::process::id();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| StateError::InvalidState(format!("system clock error: {e}")))?
+            .as_millis();
+        let probe_key = format!("startup_probe_{}_{}", pid, ts);
+        let probe_value = format!("{}-{}", pid, ts);
+        let updated_at = chrono::Utc::now().timestamp_millis();
+
+        let mut conn = self.lock()?;
+        diesel::sql_query(
+            "INSERT INTO runtime_state (key, value, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind::<diesel::sql_types::Text, _>(&probe_key)
+        .bind::<diesel::sql_types::Text, _>(&probe_value)
+        .bind::<diesel::sql_types::BigInt, _>(updated_at)
+        .execute(&mut *conn)?;
+
+        let stored = diesel::sql_query("SELECT value FROM runtime_state WHERE key = ?")
+            .bind::<diesel::sql_types::Text, _>(&probe_key)
+            .get_result::<RuntimeStateValue>(&mut *conn)?
+            .value;
+
+        // Clean up the probe row — it's only needed for this check.
+        diesel::sql_query("DELETE FROM runtime_state WHERE key = ?")
+            .bind::<diesel::sql_types::Text, _>(&probe_key)
+            .execute(&mut *conn)
+            .ok();
+
+        if stored != probe_value {
+            return Err(StateError::InvalidState(format!(
+                "state database roundtrip verification failed for {}",
+                self.path.display()
+            )));
+        }
+
+        tracing::info!(
+            state_db_path = %self.path.display(),
+            "state database startup roundtrip check passed"
+        );
+
+        Ok(())
     }
 }
 
@@ -101,6 +150,12 @@ impl StateDb {
 struct JournalModeResult {
     #[diesel(sql_type = diesel::sql_types::Text)]
     journal_mode: String,
+}
+
+#[derive(QueryableByName)]
+struct RuntimeStateValue {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    value: String,
 }
 
 #[cfg(test)]
@@ -157,6 +212,13 @@ mod tests {
             0
         );
         assert_eq!(
+            schema::runtime_state::table
+                .count()
+                .get_result::<i64>(&mut *db.lock().unwrap())
+                .unwrap(),
+            0
+        );
+        assert_eq!(
             schema::backfill_progress::table
                 .count()
                 .get_result::<i64>(&mut *db.lock().unwrap())
@@ -196,6 +258,23 @@ mod tests {
 
         db.reset().unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn startup_roundtrip_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let db = StateDb::open(&path).unwrap();
+
+        // Should succeed without error — probe row is cleaned up after check.
+        db.verify_startup_roundtrip().unwrap();
+
+        // Probe row should be cleaned up.
+        let count: i64 = schema::runtime_state::table
+            .count()
+            .get_result(&mut *db.lock().unwrap())
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

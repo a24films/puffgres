@@ -26,12 +26,12 @@ Prefix for all turbopuffer namespaces. If set to `PUFFGRES_PRODUCTION` and you c
 TURBOPUFFER_NAMESPACE_PREFIX="PUFFGRES_PRODUCTION"
 ```
 
-### `PUFFGRES_STATE_PATH`
+### `PUFFGRES_STATE_DB`
 
-Filesystem path for the SQLite state DB. Locally this doesn't really matter; on Railway, we create/attach a volume called `puffgres-volume` and set this accordingly.
+Filesystem path for the SQLite state DB. On startup, puffgres performs a write/read roundtrip against this database to confirm the state file is writable.
 
 ```sh
-PUFFGRES_STATE_PATH="/puffgres-volume/data/puffgres-state.db"
+PUFFGRES_STATE_DB="/puffgres-volume/data/puffgres-state.db"
 ```
 
 ### `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -49,6 +49,10 @@ Headers for the OTLP exporter.
 ```sh
 OTEL_EXPORTER_OTLP_HEADERS="x-sentry-auth=sentry sentry_key=a123"
 ```
+
+### Sentry Alerting
+
+If you export OTLP to Sentry, keep connection-failure events at warning level in puffgres and set the alert threshold in Sentry. A practical starting point is an issue alert for `connection failed, reconnecting` when it happens more than once in one hour.
 
 ### Other Environment Variables
 

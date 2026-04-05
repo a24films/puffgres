@@ -156,7 +156,14 @@ async fn rejects_vector_without_distance_metric() {
     let vec_dir = write_config(&paths, "vec", "public", "dry_vec_test", "id", "uint");
     write_vector_transform(&vec_dir, false);
 
-    let err = run_async(&paths, &env_config, None).await.unwrap_err();
+    let err = run_async(
+        &paths,
+        &env_config,
+        None,
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("error"),
         "expected dry-run error, got: {err}"
@@ -186,7 +193,13 @@ async fn accepts_valid_transform() {
     let valid_dir = write_config(&paths, "valid", "public", "dry_valid_test", "id", "uint");
     write_transform(&valid_dir, PASSTHROUGH_TRANSFORM);
 
-    let result = run_async(&paths, &env_config, None).await;
+    let result = run_async(
+        &paths,
+        &env_config,
+        None,
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await;
     assert!(
         result.is_ok(),
         "expected dry-run to succeed, got: {result:?}"
@@ -216,7 +229,13 @@ async fn accepts_vector_with_distance_metric() {
     let dist_dir = write_config(&paths, "dist", "public", "dry_dist_test", "id", "uint");
     write_vector_transform(&dist_dir, true);
 
-    let result = run_async(&paths, &env_config, None).await;
+    let result = run_async(
+        &paths,
+        &env_config,
+        None,
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await;
     assert!(
         result.is_ok(),
         "expected dry-run with distance_metric to succeed, got: {result:?}"
@@ -242,7 +261,13 @@ async fn skips_empty_table_gracefully() {
     let empty_dir = write_config(&paths, "empty", "public", "dry_empty_test", "id", "uint");
     write_transform(&empty_dir, PASSTHROUGH_TRANSFORM);
 
-    let result = run_async(&paths, &env_config, None).await;
+    let result = run_async(
+        &paths,
+        &env_config,
+        None,
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await;
     assert!(
         result.is_ok(),
         "expected dry-run to succeed on empty table, got: {result:?}"
@@ -276,7 +301,13 @@ async fn filters_by_config_name() {
     write_transform(&bad_dir, PASSTHROUGH_TRANSFORM);
 
     // Dry-running only the good config should pass
-    let result = run_async(&paths, &env_config, Some("good")).await;
+    let result = run_async(
+        &paths,
+        &env_config,
+        Some("good"),
+        &puffgres_cli::ProjectConfig::default(),
+    )
+    .await;
     assert!(
         result.is_ok(),
         "expected dry-run to succeed for filtered config, got: {result:?}"

@@ -13,10 +13,10 @@ async fn get_slot_plugin(client: &Client, slot_name: &str) -> Result<Option<Stri
         )
         .await
         .map_err(|e| {
-            PgError::ReplicationError(format!(
-                "Failed to get plugin for slot '{}': {}",
-                slot_name, e
-            ))
+            PgError::from_replication_err(
+                format!("Failed to get plugin for slot '{}': {}", slot_name, e),
+                &e,
+            )
         })?;
 
     Ok(rows.first().map(|row| row.get(0)))
@@ -47,10 +47,10 @@ async fn create_slot(client: &Client, slot_name: &str) -> Result<()> {
                 ))),
             }
         }
-        Err(e) => Err(PgError::ReplicationError(format!(
-            "Failed to create slot '{}': {}",
-            slot_name, e
-        ))),
+        Err(e) => Err(PgError::from_replication_err(
+            format!("Failed to create slot '{}': {}", slot_name, e),
+            &e,
+        )),
     }
 }
 
@@ -78,10 +78,10 @@ pub async fn terminate_active_slot_backend(client: &Client, slot_name: &str) -> 
         )
         .await
         .map_err(|e| {
-            PgError::ReplicationError(format!(
-                "Failed to check active PID for slot '{}': {}",
-                slot_name, e
-            ))
+            PgError::from_replication_err(
+                format!("Failed to check active PID for slot '{}': {}", slot_name, e),
+                &e,
+            )
         })?;
 
     let active_pid: Option<i32> = row.get(0);
@@ -90,10 +90,13 @@ pub async fn terminate_active_slot_backend(client: &Client, slot_name: &str) -> 
             .execute("SELECT pg_terminate_backend($1)", &[&pid])
             .await
             .map_err(|e| {
-                PgError::ReplicationError(format!(
-                    "Failed to terminate backend PID {} for slot '{}': {}",
-                    pid, slot_name, e
-                ))
+                PgError::from_replication_err(
+                    format!(
+                        "Failed to terminate backend PID {} for slot '{}': {}",
+                        pid, slot_name, e
+                    ),
+                    &e,
+                )
             })?;
         tracing::info!(pid = pid, slot = slot_name, "terminated stale backend");
     }
@@ -109,10 +112,10 @@ pub async fn get_active_pid(client: &Client, slot_name: &str) -> Result<Option<i
         )
         .await
         .map_err(|e| {
-            PgError::ReplicationError(format!(
-                "Failed to check active PID for slot '{}': {}",
-                slot_name, e
-            ))
+            PgError::from_replication_err(
+                format!("Failed to check active PID for slot '{}': {}", slot_name, e),
+                &e,
+            )
         })?;
 
     Ok(row.get(0))
@@ -127,10 +130,10 @@ pub async fn drop_slot(client: &Client, slot_name: &str) -> Result<()> {
     {
         Ok(_) => Ok(()),
         Err(e) if e.code() == Some(&SqlState::UNDEFINED_OBJECT) => Ok(()),
-        Err(e) => Err(PgError::ReplicationError(format!(
-            "Failed to drop slot '{}': {}",
-            slot_name, e
-        ))),
+        Err(e) => Err(PgError::from_replication_err(
+            format!("Failed to drop slot '{}': {}", slot_name, e),
+            &e,
+        )),
     }
 }
 
@@ -138,7 +141,9 @@ pub async fn get_current_wal_lsn(client: &Client) -> Result<u64> {
     let row = client
         .query_one("SELECT pg_current_wal_lsn()", &[])
         .await
-        .map_err(|e| PgError::ReplicationError(format!("Failed to get current WAL LSN: {e}")))?;
+        .map_err(|e| {
+            PgError::from_replication_err(format!("Failed to get current WAL LSN: {e}"), &e)
+        })?;
     let lsn: tokio_postgres::types::PgLsn = row.get(0);
     Ok(u64::from(lsn))
 }
@@ -151,10 +156,13 @@ pub async fn get_confirmed_flush_lsn(client: &Client, slot_name: &str) -> Result
         )
         .await
         .map_err(|e| {
-            PgError::ReplicationError(format!(
-                "Failed to get confirmed_flush_lsn for slot '{}': {}",
-                slot_name, e
-            ))
+            PgError::from_replication_err(
+                format!(
+                    "Failed to get confirmed_flush_lsn for slot '{}': {}",
+                    slot_name, e
+                ),
+                &e,
+            )
         })?;
 
     match rows.first() {

@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
+use std::time::Duration;
 
 use backon::{BackoffBuilder, ExponentialBuilder};
 use config::{Config, ConfigLoader};
@@ -12,6 +13,7 @@ use super::{ConfigInfo, PUBLICATION_NAME, SLOT_NAME};
 use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
+use crate::project_config::ProjectConfig;
 
 /// Load configs, validate hashes, build transformers, run preflight checks,
 /// and ensure the replication slot and publication are ready.
@@ -21,6 +23,7 @@ use crate::paths::ProjectPaths;
 pub(crate) async fn setup_pipeline(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
+    project_config: &ProjectConfig,
     db: &StateDb,
 ) -> Result<
     Option<(
@@ -152,6 +155,7 @@ pub(crate) async fn setup_pipeline(
     let tables: Vec<String> = tables.into_iter().collect();
 
     let pg_client = pg::connect::connect(&env_config.database_url).await?;
+    let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
 
     // Build transformers after PG connect so we can compute column reindex
     // mappings for configs that specify a column subset/reorder.
@@ -178,15 +182,17 @@ pub(crate) async fn setup_pipeline(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            Box::new(JsTransformer::with_column_reindex(
+            Box::new(JsTransformer::with_column_reindex_and_timeout(
                 info.transform_path.clone(),
                 info.id_type.clone(),
                 reindex,
+                transform_timeout,
             ))
         } else {
-            Box::new(JsTransformer::new(
+            Box::new(JsTransformer::new_with_timeout(
                 info.transform_path.clone(),
                 info.id_type.clone(),
+                transform_timeout,
             ))
         };
         transformers.insert(name.clone(), transformer);
@@ -197,6 +203,7 @@ pub(crate) async fn setup_pipeline(
         &env_config.state_db_path,
         &applied_configs,
         Some(&pg_client),
+        transform_timeout,
     )
     .await
     .map_err(|msg| CliError::Run(format!("pre-flight check failed: {msg}")))?;
