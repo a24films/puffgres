@@ -223,11 +223,16 @@ impl StateDb {
     }
 
     pub fn list_retryable_entries(&self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
+        use crate::schema::configs;
+
         let mut conn = self.lock()?;
         let rows = dlq::table
+            .inner_join(configs::table)
             .filter(dlq::error_kind.eq("retryable"))
+            .filter(configs::tombstone_applied_at.is_null())
             .order(dlq::created_at.asc())
             .limit(i64::try_from(limit).unwrap_or(i64::MAX))
+            .select(dlq::all_columns)
             .load::<DlqRow>(&mut *conn)?;
 
         rows.iter().map(DlqEntry::from_row).collect()
@@ -610,6 +615,25 @@ mod tests {
                 .iter()
                 .all(|e| e.error_kind == ErrorKind::Retryable)
         );
+    }
+
+    #[test]
+    fn list_retryable_entries_excludes_tombstoned() {
+        let (_dir, db) = setup_test_db();
+        db.insert_config(&sample_config("film")).unwrap();
+        db.insert_config(&sample_config("actor")).unwrap();
+
+        db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .unwrap();
+        db.insert_dlq_entry(&sample_dlq_entry("actor", 200, ErrorKind::Retryable))
+            .unwrap();
+
+        // Tombstone "actor"
+        db.tombstone_config("actor").unwrap();
+
+        let retryable = db.list_retryable_entries(100).unwrap();
+        assert_eq!(retryable.len(), 1);
+        assert_eq!(retryable[0].config_name, "film");
     }
 
     #[test]
