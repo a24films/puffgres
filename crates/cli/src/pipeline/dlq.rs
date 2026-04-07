@@ -37,9 +37,19 @@ pub(crate) fn send_events_to_dlq(
     Ok(())
 }
 
+/// Result of a single DLQ replay pass.
+pub(crate) struct ReplayResult {
+    /// Number of retryable entries that were fetched.
+    pub fetched: usize,
+    /// Number of entries successfully replayed and deleted (delivered to Turbopuffer).
+    pub succeeded: usize,
+}
+
 /// Fetch retryable DLQ entries and attempt to re-transform + re-send them.
 /// On success: delete the entry. On failure: increment retry count, mark permanent
 /// if max retries exhausted.
+///
+/// Returns a `ReplayResult` so callers can detect stalls (fetched > 0, succeeded == 0).
 #[tracing::instrument(name = "replay_dlq", skip_all)]
 pub(crate) async fn replay_dlq(
     db: &StateDb,
@@ -49,18 +59,26 @@ pub(crate) async fn replay_dlq(
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
     token: &CancellationToken,
-) -> Result<(), CliError> {
+) -> Result<ReplayResult, CliError> {
     let entries = db.list_retryable_entries(project_config.dlq_replay_batch_size())?;
     if entries.is_empty() {
-        return Ok(());
+        return Ok(ReplayResult {
+            fetched: 0,
+            succeeded: 0,
+        });
     }
 
     tracing::info!(entries = entries.len(), "replaying DLQ entries");
 
+    let mut succeeded: usize = 0;
+
     for entry in &entries {
         if token.is_cancelled() {
             tracing::info!("shutdown requested, aborting DLQ replay");
-            return Ok(());
+            return Ok(ReplayResult {
+                fetched: 0,
+                succeeded: 0,
+            });
         }
 
         let transformer = match transformers.get(&entry.config_name) {
@@ -139,6 +157,7 @@ pub(crate) async fn replay_dlq(
                 Ok(()) => {
                     db.delete_dlq_entry(entry.id)?;
                     tracing::info!(dlq_id = entry.id, "DLQ entry replayed successfully");
+                    succeeded += 1;
                     if let Some(m) = metrics {
                         m.dlq_replayed.add(1, &[]);
                     }
@@ -147,5 +166,8 @@ pub(crate) async fn replay_dlq(
         }
     }
 
-    Ok(())
+    Ok(ReplayResult {
+        fetched: entries.len(),
+        succeeded,
+    })
 }

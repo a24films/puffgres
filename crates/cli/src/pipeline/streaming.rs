@@ -216,17 +216,50 @@ pub(crate) async fn run_streaming_loop(
         return Ok(());
     }
 
-    // Replay any retryable DLQ entries from previous runs
-    super::dlq::replay_dlq(
-        db,
-        transformers,
-        namespaces,
-        puff_client,
-        project_config,
-        metrics,
-        &token,
-    )
-    .await?;
+    // Drain all retryable DLQ entries from previous runs before streaming.
+    // Process in batches until empty so a large backlog doesn't span dozens
+    // of TLS-reconnect cycles. If transforms keep failing (e.g. a downstream
+    // service is briefly down), detect the stall and fall through to streaming
+    // rather than spinning forever — the periodic replay during streaming will
+    // pick up remaining entries once the service recovers.
+    //
+    // The stall limit is intentionally small (2) so we don't burn through
+    // per-entry retry budgets in a tight loop during a temporary outage.
+    {
+        let stall_limit: usize = 2;
+        let mut stalled_passes: usize = 0;
+        loop {
+            if token.is_cancelled() {
+                tracing::info!("shutdown requested, aborting DLQ drain");
+                return Ok(());
+            }
+            let result = super::dlq::replay_dlq(
+                db,
+                transformers,
+                namespaces,
+                puff_client,
+                project_config,
+                metrics,
+                &token,
+            )
+            .await?;
+            if result.fetched == 0 {
+                break;
+            }
+            if result.succeeded == 0 {
+                stalled_passes += 1;
+                if stalled_passes >= stall_limit {
+                    tracing::warn!(
+                        stalled_passes,
+                        "DLQ drain stalled with no progress, deferring to periodic replay",
+                    );
+                    break;
+                }
+            } else {
+                stalled_passes = 0;
+            }
+        }
+    }
 
     let mut batch_count: u64 = 0;
 
@@ -342,7 +375,7 @@ pub(crate) async fn run_streaming_loop(
                     // runs don't starve retryable DLQ entries.
                     batch_count += 1;
                     if batch_count.is_multiple_of(project_config.dlq_replay_interval()) {
-                        super::dlq::replay_dlq(
+                        let _ = super::dlq::replay_dlq(
                             db,
                             transformers,
                             namespaces,
