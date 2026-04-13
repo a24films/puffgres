@@ -222,6 +222,7 @@ mod tests {
             otel_headers: None,
             state_db_path,
             dlq_max_age_hours: None,
+            inspect_port: None,
         }
     }
 

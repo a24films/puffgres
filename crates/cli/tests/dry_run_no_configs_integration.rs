@@ -16,6 +16,7 @@ async fn named_dry_run_fails_with_no_configs() {
         otel_headers: None,
         state_db_path,
         dlq_max_age_hours: None,
+        inspect_port: None,
     };
 
     let err = run_async(

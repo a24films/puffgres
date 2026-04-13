@@ -2308,6 +2308,7 @@ dependencies = [
  "puffgres-cli",
  "puffgres-core",
  "puffgres-debug",
+ "puffgres-inspect",
  "replication",
  "serde",
  "serde_json",
@@ -2364,6 +2365,18 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "puffgres-inspect"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "state",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

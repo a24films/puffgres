@@ -54,6 +54,12 @@ enum Command {
     },
     /// Generate typed schema.ts files for each config
     Generate,
+    /// Inspect the SQLite state database
+    Inspect {
+        /// Port to serve on
+        #[arg(long, default_value = "4444")]
+        port: u16,
+    },
     /// Launch a light UI to see the contents of turbopuffer namespaces
     Debug {
         /// Port to serve on
@@ -202,7 +208,7 @@ async fn run() -> (
     // These recovery/status commands only read environment_files from puffgres.toml
     // so they still work when runtime config fields (e.g. batch_size) are invalid.
     match cli.command {
-        Command::Reset { .. } | Command::Tombstone { .. } => {
+        Command::Reset { .. } | Command::Tombstone { .. } | Command::Inspect { .. } => {
             let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
                 Ok(c) => c,
                 Err(e) => return (Err(e), None),
@@ -219,6 +225,12 @@ async fn run() -> (
                 Command::Tombstone { ref name } => {
                     puffgres_cli::tombstone::run(&paths, &state_db_path, name)
                 }
+                Command::Inspect { port } => match state::StateDb::open(&state_db_path) {
+                    Ok(db) => puffgres_inspect::run(db, port)
+                        .await
+                        .map_err(|e| CliError::Run(e.to_string())),
+                    Err(e) => Err(CliError::Run(e.to_string())),
+                },
                 _ => unreachable!(),
             };
 
@@ -290,6 +302,7 @@ async fn run() -> (
         | Command::New { .. }
         | Command::Reset { .. }
         | Command::Tombstone { .. }
+        | Command::Inspect { .. }
         | Command::Check
         | Command::Generate
         | Command::Debug { .. } => unreachable!(),
@@ -304,6 +317,26 @@ async fn run() -> (
             puffgres_cli::apply::run_async(&paths, &env_config, &project_config).await
         }
         Command::Run => {
+            if let Some(port) = env_config.inspect_port {
+                if let Some(parent) = env_config.state_db_path.parent() {
+                    if !parent.exists() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                }
+                match state::StateDb::open(&env_config.state_db_path) {
+                    Ok(db) => {
+                        tokio::spawn(async move {
+                            if let Err(e) = puffgres_inspect::run(db, port).await {
+                                eprintln!("Inspect server error: {e}");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: could not start inspect server: {e}");
+                    }
+                }
+            }
+
             puffgres_cli::pipeline::run_async(
                 &paths,
                 &env_config,
