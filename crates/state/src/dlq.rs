@@ -257,6 +257,23 @@ impl StateDb {
         Ok(())
     }
 
+    /// Mark all retryable DLQ entries as permanent in one shot.
+    /// Returns the number of entries updated.
+    pub fn mark_all_retryable_permanent(&self, error: &str) -> Result<u64, StateError> {
+        let now = epoch::to_millis(&Utc::now());
+        let mut conn = self.lock()?;
+        let rows_affected = diesel::update(dlq::table.filter(dlq::error_kind.eq("retryable")))
+            .set((
+                dlq::error_kind.eq("permanent"),
+                dlq::error_message.eq(error),
+                dlq::last_retry_at.eq(now),
+                dlq::permanent_at.eq(now),
+            ))
+            .execute(&mut *conn)?;
+
+        Ok(u64::try_from(rows_affected).unwrap_or(0))
+    }
+
     /// Returns (retryable_count, permanent_count) for a given config or globally.
     pub fn dlq_count_by_kind(&self, config_name: Option<&str>) -> Result<(u64, u64), StateError> {
         let mut conn = self.lock()?;
