@@ -26,8 +26,8 @@ pub async fn run(db: StateDb, port: u16) -> Result<(), Box<dyn std::error::Error
         .route("/api/state/download", get(download))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
-    eprintln!("Inspect server running at http://127.0.0.1:{port}");
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+    eprintln!("Inspect server running at http://0.0.0.0:{port}");
     axum::serve(listener, app).await?;
     Ok(())
 }
