@@ -20,6 +20,7 @@ dotenvy.workspace = true
 pg.workspace = true
 puff.workspace = true
 puffgres-debug.workspace = true
+puffgres-inspect.workspace = true
 puffgres-core.workspace = true
 replication.workspace = true
 serde.workspace = true
