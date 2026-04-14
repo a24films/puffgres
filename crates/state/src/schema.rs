@@ -31,7 +31,6 @@ diesel::table! {
         id -> BigInt,
         config_name -> Text,
         lsn -> BigInt,
-        event_json -> Text,
         doc_id -> Nullable<Text>,
         error_message -> Text,
         error_kind -> Text,
@@ -39,6 +38,7 @@ diesel::table! {
         created_at -> BigInt,
         last_retry_at -> Nullable<BigInt>,
         permanent_at -> Nullable<BigInt>,
+        operation -> Nullable<Text>,
     }
 }
 

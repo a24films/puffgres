@@ -1,6 +1,9 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
 use diesel::Connection;
 use diesel::prelude::*;
+use strum::{Display, EnumString};
 
 use crate::epoch;
 use crate::models::{DlqRow, NewDlqEntry};
@@ -12,8 +15,8 @@ pub struct DlqEntry {
     pub id: i64,
     pub config_name: String,
     pub lsn: u64,
-    pub event_json: String,
     pub doc_id: Option<String>,
+    pub operation: Option<DlqOperation>,
     pub error_message: String,
     pub error_kind: ErrorKind,
     pub retry_count: u32,
@@ -48,11 +51,19 @@ impl ErrorKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Display, EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum DlqOperation {
+    Insert,
+    Update,
+    Delete,
+}
+
 impl DlqEntry {
     pub fn retryable(
         config_name: &str,
         lsn: u64,
-        event_json: String,
+        operation: DlqOperation,
         doc_id: Option<String>,
         error: &str,
     ) -> Self {
@@ -60,8 +71,8 @@ impl DlqEntry {
             id: 0,
             config_name: config_name.to_string(),
             lsn,
-            event_json,
             doc_id,
+            operation: Some(operation),
             error_message: error.to_string(),
             error_kind: ErrorKind::Retryable,
             retry_count: 0,
@@ -74,7 +85,7 @@ impl DlqEntry {
     pub fn permanent(
         config_name: &str,
         lsn: u64,
-        event_json: String,
+        operation: DlqOperation,
         doc_id: Option<String>,
         error: &str,
     ) -> Self {
@@ -82,8 +93,8 @@ impl DlqEntry {
             id: 0,
             config_name: config_name.to_string(),
             lsn,
-            event_json,
             doc_id,
+            operation: Some(operation),
             error_message: error.to_string(),
             error_kind: ErrorKind::Permanent,
             retry_count: 0,
@@ -108,8 +119,11 @@ impl DlqEntry {
             id: row.id,
             config_name: row.config_name.clone(),
             lsn: u64::from_ne_bytes(row.lsn.to_ne_bytes()),
-            event_json: row.event_json.clone(),
             doc_id: row.doc_id.clone(),
+            operation: row
+                .operation
+                .as_deref()
+                .and_then(|s| DlqOperation::from_str(s).ok()),
             error_message: row.error_message.clone(),
             error_kind,
             retry_count: u32::try_from(row.retry_count).unwrap_or(0),
@@ -122,10 +136,10 @@ impl DlqEntry {
 
 impl StateDb {
     pub fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
+        let op_str = entry.operation.as_ref().map(|o| o.to_string());
         let new = NewDlqEntry {
             config_name: &entry.config_name,
             lsn: i64::from_ne_bytes(entry.lsn.to_ne_bytes()),
-            event_json: &entry.event_json,
             doc_id: entry.doc_id.as_deref(),
             error_message: &entry.error_message,
             error_kind: entry.error_kind.to_str(),
@@ -138,6 +152,7 @@ impl StateDb {
             created_at: epoch::to_millis(&entry.created_at),
             last_retry_at: entry.last_retry_at.as_ref().map(epoch::to_millis),
             permanent_at: entry.permanent_at.as_ref().map(epoch::to_millis),
+            operation: op_str.as_deref(),
         };
 
         let mut conn = self.lock()?;
@@ -345,8 +360,8 @@ mod tests {
             id: 0,
             config_name: config_name.to_string(),
             lsn,
-            event_json: r#"{"event": "test"}"#.to_string(),
             doc_id: Some(r#"{"Uint":42}"#.to_string()),
+            operation: Some(DlqOperation::Insert),
             error_message: "Test error".to_string(),
             error_kind,
             retry_count: 0,
@@ -369,6 +384,7 @@ mod tests {
         assert_eq!(retrieved.config_name, "film");
         assert_eq!(retrieved.lsn, 1000);
         assert_eq!(retrieved.doc_id, Some(r#"{"Uint":42}"#.to_string()));
+        assert_eq!(retrieved.operation, Some(DlqOperation::Insert));
         assert_eq!(retrieved.error_kind, ErrorKind::Retryable);
         assert_eq!(retrieved.retry_count, 0);
         assert!(retrieved.last_retry_at.is_none());
@@ -386,6 +402,25 @@ mod tests {
 
         let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
         assert_eq!(retrieved.doc_id, None);
+    }
+
+    #[test]
+    fn insert_and_retrieve_delete_operation() {
+        let (_dir, db) = setup_test_db();
+        let config = sample_config("film");
+        db.insert_config(&config).unwrap();
+
+        let entry = DlqEntry::retryable(
+            "film",
+            1000,
+            DlqOperation::Delete,
+            Some(r#"{"Uint":42}"#.to_string()),
+            "network error",
+        );
+        let id = db.insert_dlq_entry(&entry).unwrap();
+
+        let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
+        assert_eq!(retrieved.operation, Some(DlqOperation::Delete));
     }
 
     #[test]
@@ -583,13 +618,14 @@ mod tests {
         let entry = DlqEntry::retryable(
             "film",
             1000,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Insert,
             Some(r#"{"Uint":1}"#.to_string()),
             "network timeout",
         );
         assert_eq!(entry.config_name, "film");
         assert_eq!(entry.lsn, 1000);
         assert_eq!(entry.error_kind, ErrorKind::Retryable);
+        assert_eq!(entry.operation, Some(DlqOperation::Insert));
         assert_eq!(entry.retry_count, 0);
         assert_eq!(entry.error_message, "network timeout");
         assert_eq!(entry.doc_id, Some(r#"{"Uint":1}"#.to_string()));
@@ -601,13 +637,14 @@ mod tests {
         let entry = DlqEntry::permanent(
             "film",
             2000,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Update,
             Some(r#"{"Uint":2}"#.to_string()),
             "bad transform",
         );
         assert_eq!(entry.config_name, "film");
         assert_eq!(entry.lsn, 2000);
         assert_eq!(entry.error_kind, ErrorKind::Permanent);
+        assert_eq!(entry.operation, Some(DlqOperation::Update));
         assert_eq!(entry.retry_count, 0);
         assert_eq!(entry.error_message, "bad transform");
         assert_eq!(entry.doc_id, Some(r#"{"Uint":2}"#.to_string()));
@@ -726,20 +763,15 @@ mod tests {
         db.insert_config(&sample_config("film")).unwrap();
 
         let old_time = Utc::now() - chrono::Duration::hours(100);
-        let mut old_entry = DlqEntry::permanent(
-            "film",
-            100,
-            r#"{"old":true}"#.to_string(),
-            None,
-            "old error",
-        );
+        let mut old_entry =
+            DlqEntry::permanent("film", 100, DlqOperation::Insert, None, "old error");
         old_entry.permanent_at = Some(old_time);
         db.insert_dlq_entry(&old_entry).unwrap();
 
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
             200,
-            r#"{"new":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "new error",
         ))
@@ -748,7 +780,7 @@ mod tests {
         db.insert_dlq_entry(&DlqEntry::retryable(
             "film",
             300,
-            r#"{"retry":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "retry error",
         ))
@@ -768,7 +800,7 @@ mod tests {
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
             100,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "error",
         ))
@@ -776,7 +808,7 @@ mod tests {
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
             200,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "error",
         ))

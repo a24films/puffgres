@@ -258,7 +258,9 @@ mod tests {
     use super::*;
     use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
     use chrono::Utc;
-    use state::{BackfillProgress, BackfillStatus, ConfigRecord, DlqEntry, StreamingCheckpoint};
+    use state::{
+        BackfillProgress, BackfillStatus, ConfigRecord, DlqEntry, DlqOperation, StreamingCheckpoint,
+    };
 
     fn sample_config(name: &str) -> ConfigRecord {
         ConfigRecord {
@@ -307,7 +309,7 @@ mod tests {
         db.insert_dlq_entry(&DlqEntry::retryable(
             "film",
             100,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "error",
         ))
@@ -315,7 +317,7 @@ mod tests {
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
             200,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "error",
         ))
@@ -371,7 +373,7 @@ mod tests {
         db.insert_dlq_entry(&DlqEntry::retryable(
             "film",
             100,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "error",
         ))
@@ -379,7 +381,7 @@ mod tests {
         db.insert_dlq_entry(&DlqEntry::retryable(
             "actor",
             200,
-            r#"{"test":true}"#.to_string(),
+            DlqOperation::Insert,
             None,
             "error",
         ))
