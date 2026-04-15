@@ -20,7 +20,7 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 pub use backfill::{BackfillCheckpointer, BackfillProgress, BackfillStatus};
 pub use configs::ConfigRecord;
-pub use dlq::{DlqEntry, ErrorKind};
+pub use dlq::{DlqEntry, DlqOperation, ErrorKind};
 pub use error::StateError;
 pub use streaming_checkpoint::StreamingCheckpoint;
 
@@ -51,6 +51,12 @@ impl StateDb {
         diesel::sql_query("PRAGMA foreign_keys = ON")
             .execute(&mut conn)
             .ok();
+        // Request incremental auto-vacuum so freed pages can be reclaimed
+        // without a full VACUUM. Takes effect immediately for new databases;
+        // existing databases require a one-time VACUUM to convert.
+        diesel::sql_query("PRAGMA auto_vacuum = INCREMENTAL")
+            .execute(&mut conn)
+            .ok();
 
         let mode: String = diesel::sql_query("PRAGMA journal_mode")
             .get_result::<JournalModeResult>(&mut conn)
@@ -62,6 +68,17 @@ impl StateDb {
 
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| StateError::Migration(e.to_string()))?;
+
+        let auto_vacuum: i32 = diesel::sql_query("PRAGMA auto_vacuum")
+            .get_result::<AutoVacuumResult>(&mut conn)
+            .map(|r| r.auto_vacuum)
+            .unwrap_or(0);
+        if auto_vacuum != 2 {
+            eprintln!(
+                "warning: auto_vacuum is not INCREMENTAL (mode={auto_vacuum}); \
+                 run VACUUM once to enable incremental space reclamation"
+            );
+        }
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -96,6 +113,22 @@ impl StateDb {
             diesel::delete(schema::configs::table).execute(conn)?;
             Ok(())
         })
+    }
+
+    /// Reclaim free pages from the database file. Only effective when
+    /// auto_vacuum is set to INCREMENTAL.
+    pub fn incremental_vacuum(&self) -> Result<(), StateError> {
+        let mut conn = self.lock()?;
+        diesel::sql_query("PRAGMA incremental_vacuum").execute(&mut *conn)?;
+        Ok(())
+    }
+
+    /// Run periodic maintenance: clean stale permanent DLQ entries and
+    /// reclaim freed disk space via incremental vacuum.
+    pub fn run_maintenance(&self, dlq_max_age_hours: u64) -> Result<u64, StateError> {
+        let cleaned = self.clear_old_permanent_entries(dlq_max_age_hours)?;
+        self.incremental_vacuum()?;
+        Ok(cleaned)
     }
 
     pub fn verify_startup_roundtrip(&self) -> Result<(), StateError> {
@@ -150,6 +183,12 @@ impl StateDb {
 struct JournalModeResult {
     #[diesel(sql_type = diesel::sql_types::Text)]
     journal_mode: String,
+}
+
+#[derive(QueryableByName)]
+struct AutoVacuumResult {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    auto_vacuum: i32,
 }
 
 #[derive(QueryableByName)]
@@ -295,19 +334,13 @@ mod tests {
         };
         db.insert_config(&config).unwrap();
 
-        let dlq_entry = DlqEntry {
-            id: 0,
-            config_name: "film".to_string(),
-            lsn: 100,
-            event_json: r#"{"test": true}"#.to_string(),
-            doc_id: Some(r#"{"Uint":1}"#.to_string()),
-            error_message: "boom".to_string(),
-            error_kind: ErrorKind::Retryable,
-            retry_count: 0,
-            created_at: chrono::Utc::now(),
-            last_retry_at: None,
-            permanent_at: None,
-        };
+        let dlq_entry = DlqEntry::retryable(
+            "film",
+            100,
+            DlqOperation::Insert,
+            Some(r#"{"Uint":1}"#.to_string()),
+            "boom",
+        );
         db.insert_dlq_entry(&dlq_entry).unwrap();
         assert_eq!(db.dlq_count(None).unwrap(), 1);
 

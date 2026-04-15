@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use puff::TurbopufferClient;
@@ -216,6 +217,12 @@ pub(crate) async fn run_streaming_loop(
         return Ok(());
     }
 
+    // Build config lookup by name for DLQ replay.
+    let configs_by_name: HashMap<String, &config::Config> = applied_configs
+        .iter()
+        .map(|(_, c)| (c.name.clone(), c))
+        .collect();
+
     // Drain all retryable DLQ entries from previous runs before streaming.
     // Process in batches until empty so a large backlog doesn't span dozens
     // of TLS-reconnect cycles. If transforms keep failing (e.g. a downstream
@@ -233,8 +240,10 @@ pub(crate) async fn run_streaming_loop(
                 tracing::info!("shutdown requested, aborting DLQ drain");
                 return Ok(());
             }
-            let result = super::dlq::replay_dlq(
+            let result = match super::dlq::replay_dlq(
                 db,
+                &env_config.database_url,
+                &configs_by_name,
                 transformers,
                 namespaces,
                 puff_client,
@@ -242,7 +251,17 @@ pub(crate) async fn run_streaming_loop(
                 metrics,
                 &token,
             )
-            .await?;
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "DLQ drain connection failed, deferring to periodic replay",
+                    );
+                    break;
+                }
+            };
             if result.fetched == 0 {
                 break;
             }
@@ -262,6 +281,7 @@ pub(crate) async fn run_streaming_loop(
     }
 
     let mut batch_count: u64 = 0;
+    let mut last_maintenance = Instant::now();
 
     // Outer loop: reconnects the replication stream on schema changes.
     loop {
@@ -375,8 +395,10 @@ pub(crate) async fn run_streaming_loop(
                     // runs don't starve retryable DLQ entries.
                     batch_count += 1;
                     if batch_count.is_multiple_of(project_config.dlq_replay_interval()) {
-                        let _ = super::dlq::replay_dlq(
+                        if let Err(e) = super::dlq::replay_dlq(
                             db,
+                            &env_config.database_url,
+                            &configs_by_name,
                             transformers,
                             namespaces,
                             puff_client,
@@ -384,7 +406,10 @@ pub(crate) async fn run_streaming_loop(
                             metrics,
                             &token,
                         )
-                        .await?;
+                        .await
+                        {
+                            tracing::warn!(error = %e, "DLQ replay failed, deferring to next interval");
+                        }
                     }
                     continue;
                 }
@@ -451,8 +476,10 @@ pub(crate) async fn run_streaming_loop(
 
             batch_count += 1;
             if batch_count.is_multiple_of(project_config.dlq_replay_interval()) {
-                super::dlq::replay_dlq(
+                if let Err(e) = super::dlq::replay_dlq(
                     db,
+                    &env_config.database_url,
+                    &configs_by_name,
                     transformers,
                     namespaces,
                     puff_client,
@@ -460,7 +487,29 @@ pub(crate) async fn run_streaming_loop(
                     metrics,
                     &token,
                 )
-                .await?;
+                .await
+                {
+                    tracing::warn!(error = %e, "DLQ replay failed, deferring to next interval");
+                }
+            }
+
+            // Periodic maintenance: clean stale DLQ entries and reclaim disk space.
+            let maintenance_interval =
+                Duration::from_secs(project_config.maintenance_interval_secs());
+            if last_maintenance.elapsed() >= maintenance_interval {
+                match db.run_maintenance(dlq_max_age_hours) {
+                    Ok(cleaned) if cleaned > 0 => {
+                        tracing::info!(
+                            entries_removed = cleaned,
+                            "maintenance: cleaned stale permanent DLQ entries",
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "maintenance task failed");
+                    }
+                    _ => {}
+                }
+                last_maintenance = Instant::now();
             }
         }
 

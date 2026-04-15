@@ -88,6 +88,7 @@ async fn get_state(
             "recent_entries": dlq_entries.iter().map(|e| serde_json::json!({
                 "id": e.id,
                 "config_name": e.config_name,
+                "operation": e.operation.as_ref().map(|o| o.to_string()),
                 "error_message": e.error_message,
                 "error_kind": format!("{:?}", e.error_kind),
                 "retry_count": e.retry_count,

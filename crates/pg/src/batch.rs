@@ -32,6 +32,31 @@ pub struct BatchResult {
     pub has_more: bool,
 }
 
+/// Build the column list for a point-lookup SELECT (no cursor alias).
+fn build_point_select_clause(config: &BatchQueryConfig) -> Result<String> {
+    let id_col = quote_identifier(&config.id_column);
+
+    match &config.columns {
+        Some(cols) if cols.is_empty() => Err(PgError::QueryError(
+            "columns list cannot be empty; omit the field to select all columns".to_string(),
+        )),
+        Some(cols) => {
+            let mut parts: Vec<String> = cols
+                .iter()
+                .map(|c| {
+                    let q = quote_identifier(c);
+                    format!("{q}::text AS {q}")
+                })
+                .collect();
+            if !cols.iter().any(|c| c == &config.id_column) {
+                parts.push(format!("{id_col}::text AS {id_col}"));
+            }
+            Ok(parts.join(", "))
+        }
+        None => Ok("*".to_string()),
+    }
+}
+
 fn build_select_clause(config: &BatchQueryConfig) -> Result<String> {
     let id_col = quote_identifier(&config.id_column);
     let cursor_expr = format!("{}::text AS {}", id_col, quote_identifier(CURSOR_ALIAS));
@@ -296,6 +321,39 @@ pub async fn fetch_batch(
     })
 }
 
+/// Fetch a single row by its primary key value.
+///
+/// `id_cast` is the SQL cast suffix applied to the `$1` text parameter so
+/// the comparison matches the column's native type and the PK index remains
+/// usable (e.g. `"::int8"`, `"::uuid"`, or `""` for text columns).  This
+/// follows the same convention as `fetch_batch`'s `cursor_cast` parameter.
+/// Returns `None` if the row doesn't exist.
+pub async fn fetch_row_by_id(
+    client: &Client,
+    config: &BatchQueryConfig,
+    id_value: &str,
+    id_cast: &str,
+) -> Result<Option<tokio_postgres::Row>> {
+    let qualified_table = build_qualified_table(config);
+    let id_col = quote_identifier(&config.id_column);
+    let columns_clause = build_point_select_clause(config)?;
+
+    let query = format!(
+        "SELECT {} FROM {} WHERE {} = $1{}",
+        columns_clause, qualified_table, id_col, id_cast,
+    );
+
+    client.query_opt(&query, &[&id_value]).await.map_err(|e| {
+        PgError::from_query_err(
+            format!(
+                "Failed to fetch row by id from {}.{}: {}",
+                config.schema, config.table, e
+            ),
+            &e,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +384,40 @@ mod tests {
         assert_eq!(
             build_qualified_table(&config),
             "\"my schema\".\"my\"\"table\""
+        );
+    }
+
+    #[test]
+    fn build_point_select_clause_star() {
+        let config = test_config();
+        assert_eq!(build_point_select_clause(&config).unwrap(), "*");
+    }
+
+    #[test]
+    fn build_point_select_clause_specific_columns() {
+        let config = BatchQueryConfig {
+            columns: Some(vec![
+                "id".to_string(),
+                "name".to_string(),
+                "email".to_string(),
+            ]),
+            ..test_config()
+        };
+        assert_eq!(
+            build_point_select_clause(&config).unwrap(),
+            "\"id\"::text AS \"id\", \"name\"::text AS \"name\", \"email\"::text AS \"email\""
+        );
+    }
+
+    #[test]
+    fn build_point_select_clause_adds_missing_id_column() {
+        let config = BatchQueryConfig {
+            columns: Some(vec!["name".to_string(), "email".to_string()]),
+            ..test_config()
+        };
+        assert_eq!(
+            build_point_select_clause(&config).unwrap(),
+            "\"name\"::text AS \"name\", \"email\"::text AS \"email\", \"id\"::text AS \"id\""
         );
     }
 
