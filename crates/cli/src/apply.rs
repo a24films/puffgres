@@ -11,6 +11,7 @@ use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
 use crate::project_config::ProjectConfig;
+use crate::tombstones::reconcile_on_disk_tombstones;
 use crate::validate::preflight_check;
 
 fn summarize_config_errors(errors: &[String]) -> String {
@@ -43,6 +44,7 @@ pub async fn run_async(
         }
     }
     let db = StateDb::open(&env_config.state_db_path)?;
+    reconcile_on_disk_tombstones(paths, &db)?;
 
     let loader = config::ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;
@@ -59,6 +61,11 @@ pub async fn run_async(
     let mut new_configs: Vec<(PathBuf, Config, String, String)> = Vec::new();
 
     for (config_path, config) in &configs {
+        if db.is_tombstoned(&config.name)? {
+            skipped += 1;
+            continue;
+        }
+
         let config_bytes = match fs::read(config_path) {
             Ok(b) => b,
             Err(e) => {
@@ -292,6 +299,45 @@ mod tests {
         // Config is unchanged → skipped, no PG validation needed
         run(&paths, &dummy_env(state_db_path), &ProjectConfig::default()).unwrap();
         assert_eq!(db.list_configs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn apply_auto_tombstones_configs_marked_on_disk() {
+        let (_dir, paths, state_db_path) = setup_project();
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+
+        let loader = config::ConfigLoader::new(&paths.configs);
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
+        let db = StateDb::open(&state_db_path).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+            namespace: cfg.namespace.clone(),
+            content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
+            transform_hash: Some(transform_hash),
+            applied_at: Utc::now(),
+            tombstone_applied_at: None,
+            namespace_prefix: None,
+        })
+        .unwrap();
+
+        fs::write(
+            user_dir.join("tombstone.toml"),
+            "tombstoned_at = \"2026-04-15T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        run(
+            &paths,
+            &dummy_env(state_db_path.clone()),
+            &ProjectConfig::default(),
+        )
+        .unwrap();
+
+        let updated = db.get_config(&cfg.name).unwrap().unwrap();
+        assert!(updated.tombstone_applied_at.is_some());
     }
 
     #[test]
