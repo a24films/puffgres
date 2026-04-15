@@ -460,6 +460,53 @@ mod tests {
     }
 
     #[test]
+    fn run_auto_tombstones_configs_marked_on_disk() {
+        let (_dir, paths, state_db_path) = setup_project();
+        let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
+        write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
+
+        let loader = ConfigLoader::new(&paths.configs);
+        let (config_path, cfg) = &loader.load_all().unwrap()[0];
+        let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
+        let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
+        let db = state::StateDb::open(&state_db_path).unwrap();
+        db.insert_config(&ConfigRecord {
+            name: cfg.name.clone(),
+            namespace: cfg.namespace.clone(),
+            content_hash: config::Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
+            transform_hash: Some(transform_hash),
+            applied_at: chrono::Utc::now(),
+            tombstone_applied_at: None,
+            namespace_prefix: None,
+        })
+        .unwrap();
+
+        fs::write(
+            user_dir.join("tombstone.toml"),
+            "tombstoned_at = \"2026-04-15T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        let result = run_no_retry(
+            &paths,
+            &dummy_env(state_db_path.clone()),
+            &ProjectConfig::default(),
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "expected run to skip auto-tombstoned config, got: {:?}",
+            result.unwrap_err()
+        );
+
+        let updated = db.get_config(&cfg.name).unwrap().unwrap();
+        assert!(
+            updated.tombstone_applied_at.is_some(),
+            "expected tombstone marker on disk to be reconciled into state db"
+        );
+    }
+
+    #[test]
     fn errors_on_unreadable_transform_for_applied_config() {
         let (_dir, paths, state_db_path) = setup_project();
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");

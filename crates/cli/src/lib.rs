@@ -15,6 +15,7 @@ pub mod remove;
 pub mod reset;
 pub mod shutdown;
 pub mod tombstone;
+pub mod tombstones;
 pub mod validate;
 
 #[cfg(any(test, feature = "test-utils"))]

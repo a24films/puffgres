@@ -4,6 +4,7 @@ use pg::column::ColumnInfo;
 
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
+use crate::tombstones::has_on_disk_tombstone;
 
 /// Input for the pure schema content generator.
 pub struct SchemaInput {
@@ -140,10 +141,7 @@ pub async fn run_async(paths: &ProjectPaths, database_url: &str) -> Result<(), C
     // Filter out tombstoned configs
     let active_configs: Vec<_> = configs
         .into_iter()
-        .filter(|(path, _)| {
-            let tombstone = path.parent().unwrap().join("tombstone.toml");
-            !tombstone.exists()
-        })
+        .filter(|(path, _)| !has_on_disk_tombstone(path))
         .collect();
 
     if active_configs.is_empty() {
@@ -203,10 +201,7 @@ pub async fn verify_schemas(
 ) -> Result<Vec<String>, CliError> {
     let active_configs: Vec<_> = configs
         .iter()
-        .filter(|(path, _)| {
-            let tombstone = path.parent().unwrap().join("tombstone.toml");
-            !tombstone.exists()
-        })
+        .filter(|(path, _)| !has_on_disk_tombstone(path))
         .collect();
 
     if active_configs.is_empty() {

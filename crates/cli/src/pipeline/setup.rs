@@ -14,6 +14,7 @@ use crate::env::EnvConfig;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
 use crate::project_config::ProjectConfig;
+use crate::tombstones::reconcile_on_disk_tombstones;
 
 /// Load configs, validate hashes, build transformers, run preflight checks,
 /// and ensure the replication slot and publication are ready.
@@ -36,6 +37,8 @@ pub(crate) async fn setup_pipeline(
     )>,
     CliError,
 > {
+    reconcile_on_disk_tombstones(paths, db)?;
+
     let loader = ConfigLoader::new(&paths.configs);
     let all_configs_with_bytes = loader.load_all_with_bytes()?;
 
