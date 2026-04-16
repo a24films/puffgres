@@ -1,3 +1,9 @@
+**NOTE:** Puffgres is in **alpha release** for a select set of design partners. We will announce a more public general release in the future. For now: **use at your own risk**. 
+
+If you have feedback about Puffgres, or are interested in building tools for the future of film and TV production, A24 Labs is hiring software engineers — email [lgelfond@a24films.com](mailto:lgelfond@a24films.com) for more. 
+
+
+
 Puffgres is a logical replication service that keeps Postgres entities mirrored in turbopuffer. Rather than duplicating application code every time you modify a vector (and risking partial successes that keep data out of sync), your Postgres changes automatically update.
 
 
