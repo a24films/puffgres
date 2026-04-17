@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pg::batch::{BatchQueryConfig, fetch_row_by_id};
+use pg::batch::{BatchQueryConfig, fetch_row_by_id, resolve_column_names};
 use puff::TurbopufferClient;
 use puffgres_core::{DocumentId, Transformer, row_convert::pg_rows_to_events};
 use replication::{Operation, RowEvent};
@@ -243,15 +243,23 @@ async fn replay_upsert(
     doc_id: &DocumentId,
     operation: Operation,
 ) -> Result<(), CliError> {
-    // Always fetch all columns so the row arrives in table (WAL) order.
-    // The transformer's column_reindex was built against WAL-ordered tuples;
-    // passing config.columns here would return a projected/reordered row
-    // that no longer lines up with those indices.
+    // Resolve all columns in attnum (WAL) order so the transformer's
+    // column_reindex lines up, while still casting every column to ::text
+    // (which `columns: None` / SELECT * does not do — causing panics on
+    // non-text types like JSONB, arrays, bytea, etc.).
+    let column_names = resolve_column_names(
+        pg_client,
+        &config.source.schema,
+        &config.source.table,
+    )
+    .await
+    .map_err(|e| CliError::Run(format!("DLQ column resolution failed: {e}")))?;
+
     let query_config = BatchQueryConfig {
         schema: config.source.schema.clone(),
         table: config.source.table.clone(),
         id_column: config.id.column.clone(),
-        columns: None,
+        columns: Some(column_names),
         batch_size: 1,
     };
 

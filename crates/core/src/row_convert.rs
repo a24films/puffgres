@@ -68,7 +68,17 @@ pub fn pg_rows_to_events(
     for row in rows {
         let columns = row.columns();
         let col_names: Vec<String> = columns.iter().map(|c| c.name().to_owned()).collect();
-        let values: Vec<Option<String>> = (0..columns.len()).map(|i| row.get(i)).collect();
+        let values: Vec<Option<String>> = (0..columns.len())
+            .map(|i| {
+                row.try_get(i).map_err(|e| {
+                    CoreError::pipeline(format!(
+                        "error deserializing column {} ({}): {e}",
+                        i,
+                        columns[i].name()
+                    ))
+                })
+            })
+            .collect::<std::result::Result<_, _>>()?;
         events.push(values_to_event(&col_names, &values, id_column, id_type)?);
     }
 
