@@ -247,13 +247,9 @@ async fn replay_upsert(
     // column_reindex lines up, while still casting every column to ::text
     // (which `columns: None` / SELECT * does not do — causing panics on
     // non-text types like JSONB, arrays, bytea, etc.).
-    let column_names = resolve_column_names(
-        pg_client,
-        &config.source.schema,
-        &config.source.table,
-    )
-    .await
-    .map_err(|e| CliError::Run(format!("DLQ column resolution failed: {e}")))?;
+    let column_names = resolve_column_names(pg_client, &config.source.schema, &config.source.table)
+        .await
+        .map_err(|e| CliError::Run(format!("DLQ column resolution failed: {e}")))?;
 
     let query_config = BatchQueryConfig {
         schema: config.source.schema.clone(),
