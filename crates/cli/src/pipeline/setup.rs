@@ -171,6 +171,11 @@ pub(crate) async fn setup_pipeline(
         pg::schema_bootstrap::PUFFGRES_SCHEMA,
     )
     .await?;
+    pg::schema_bootstrap::ensure_state_tables(
+        &pg_client,
+        pg::schema_bootstrap::PUFFGRES_SCHEMA,
+    )
+    .await?;
     let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
 
     // Build transformers after PG connect so we can compute column reindex
