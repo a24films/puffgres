@@ -166,6 +166,11 @@ pub(crate) async fn setup_pipeline(
     let tables: Vec<String> = tables.into_iter().collect();
 
     let pg_client = pg::connect::connect(&env_config.database_url).await?;
+    pg::schema_bootstrap::ensure_schema(
+        &pg_client,
+        pg::schema_bootstrap::PUFFGRES_SCHEMA,
+    )
+    .await?;
     let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
 
     // Build transformers after PG connect so we can compute column reindex

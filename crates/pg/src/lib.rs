@@ -3,6 +3,7 @@ pub mod column;
 pub mod connect;
 pub mod error;
 pub mod publication;
+pub mod schema_bootstrap;
 pub mod sample;
 pub mod slot;
 
