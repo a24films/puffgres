@@ -28,6 +28,27 @@ pub use postgres::PostgresStateStore;
 pub use store::StateStore;
 pub use streaming_checkpoint::StreamingCheckpoint;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpoolEntry {
+    pub id: i64,
+    pub transaction_id: i64,
+    pub ack_lsn: Option<u64>,
+    pub is_final_chunk: bool,
+    pub checkpoint_configs_json: String,
+    pub payload_json: String,
+    pub status: SpoolStatus,
+    pub retry_count: i32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpoolStatus {
+    Pending,
+    Processing,
+    Done,
+    Failed,
+}
+
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 /// Thread-safe via `Mutex` so it can be shared across pipeline phases.

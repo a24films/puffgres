@@ -6,7 +6,7 @@ use pg::schema_bootstrap::{PUFFGRES_SCHEMA, ensure_schema, ensure_state_tables};
 
 use crate::{
     BackfillProgress, BackfillStatus, ConfigRecord, DlqEntry, DlqOperation, ErrorKind,
-    StateError, StreamingCheckpoint, epoch,
+    SpoolEntry, SpoolStatus, StateError, StreamingCheckpoint, epoch,
 };
 
 pub struct PostgresStateStore {
@@ -585,6 +585,159 @@ impl PostgresStateStore {
 
         Ok(deleted)
     }
+
+    pub async fn insert_spool_entry(
+        &self,
+        transaction_id: i64,
+        ack_lsn: Option<u64>,
+        is_final_chunk: bool,
+        checkpoint_configs_json: &str,
+        payload_json: &str,
+    ) -> Result<i64, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "INSERT INTO {schema}.cdc_spool
+                (transaction_id, ack_lsn, is_final_chunk, checkpoint_configs, payload)
+             VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+             RETURNING id"
+        );
+        let ack_lsn = ack_lsn.map(|value| i64::from_ne_bytes(value.to_ne_bytes()));
+
+        let id = self
+            .connection
+            .query_one(
+                &query,
+                &[
+                    &transaction_id,
+                    &ack_lsn,
+                    &is_final_chunk,
+                    &checkpoint_configs_json,
+                    &payload_json,
+                ],
+            )
+            .await
+            .map_err(pg::PgError::from)?
+            .get::<_, i64>(0);
+
+        Ok(id)
+    }
+
+    pub async fn claim_pending_spool_entries(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SpoolEntry>, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let query = format!(
+            "WITH claimed AS (
+                SELECT id
+                FROM {schema}.cdc_spool
+                WHERE status = 'pending'
+                ORDER BY id ASC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+             )
+             UPDATE {schema}.cdc_spool AS spool
+             SET status = 'processing', started_at = now()
+             FROM claimed
+             WHERE spool.id = claimed.id
+             RETURNING spool.id, spool.transaction_id, spool.ack_lsn, spool.is_final_chunk,
+                       spool.checkpoint_configs::text, spool.payload::text, spool.status,
+                       spool.retry_count, spool.last_error"
+        );
+
+        let rows = self
+            .connection
+            .query(&query, &[&limit])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        rows.iter().map(spool_from_row).collect()
+    }
+
+    pub async fn mark_spool_entry_done(&self, id: i64) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "UPDATE {schema}.cdc_spool
+             SET status = 'done', completed_at = now(), last_error = NULL
+             WHERE id = $1"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[&id])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        if updated == 0 {
+            return Err(StateError::NotFound(format!("spool entry with id {id}")));
+        }
+
+        Ok(())
+    }
+
+    pub async fn mark_spool_entry_failed(&self, id: i64, error: &str) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "UPDATE {schema}.cdc_spool
+             SET status = 'failed',
+                 retry_count = retry_count + 1,
+                 last_error = $2,
+                 completed_at = now()
+             WHERE id = $1"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[&id, &error])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        if updated == 0 {
+            return Err(StateError::NotFound(format!("spool entry with id {id}")));
+        }
+
+        Ok(())
+    }
+
+    pub async fn release_spool_entry(&self, id: i64) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "UPDATE {schema}.cdc_spool
+             SET status = 'pending',
+                 started_at = NULL,
+                 completed_at = NULL
+             WHERE id = $1"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[&id])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        if updated == 0 {
+            return Err(StateError::NotFound(format!("spool entry with id {id}")));
+        }
+
+        Ok(())
+    }
+
+    pub async fn count_pending_spool_entries(&self) -> Result<u64, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "SELECT COUNT(*) FROM {schema}.cdc_spool WHERE status = 'pending'"
+        );
+
+        let count = self
+            .connection
+            .query_one(&query, &[])
+            .await
+            .map_err(pg::PgError::from)?
+            .get::<_, i64>(0);
+
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
 }
 
 fn config_from_row(row: &tokio_postgres::Row) -> Result<ConfigRecord, StateError> {
@@ -645,6 +798,34 @@ fn error_kind_from_str(value: &str) -> Result<ErrorKind, StateError> {
         "permanent" => Ok(ErrorKind::Permanent),
         _ => Err(StateError::InvalidState(format!(
             "invalid error kind: {value}"
+        ))),
+    }
+}
+
+fn spool_from_row(row: &tokio_postgres::Row) -> Result<SpoolEntry, StateError> {
+    Ok(SpoolEntry {
+        id: row.get(0),
+        transaction_id: row.get(1),
+        ack_lsn: row
+            .get::<_, Option<i64>>(2)
+            .map(|value| u64::from_ne_bytes(value.to_ne_bytes())),
+        is_final_chunk: row.get(3),
+        checkpoint_configs_json: row.get(4),
+        payload_json: row.get(5),
+        status: spool_status_from_str(row.get::<_, String>(6).as_str())?,
+        retry_count: row.get(7),
+        last_error: row.get(8),
+    })
+}
+
+fn spool_status_from_str(value: &str) -> Result<SpoolStatus, StateError> {
+    match value {
+        "pending" => Ok(SpoolStatus::Pending),
+        "processing" => Ok(SpoolStatus::Processing),
+        "done" => Ok(SpoolStatus::Done),
+        "failed" => Ok(SpoolStatus::Failed),
+        _ => Err(StateError::InvalidState(format!(
+            "invalid spool status: {value}"
         ))),
     }
 }
