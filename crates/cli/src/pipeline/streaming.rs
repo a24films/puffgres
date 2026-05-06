@@ -16,6 +16,8 @@ use crate::error::CliError;
 use crate::observability::Metrics;
 use crate::project_config::ProjectConfig;
 
+const SPOOL_DRAIN_BATCH_SIZE: usize = 128;
+
 /// Returns true if the config should skip this batch because it has already
 /// been checkpointed past this LSN.
 fn should_skip_config(
@@ -240,6 +242,70 @@ async fn process_spool_entry(
 
     db.mark_spool_entry_done(spool_id).await?;
     Ok(())
+}
+
+fn deserialize_spool_payload(payload_json: &str) -> Result<SpoolPayload, CliError> {
+    serde_json::from_str(payload_json)
+        .map_err(|e| CliError::Run(format!("failed to deserialize spool payload: {e}")))
+}
+
+fn deserialize_checkpoint_configs(checkpoint_configs_json: &str) -> Result<Vec<String>, CliError> {
+    serde_json::from_str(checkpoint_configs_json)
+        .map_err(|e| CliError::Run(format!("failed to deserialize spool checkpoints: {e}")))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drain_spool(
+    db: &PostgresStateStore,
+    transformers: &HashMap<String, Box<dyn Transformer>>,
+    namespaces: &HashMap<String, String>,
+    puff_client: &TurbopufferClient,
+    metrics: Option<&Metrics>,
+    events_processed: &mut HashMap<String, u64>,
+    config_checkpoint_lsns: &mut HashMap<String, u64>,
+    limit: usize,
+) -> Result<usize, CliError> {
+    let entries = db.claim_pending_spool_entries(limit).await?;
+    let claimed = entries.len();
+
+    for entry in entries {
+        let checkpoint_configs = match deserialize_checkpoint_configs(&entry.checkpoint_configs_json)
+        {
+            Ok(configs) => configs,
+            Err(error) => {
+                db.mark_spool_entry_failed(entry.id, &error.to_string()).await?;
+                return Err(error);
+            }
+        };
+        let payload = match deserialize_spool_payload(&entry.payload_json) {
+            Ok(payload) => payload,
+            Err(error) => {
+                db.mark_spool_entry_failed(entry.id, &error.to_string()).await?;
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = process_spool_entry(
+            entry.id,
+            &payload,
+            &checkpoint_configs,
+            entry.ack_lsn,
+            transformers,
+            namespaces,
+            puff_client,
+            db,
+            metrics,
+            events_processed,
+            config_checkpoint_lsns,
+        )
+        .await
+        {
+            db.release_spool_entry(entry.id).await?;
+            return Err(error);
+        }
+    }
+
+    Ok(claimed)
 }
 
 /// Outer loop: reconnects the replication stream on schema changes.
@@ -467,7 +533,7 @@ pub(crate) async fn run_streaming_loop(
                         0,
                     );
                     let checkpoint_configs = Vec::new();
-                    let spool_id = insert_spool_entry(
+                    insert_spool_entry(
                         db,
                         sub_batch.transaction_id,
                         None,
@@ -476,18 +542,15 @@ pub(crate) async fn run_streaming_loop(
                         &payload,
                     )
                     .await?;
-                    process_spool_entry(
-                        spool_id,
-                        &payload,
-                        &checkpoint_configs,
-                        None,
+                    drain_spool(
+                        db,
                         transformers,
                         namespaces,
                         puff_client,
-                        db,
                         metrics,
                         &mut events_processed,
                         &mut config_checkpoint_lsns,
+                        SPOOL_DRAIN_BATCH_SIZE,
                     )
                     .await?;
                     continue;
@@ -555,7 +618,7 @@ pub(crate) async fn run_streaming_loop(
             );
             let checkpoint_configs =
                 checkpoint_config_names(applied_configs, &config_checkpoint_lsns, batch.ack_lsn);
-            let spool_id = insert_spool_entry(
+            insert_spool_entry(
                 db,
                 batch.transaction_id,
                 Some(batch.ack_lsn),
@@ -576,18 +639,15 @@ pub(crate) async fn run_streaming_loop(
                 m.replication_lag_ms.record(lag_ms, &[]);
             }
 
-            process_spool_entry(
-                spool_id,
-                &payload,
-                &checkpoint_configs,
-                Some(batch.ack_lsn),
+            drain_spool(
+                db,
                 transformers,
                 namespaces,
                 puff_client,
-                db,
                 metrics,
                 &mut events_processed,
                 &mut config_checkpoint_lsns,
+                SPOOL_DRAIN_BATCH_SIZE,
             )
             .await?;
 
