@@ -4,6 +4,7 @@ mod dlq;
 mod epoch;
 mod error;
 mod models;
+mod postgres;
 mod schema;
 mod store;
 mod streaming_checkpoint;
@@ -23,6 +24,7 @@ pub use backfill::{BackfillCheckpointer, BackfillProgress, BackfillStatus};
 pub use configs::ConfigRecord;
 pub use dlq::{DlqEntry, DlqOperation, ErrorKind};
 pub use error::StateError;
+pub use postgres::PostgresStateStore;
 pub use store::StateStore;
 pub use streaming_checkpoint::StreamingCheckpoint;
 

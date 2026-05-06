@@ -6,6 +6,8 @@ pub enum StateError {
     Database(#[from] diesel::result::Error),
     #[error("connection error: {0}")]
     Connection(#[from] diesel::ConnectionError),
+    #[error("postgres error: {0}")]
+    Postgres(#[from] pg::PgError),
     #[error("migration error: {0}")]
     Migration(String),
     #[error("not found: {0}")]
@@ -21,6 +23,7 @@ impl StateError {
                 let msg = info.message().to_lowercase();
                 msg.contains("database is locked") || msg.contains("database is busy")
             }
+            StateError::Postgres(error) => error.is_transient(),
             _ => false,
         }
     }
@@ -43,5 +46,10 @@ mod tests {
     #[test]
     fn migration_is_permanent() {
         assert!(!StateError::Migration("failed".into()).is_transient());
+    }
+
+    #[test]
+    fn transient_postgres_error_is_transient() {
+        assert!(StateError::Postgres(pg::PgError::ConnectionError("closed".into())).is_transient());
     }
 }
