@@ -629,12 +629,27 @@ impl PostgresStateStore {
         let schema = quote_identifier(&self.schema_name);
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let query = format!(
-            "WITH claimed AS (
-                SELECT id
-                FROM {schema}.cdc_spool
-                WHERE status = 'pending'
-                ORDER BY id ASC
+            "WITH ready_transactions AS (
+                SELECT spool.transaction_id
+                FROM {schema}.cdc_spool AS spool
+                WHERE spool.status = 'pending'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM {schema}.cdc_spool AS final
+                      WHERE final.transaction_id = spool.transaction_id
+                        AND final.is_final_chunk = TRUE
+                  )
+                GROUP BY spool.transaction_id
+                ORDER BY MIN(spool.id) ASC
                 LIMIT $1
+            ),
+            claimed AS (
+                SELECT spool.id
+                FROM {schema}.cdc_spool AS spool
+                JOIN ready_transactions
+                  ON ready_transactions.transaction_id = spool.transaction_id
+                WHERE spool.status = 'pending'
+                ORDER BY spool.id ASC
                 FOR UPDATE SKIP LOCKED
              )
              UPDATE {schema}.cdc_spool AS spool
@@ -653,6 +668,48 @@ impl PostgresStateStore {
             .map_err(pg::PgError::from)?;
 
         rows.iter().map(spool_from_row).collect()
+    }
+
+    pub async fn requeue_processing_spool_entries(&self) -> Result<u64, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "UPDATE {schema}.cdc_spool
+             SET status = 'pending',
+                 started_at = NULL,
+                 completed_at = NULL
+             WHERE status = 'processing'"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        Ok(updated)
+    }
+
+    pub async fn delete_incomplete_spool_entries(&self) -> Result<u64, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "DELETE FROM {schema}.cdc_spool AS spool
+             WHERE spool.status IN ('pending', 'processing')
+               AND spool.is_final_chunk = FALSE
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM {schema}.cdc_spool AS final
+                   WHERE final.transaction_id = spool.transaction_id
+                     AND final.is_final_chunk = TRUE
+               )"
+        );
+
+        let deleted = self
+            .connection
+            .execute(&query, &[])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        Ok(deleted)
     }
 
     pub async fn mark_spool_entry_done(&self, id: i64) -> Result<(), StateError> {

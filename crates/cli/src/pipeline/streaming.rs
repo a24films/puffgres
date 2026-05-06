@@ -324,6 +324,28 @@ async fn checkpoint_start_lsn(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn reconcile_spool_backlog(
+    db: &PostgresStateStore,
+    token: &CancellationToken,
+) -> Result<(), CliError> {
+    if token.is_cancelled() {
+        return Ok(());
+    }
+
+    let requeued = db.requeue_processing_spool_entries().await?;
+    if requeued > 0 {
+        tracing::warn!(requeued, "requeued stale processing spool entries");
+    }
+
+    let deleted = db.delete_incomplete_spool_entries().await?;
+    if deleted > 0 {
+        tracing::warn!(deleted, "deleted incomplete pre-commit spool entries");
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn drain_pending_spool_backlog(
     db: &PostgresStateStore,
     applied_configs: &[(std::path::PathBuf, config::Config)],
@@ -336,6 +358,8 @@ async fn drain_pending_spool_backlog(
     token: &CancellationToken,
     start_lsn: &mut Option<u64>,
 ) -> Result<(), CliError> {
+    reconcile_spool_backlog(db, token).await?;
+
     let mut pending = db.count_pending_spool_entries().await?;
     if pending == 0 {
         return Ok(());
@@ -617,17 +641,6 @@ pub(crate) async fn run_streaming_loop(
                         false,
                         &checkpoint_configs,
                         &payload,
-                    )
-                    .await?;
-                    drain_spool(
-                        db,
-                        transformers,
-                        namespaces,
-                        puff_client,
-                        metrics,
-                        &mut events_processed,
-                        &mut config_checkpoint_lsns,
-                        SPOOL_DRAIN_BATCH_SIZE,
                     )
                     .await?;
                     continue;

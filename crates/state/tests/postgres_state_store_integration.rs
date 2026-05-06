@@ -190,9 +190,83 @@ async fn postgres_state_store_manages_spool_lifecycle() {
         )
         .await
         .unwrap();
+    let final_spool_id = store
+        .insert_spool_entry(
+            43,
+            Some(5678),
+            true,
+            r#"["cfg-b"]"#,
+            r#"{"config_batches":[{"config_name":"cfg-b"}]}"#,
+        )
+        .await
+        .unwrap();
     let claimed_third = store.claim_pending_spool_entries(10).await.unwrap();
-    assert_eq!(claimed_third.len(), 1);
+    assert_eq!(claimed_third.len(), 2);
     assert_eq!(claimed_third[0].id, second_spool_id);
+    assert_eq!(claimed_third[1].id, final_spool_id);
 
     store.mark_spool_entry_done(second_spool_id).await.unwrap();
+    store.mark_spool_entry_done(final_spool_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn postgres_state_store_requeues_processing_and_drops_incomplete_spool_entries() {
+    let ctx = setup_postgres().await;
+    let store = PostgresStateStore::connect(&ctx.connection_string)
+        .await
+        .unwrap();
+
+    let incomplete_id = store
+        .insert_spool_entry(
+            100,
+            None,
+            false,
+            r#"[]"#,
+            r#"{"config_batches":[]}"#,
+        )
+        .await
+        .unwrap();
+    let pending_complete_id = store
+        .insert_spool_entry(
+            200,
+            None,
+            false,
+            r#"[]"#,
+            r#"{"config_batches":[]}"#,
+        )
+        .await
+        .unwrap();
+    let final_complete_id = store
+        .insert_spool_entry(
+            200,
+            Some(9000),
+            true,
+            r#"["cfg-c"]"#,
+            r#"{"config_batches":[]}"#,
+        )
+        .await
+        .unwrap();
+
+    let claimed = store.claim_pending_spool_entries(10).await.unwrap();
+    assert_eq!(claimed.len(), 2);
+    assert_eq!(claimed[0].id, pending_complete_id);
+    assert_eq!(claimed[1].id, final_complete_id);
+
+    assert_eq!(store.requeue_processing_spool_entries().await.unwrap(), 2);
+
+    let claimed_again = store.claim_pending_spool_entries(10).await.unwrap();
+    assert_eq!(claimed_again.len(), 2);
+
+    assert_eq!(store.delete_incomplete_spool_entries().await.unwrap(), 1);
+
+    let remaining_incomplete = store
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM puffgres.cdc_spool WHERE id = $1",
+            &[&incomplete_id],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(remaining_incomplete, 0);
 }
