@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use config::ConfigLoader;
-use state::StateDb;
+use state::StateStore;
 
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
@@ -16,7 +16,7 @@ pub fn has_on_disk_tombstone(config_path: &Path) -> bool {
 
 pub fn reconcile_on_disk_tombstones(
     paths: &ProjectPaths,
-    db: &StateDb,
+    db: &impl StateStore,
 ) -> Result<Vec<String>, CliError> {
     let loader = ConfigLoader::new(&paths.configs);
     let configs = loader.load_all()?;

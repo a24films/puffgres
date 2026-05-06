@@ -4,7 +4,7 @@ use chrono::Utc;
 use pg::batch::BatchQueryConfig;
 use puff::TurbopufferClient;
 use puffgres_core::{BackfillConfig, BackfillOutcome, Transformer, run_backfill};
-use state::{BackfillProgress, BackfillStatus, StateDb};
+use state::{BackfillCheckpointer, BackfillProgress, BackfillStatus, StateStore};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::CliError;
@@ -17,7 +17,7 @@ use crate::project_config::ProjectConfig;
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn check_and_run_backfills(
     applied_configs: &[(std::path::PathBuf, config::Config)],
-    db: &StateDb,
+    db: &impl StateStore,
     namespaces: &HashMap<String, String>,
     transformers: &HashMap<String, Box<dyn Transformer>>,
     pg_client: &pg::connect::PgConnection,
@@ -109,7 +109,7 @@ pub(crate) async fn check_and_run_backfills(
                 &backfill_config,
                 pg_client,
                 puff_client,
-                db,
+                db as &dyn BackfillCheckpointer,
                 transformer.as_ref(),
                 token.clone(),
             )

@@ -5,6 +5,7 @@ mod epoch;
 mod error;
 mod models;
 mod schema;
+mod store;
 mod streaming_checkpoint;
 
 #[cfg(test)]
@@ -22,6 +23,7 @@ pub use backfill::{BackfillCheckpointer, BackfillProgress, BackfillStatus};
 pub use configs::ConfigRecord;
 pub use dlq::{DlqEntry, DlqOperation, ErrorKind};
 pub use error::StateError;
+pub use store::StateStore;
 pub use streaming_checkpoint::StreamingCheckpoint;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
@@ -201,6 +203,8 @@ struct RuntimeStateValue {
 mod tests {
     use super::*;
 
+    fn assert_state_store<T: StateStore>(_store: &T) {}
+
     #[test]
     fn open_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -208,6 +212,7 @@ mod tests {
 
         assert!(!path.exists());
         let db = StateDb::open(&path).unwrap();
+        assert_state_store(&db);
         assert!(path.exists());
         assert_eq!(db.path(), path.as_path());
     }
