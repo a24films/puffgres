@@ -1,9 +1,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::Utc;
 use pg::connect::{PgConnection, quote_identifier};
 use pg::schema_bootstrap::{PUFFGRES_SCHEMA, ensure_schema, ensure_state_tables};
 
-use crate::{BackfillProgress, BackfillStatus, StateError, StreamingCheckpoint, epoch};
+use crate::{
+    BackfillProgress, BackfillStatus, ConfigRecord, DlqEntry, DlqOperation, ErrorKind,
+    StateError, StreamingCheckpoint, epoch,
+};
 
 pub struct PostgresStateStore {
     connection: PgConnection,
@@ -264,5 +268,383 @@ impl PostgresStateStore {
             })
         })
         .transpose()
+    }
+
+    pub async fn insert_config(&self, config: &ConfigRecord) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "INSERT INTO {schema}.configs
+                (name, namespace, content_hash, transform_hash, applied_at, tombstone_applied_at, namespace_prefix)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        );
+
+        let applied_at = epoch::to_millis(&config.applied_at);
+        let tombstone_applied_at = config.tombstone_applied_at.as_ref().map(epoch::to_millis);
+
+        self.connection
+            .execute(
+                &query,
+                &[
+                    &config.name,
+                    &config.namespace,
+                    &config.content_hash,
+                    &config.transform_hash,
+                    &applied_at,
+                    &tombstone_applied_at,
+                    &config.namespace_prefix,
+                ],
+            )
+            .await
+            .map_err(pg::PgError::from)?;
+
+        Ok(())
+    }
+
+    pub async fn get_config(&self, name: &str) -> Result<Option<ConfigRecord>, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "SELECT name, namespace, content_hash, transform_hash, applied_at, tombstone_applied_at, namespace_prefix
+             FROM {schema}.configs
+             WHERE name = $1"
+        );
+
+        let row = self
+            .connection
+            .query_opt(&query, &[&name])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        row.as_ref().map(config_from_row).transpose()
+    }
+
+    pub async fn list_configs(&self) -> Result<Vec<ConfigRecord>, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "SELECT name, namespace, content_hash, transform_hash, applied_at, tombstone_applied_at, namespace_prefix
+             FROM {schema}.configs
+             ORDER BY name ASC"
+        );
+
+        let rows = self
+            .connection
+            .query(&query, &[])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        rows.iter().map(config_from_row).collect()
+    }
+
+    pub async fn list_tombstoned_configs(&self) -> Result<Vec<ConfigRecord>, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "SELECT name, namespace, content_hash, transform_hash, applied_at, tombstone_applied_at, namespace_prefix
+             FROM {schema}.configs
+             WHERE tombstone_applied_at IS NOT NULL
+             ORDER BY name ASC"
+        );
+
+        let rows = self
+            .connection
+            .query(&query, &[])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        rows.iter().map(config_from_row).collect()
+    }
+
+    pub async fn tombstone_config(&self, name: &str) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let now = Utc::now().timestamp_millis();
+        let query = format!(
+            "UPDATE {schema}.configs
+             SET tombstone_applied_at = $2
+             WHERE name = $1"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[&name, &now])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        if updated == 0 {
+            return Err(StateError::InvalidState(format!(
+                "config '{name}' not found"
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_namespace_prefix(&self, config_name: &str) -> Result<Option<String>, StateError> {
+        let config = self.get_config(config_name).await?;
+        match config {
+            Some(record) => Ok(record.namespace_prefix),
+            None => Err(StateError::InvalidState(format!(
+                "config '{config_name}' not found"
+            ))),
+        }
+    }
+
+    pub async fn set_namespace_prefix(
+        &self,
+        config_name: &str,
+        prefix: Option<&str>,
+    ) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let prefix = prefix.map(ToString::to_string);
+        let query = format!(
+            "UPDATE {schema}.configs
+             SET namespace_prefix = $2
+             WHERE name = $1"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[&config_name, &prefix])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        if updated == 0 {
+            return Err(StateError::InvalidState(format!(
+                "config '{config_name}' not found"
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub async fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!(
+            "INSERT INTO {schema}.dlq
+                (config_name, lsn, doc_id, error_message, error_kind, retry_count,
+                 created_at, last_retry_at, permanent_at, operation)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING id"
+        );
+
+        let lsn = i64::from_ne_bytes(entry.lsn.to_ne_bytes());
+        let retry_count = i32::try_from(entry.retry_count).map_err(|_| {
+            StateError::InvalidState(format!(
+                "retry_count {} exceeds i32::MAX",
+                entry.retry_count
+            ))
+        })?;
+        let created_at = epoch::to_millis(&entry.created_at);
+        let last_retry_at = entry.last_retry_at.as_ref().map(epoch::to_millis);
+        let permanent_at = entry.permanent_at.as_ref().map(epoch::to_millis);
+        let operation = entry.operation.as_ref().map(ToString::to_string);
+
+        let id = self
+            .connection
+            .query_one(
+                &query,
+                &[
+                    &entry.config_name,
+                    &lsn,
+                    &entry.doc_id,
+                    &entry.error_message,
+                    &error_kind_to_str(&entry.error_kind),
+                    &retry_count,
+                    &created_at,
+                    &last_retry_at,
+                    &permanent_at,
+                    &operation,
+                ],
+            )
+            .await
+            .map_err(pg::PgError::from)?
+            .get::<_, i64>(0);
+
+        Ok(id)
+    }
+
+    pub async fn list_retryable_entries(&self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let query = format!(
+            "SELECT d.id, d.config_name, d.lsn, d.doc_id, d.error_message, d.error_kind,
+                    d.retry_count, d.created_at, d.last_retry_at, d.permanent_at, d.operation
+             FROM {schema}.dlq d
+             INNER JOIN {schema}.configs c ON c.name = d.config_name
+             WHERE d.error_kind = 'retryable'
+               AND c.tombstone_applied_at IS NULL
+             ORDER BY d.created_at ASC
+             LIMIT $1"
+        );
+
+        let rows = self
+            .connection
+            .query(&query, &[&limit])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        rows.iter().map(dlq_from_row).collect()
+    }
+
+    pub async fn clear_dlq(&self, config_name: Option<&str>) -> Result<u64, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let deleted = match config_name {
+            Some(config_name) => {
+                let query = format!("DELETE FROM {schema}.dlq WHERE config_name = $1");
+                self.connection
+                    .execute(&query, &[&config_name])
+                    .await
+                    .map_err(pg::PgError::from)?
+            }
+            None => {
+                let query = format!("DELETE FROM {schema}.dlq");
+                self.connection
+                    .execute(&query, &[])
+                    .await
+                    .map_err(pg::PgError::from)?
+            }
+        };
+
+        Ok(deleted)
+    }
+
+    pub async fn mark_permanent(&self, id: i64, error: &str) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let now = Utc::now().timestamp_millis();
+        let query = format!(
+            "UPDATE {schema}.dlq
+             SET error_kind = 'permanent',
+                 error_message = $2,
+                 last_retry_at = $3,
+                 permanent_at = $3
+             WHERE id = $1"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[&id, &error, &now])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        if updated == 0 {
+            return Err(StateError::NotFound(format!("dlq entry with id {id}")));
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete_dlq_entry(&self, id: i64) -> Result<bool, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let query = format!("DELETE FROM {schema}.dlq WHERE id = $1");
+
+        let deleted = self
+            .connection
+            .execute(&query, &[&id])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        Ok(deleted > 0)
+    }
+
+    pub async fn increment_retry(&self, id: i64) -> Result<(), StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let now = Utc::now().timestamp_millis();
+        let query = format!(
+            "UPDATE {schema}.dlq
+             SET retry_count = retry_count + 1,
+                 last_retry_at = $2
+             WHERE id = $1"
+        );
+
+        let updated = self
+            .connection
+            .execute(&query, &[&id, &now])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        if updated == 0 {
+            return Err(StateError::NotFound(format!("dlq entry with id {id}")));
+        }
+
+        Ok(())
+    }
+
+    pub async fn clear_old_permanent_entries(&self, max_age_hours: u64) -> Result<u64, StateError> {
+        let schema = quote_identifier(&self.schema_name);
+        let cutoff =
+            Utc::now() - chrono::Duration::hours(i64::try_from(max_age_hours).unwrap_or(i64::MAX));
+        let cutoff_millis = epoch::to_millis(&cutoff);
+        let query = format!(
+            "DELETE FROM {schema}.dlq
+             WHERE error_kind = 'permanent'
+               AND permanent_at < $1"
+        );
+
+        let deleted = self
+            .connection
+            .execute(&query, &[&cutoff_millis])
+            .await
+            .map_err(pg::PgError::from)?;
+
+        Ok(deleted)
+    }
+}
+
+fn config_from_row(row: &tokio_postgres::Row) -> Result<ConfigRecord, StateError> {
+    let applied_at = epoch::from_millis(row.get::<_, i64>(4)).ok_or_else(|| {
+        StateError::InvalidState("invalid applied_at millis".to_string())
+    })?;
+    let tombstone_applied_at = row.get::<_, Option<i64>>(5).map(epoch::from_millis).ok_or_else(
+        || StateError::InvalidState("invalid tombstone_applied_at millis".to_string()),
+    )?;
+
+    Ok(ConfigRecord {
+        name: row.get(0),
+        namespace: row.get(1),
+        content_hash: row.get(2),
+        transform_hash: row.get(3),
+        applied_at,
+        tombstone_applied_at,
+        namespace_prefix: row.get(6),
+    })
+}
+
+fn dlq_from_row(row: &tokio_postgres::Row) -> Result<DlqEntry, StateError> {
+    let created_at = epoch::from_millis(row.get::<_, i64>(7))
+        .ok_or_else(|| StateError::InvalidState("invalid created_at millis".to_string()))?;
+    let last_retry_at = row.get::<_, Option<i64>>(8).and_then(epoch::from_millis);
+    let permanent_at = row.get::<_, Option<i64>>(9).and_then(epoch::from_millis);
+    let error_kind = error_kind_from_str(row.get::<_, String>(5).as_str())?;
+    let operation = row
+        .get::<_, Option<String>>(10)
+        .as_deref()
+        .and_then(|value| value.parse::<DlqOperation>().ok());
+
+    Ok(DlqEntry {
+        id: row.get(0),
+        config_name: row.get(1),
+        lsn: u64::from_ne_bytes(row.get::<_, i64>(2).to_ne_bytes()),
+        doc_id: row.get(3),
+        operation,
+        error_message: row.get(4),
+        error_kind,
+        retry_count: u32::try_from(row.get::<_, i32>(6)).unwrap_or(0),
+        created_at,
+        last_retry_at,
+        permanent_at,
+    })
+}
+
+fn error_kind_to_str(error_kind: &ErrorKind) -> &'static str {
+    match error_kind {
+        ErrorKind::Retryable => "retryable",
+        ErrorKind::Permanent => "permanent",
+    }
+}
+
+fn error_kind_from_str(value: &str) -> Result<ErrorKind, StateError> {
+    match value {
+        "retryable" => Ok(ErrorKind::Retryable),
+        "permanent" => Ok(ErrorKind::Permanent),
+        _ => Err(StateError::InvalidState(format!(
+            "invalid error kind: {value}"
+        ))),
     }
 }

@@ -91,3 +91,51 @@ async fn postgres_state_store_persists_checkpoint_and_backfill_progress() {
     assert!(store.delete_streaming_checkpoint("films").await.unwrap());
     assert!(store.get_streaming_checkpoint("films").await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn postgres_state_store_persists_configs_and_dlq() {
+    let ctx = setup_postgres().await;
+    let store = PostgresStateStore::connect(&ctx.connection_string)
+        .await
+        .unwrap();
+
+    let config = state::ConfigRecord {
+        name: "buyers".to_string(),
+        namespace: "buyers".to_string(),
+        content_hash: "hash".to_string(),
+        transform_hash: Some("transform".to_string()),
+        applied_at: Utc::now(),
+        tombstone_applied_at: None,
+        namespace_prefix: None,
+    };
+    store.insert_config(&config).await.unwrap();
+    store.set_namespace_prefix("buyers", Some("prod")).await.unwrap();
+
+    let saved_config = store.get_config("buyers").await.unwrap().unwrap();
+    assert_eq!(saved_config.namespace_prefix.as_deref(), Some("prod"));
+
+    let dlq_entry = state::DlqEntry::retryable(
+        "buyers",
+        999,
+        state::DlqOperation::Insert,
+        Some(r#"{"String":"doc-1"}"#.to_string()),
+        "temporary failure",
+    );
+    let dlq_id = store.insert_dlq_entry(&dlq_entry).await.unwrap();
+
+    let retryable_entries = store.list_retryable_entries(10).await.unwrap();
+    assert_eq!(retryable_entries.len(), 1);
+    assert_eq!(retryable_entries[0].config_name, "buyers");
+    assert_eq!(retryable_entries[0].retry_count, 0);
+
+    store.increment_retry(dlq_id).await.unwrap();
+    store.mark_permanent(dlq_id, "exhausted").await.unwrap();
+
+    let cleared = store.clear_old_permanent_entries(0).await.unwrap();
+    assert_eq!(cleared, 1);
+
+    store.tombstone_config("buyers").await.unwrap();
+    let tombstoned = store.list_tombstoned_configs().await.unwrap();
+    assert_eq!(tombstoned.len(), 1);
+    assert_eq!(tombstoned[0].name, "buyers");
+}
