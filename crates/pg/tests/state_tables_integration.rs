@@ -4,12 +4,13 @@ use pg::schema_bootstrap::{
 };
 use pg::test_utils::setup_postgres;
 
-const EXPECTED_TABLES: [&str; 5] = [
+const EXPECTED_TABLES: [&str; 6] = [
     "configs",
     "streaming_checkpoints",
     "backfill_progress",
     "dlq",
     "runtime_state",
+    "cdc_spool",
 ];
 
 #[tokio::test]
