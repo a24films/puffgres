@@ -308,6 +308,70 @@ async fn drain_spool(
     Ok(claimed)
 }
 
+async fn checkpoint_start_lsn(
+    db: &PostgresStateStore,
+    applied_configs: &[(std::path::PathBuf, config::Config)],
+) -> Result<Option<u64>, CliError> {
+    let mut checkpoint_lsns = Vec::new();
+
+    for (_, config) in applied_configs {
+        if let Some(checkpoint) = db.get_streaming_checkpoint(&config.name).await? {
+            checkpoint_lsns.push(checkpoint.lsn);
+        }
+    }
+
+    Ok(checkpoint_lsns.into_iter().min())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drain_pending_spool_backlog(
+    db: &PostgresStateStore,
+    applied_configs: &[(std::path::PathBuf, config::Config)],
+    transformers: &HashMap<String, Box<dyn Transformer>>,
+    namespaces: &HashMap<String, String>,
+    puff_client: &TurbopufferClient,
+    metrics: Option<&Metrics>,
+    events_processed: &mut HashMap<String, u64>,
+    config_checkpoint_lsns: &mut HashMap<String, u64>,
+    token: &CancellationToken,
+    start_lsn: &mut Option<u64>,
+) -> Result<(), CliError> {
+    let mut pending = db.count_pending_spool_entries().await?;
+    if pending == 0 {
+        return Ok(());
+    }
+
+    tracing::info!(pending, "draining pending spool backlog before streaming");
+
+    while pending > 0 {
+        if token.is_cancelled() {
+            tracing::info!("shutdown requested while draining spool backlog");
+            return Ok(());
+        }
+
+        let drained = drain_spool(
+            db,
+            transformers,
+            namespaces,
+            puff_client,
+            metrics,
+            events_processed,
+            config_checkpoint_lsns,
+            SPOOL_DRAIN_BATCH_SIZE,
+        )
+        .await?;
+        if drained == 0 {
+            tracing::warn!("spool backlog drain made no progress");
+            break;
+        }
+
+        pending = db.count_pending_spool_entries().await?;
+    }
+
+    *start_lsn = checkpoint_start_lsn(db, applied_configs).await?.or(*start_lsn);
+    Ok(())
+}
+
 /// Outer loop: reconnects the replication stream on schema changes.
 /// When Postgres sends a Relation message with changed columns (e.g. ALTER TABLE),
 /// we drop the stream and reconnect so the fresh RelationCache picks up the new schema.
@@ -462,6 +526,19 @@ pub(crate) async fn run_streaming_loop(
             tracing::info!("shutdown requested, exiting streaming loop");
             return Ok(());
         }
+        drain_pending_spool_backlog(
+            db,
+            applied_configs,
+            transformers,
+            namespaces,
+            puff_client,
+            metrics,
+            &mut events_processed,
+            &mut config_checkpoint_lsns,
+            &token,
+            &mut start_lsn,
+        )
+        .await?;
         let stream_config = ReplicationStreamConfig {
             connection_string: env_config.database_url.clone(),
             slot_name: SLOT_NAME.to_string(),
@@ -708,13 +785,7 @@ pub(crate) async fn run_streaming_loop(
             super::setup::terminate_slot_and_wait(&slot_client, token.clone()).await?;
         }
 
-        let mut checkpoint_lsns = Vec::new();
-        for (_, config) in applied_configs {
-            if let Some(cp) = db.get_streaming_checkpoint(&config.name).await? {
-                checkpoint_lsns.push(cp.lsn);
-            }
-        }
-        start_lsn = checkpoint_lsns.into_iter().min();
+        start_lsn = checkpoint_start_lsn(db, applied_configs).await?;
     }
 
     Ok(())
