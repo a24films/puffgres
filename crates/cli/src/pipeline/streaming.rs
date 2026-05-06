@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use puff::TurbopufferClient;
+use serde::{Deserialize, Serialize};
 use puffgres_core::{DocumentId, Router, Transformer};
 use replication::{RelationCache, ReplicationStream, ReplicationStreamConfig, RowEvent};
-use state::{StateStore, StreamingCheckpoint};
+use state::{PostgresStateStore, StateStore, StreamingCheckpoint};
 use tokio_util::sync::CancellationToken;
 
 use super::dlq::send_events_to_dlq;
@@ -27,53 +28,91 @@ fn should_skip_config(
         .is_some_and(|&cp_lsn| batch_lsn <= cp_lsn)
 }
 
-/// Route, transform, and send a set of events to Turbopuffer. Shared between
-/// committed batches and streaming sub-batches.
-async fn process_events(
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SpoolRoutedEvent {
+    doc_id: DocumentId,
+    event: RowEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SpoolConfigBatch {
+    config_name: String,
+    events: Vec<SpoolRoutedEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SpoolPayload {
+    config_batches: Vec<SpoolConfigBatch>,
+}
+
+fn route_spool_payload(
     events: &[RowEvent],
     relation_cache: &RelationCache,
     router: &Router,
-    transformers: &HashMap<String, Box<dyn Transformer>>,
-    namespaces: &HashMap<String, String>,
-    puff_client: &TurbopufferClient,
-    db: &impl StateStore,
-    metrics: Option<&Metrics>,
-    events_processed: &mut HashMap<String, u64>,
-    dlq_lsn: u64,
     config_checkpoint_lsns: &HashMap<String, u64>,
     batch_lsn: u64,
-) -> Result<(), CliError> {
-    let config_events = router.route_batch(events, relation_cache);
+) -> SpoolPayload {
+    let config_batches = router
+        .route_batch(events, relation_cache)
+        .into_iter()
+        .filter_map(|(config_name, routed_events)| {
+            if should_skip_config(config_name, batch_lsn, config_checkpoint_lsns) {
+                return None;
+            }
 
-    for (config_name, events) in &config_events {
-        if should_skip_config(config_name, batch_lsn, config_checkpoint_lsns) {
-            continue;
-        }
-        let transformer = transformers.get(*config_name).ok_or_else(|| {
-            CliError::Run(format!(
-                "internal error: no transformer for config '{config_name}'"
-            ))
-        })?;
-        let namespace = namespaces.get(*config_name).ok_or_else(|| {
-            CliError::Run(format!(
-                "internal error: no namespace for config '{config_name}'"
-            ))
-        })?;
+            let events = routed_events
+                .iter()
+                .map(|(event, doc_id)| SpoolRoutedEvent {
+                    doc_id: doc_id.clone(),
+                    event: (*event).clone(),
+                })
+                .collect::<Vec<_>>();
 
-        process_config_events(
-            config_name,
-            events,
-            namespace,
-            transformer.as_ref(),
-            puff_client,
-            db,
-            metrics,
-            events_processed,
-            dlq_lsn,
-        )
-        .await?;
-    }
-    Ok(())
+            Some(SpoolConfigBatch {
+                config_name: config_name.to_string(),
+                events,
+            })
+        })
+        .collect();
+
+    SpoolPayload { config_batches }
+}
+
+fn checkpoint_config_names(
+    applied_configs: &[(std::path::PathBuf, config::Config)],
+    config_checkpoint_lsns: &HashMap<String, u64>,
+    batch_lsn: u64,
+) -> Vec<String> {
+    applied_configs
+        .iter()
+        .map(|(_, config)| config.name.clone())
+        .filter(|config_name| !should_skip_config(config_name, batch_lsn, config_checkpoint_lsns))
+        .collect()
+}
+
+async fn insert_spool_entry(
+    db: &PostgresStateStore,
+    transaction_id: u64,
+    ack_lsn: Option<u64>,
+    is_final_chunk: bool,
+    checkpoint_configs: &[String],
+    payload: &SpoolPayload,
+) -> Result<i64, CliError> {
+    let checkpoint_configs_json = serde_json::to_string(checkpoint_configs)
+        .map_err(|e| CliError::Run(format!("failed to serialize spool checkpoints: {e}")))?;
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|e| CliError::Run(format!("failed to serialize spool payload: {e}")))?;
+
+    db.insert_spool_entry(
+        i64::try_from(transaction_id)
+            .map_err(|_| CliError::Run("transaction id exceeded i64 range".to_string()))?,
+        ack_lsn,
+        is_final_chunk,
+        &checkpoint_configs_json,
+        &payload_json,
+    )
+    .await
+    .map_err(CliError::from)
 }
 
 async fn process_config_events(
@@ -135,6 +174,74 @@ async fn process_config_events(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn process_spool_entry(
+    spool_id: i64,
+    payload: &SpoolPayload,
+    checkpoint_configs: &[String],
+    ack_lsn: Option<u64>,
+    transformers: &HashMap<String, Box<dyn Transformer>>,
+    namespaces: &HashMap<String, String>,
+    puff_client: &TurbopufferClient,
+    db: &PostgresStateStore,
+    metrics: Option<&Metrics>,
+    events_processed: &mut HashMap<String, u64>,
+    config_checkpoint_lsns: &mut HashMap<String, u64>,
+) -> Result<(), CliError> {
+    for config_batch in &payload.config_batches {
+        let transformer = transformers
+            .get(&config_batch.config_name)
+            .ok_or_else(|| {
+                CliError::Run(format!(
+                    "internal error: no transformer for config '{}'",
+                    config_batch.config_name
+                ))
+            })?;
+        let namespace = namespaces
+            .get(&config_batch.config_name)
+            .ok_or_else(|| {
+                CliError::Run(format!(
+                    "internal error: no namespace for config '{}'",
+                    config_batch.config_name
+                ))
+            })?;
+        let events = config_batch
+            .events
+            .iter()
+            .map(|event| (&event.event, event.doc_id.clone()))
+            .collect::<Vec<_>>();
+
+        process_config_events(
+            &config_batch.config_name,
+            &events,
+            namespace,
+            transformer.as_ref(),
+            puff_client,
+            db,
+            metrics,
+            events_processed,
+            ack_lsn.unwrap_or(0),
+        )
+        .await?;
+    }
+
+    if let Some(ack_lsn) = ack_lsn {
+        for config_name in checkpoint_configs {
+            let checkpoint = StreamingCheckpoint {
+                config_name: config_name.clone(),
+                lsn: ack_lsn,
+                events_processed: *events_processed.get(config_name).unwrap_or(&0),
+                updated_at: Utc::now(),
+            };
+            db.save_streaming_checkpoint(&checkpoint).await?;
+            config_checkpoint_lsns.insert(config_name.clone(), ack_lsn);
+        }
+    }
+
+    db.mark_spool_entry_done(spool_id).await?;
+    Ok(())
+}
+
 /// Outer loop: reconnects the replication stream on schema changes.
 /// When Postgres sends a Relation message with changed columns (e.g. ALTER TABLE),
 /// we drop the stream and reconnect so the fresh RelationCache picks up the new schema.
@@ -146,7 +253,7 @@ pub(crate) async fn run_streaming_loop(
     namespaces: &HashMap<String, String>,
     transformers: &HashMap<String, Box<dyn Transformer>>,
     puff_client: &TurbopufferClient,
-    db: &impl StateStore,
+    db: &PostgresStateStore,
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
     token: CancellationToken,
@@ -167,11 +274,11 @@ pub(crate) async fn run_streaming_loop(
         .collect();
 
     for (_, config) in applied_configs {
-        let checkpoint = db.get_streaming_checkpoint(&config.name)?;
+        let checkpoint = db.get_streaming_checkpoint(&config.name).await?;
         let count = checkpoint.as_ref().map(|c| c.events_processed).unwrap_or(0);
         if let Some(ref cp) = checkpoint {
             config_checkpoint_lsns.insert(config.name.clone(), cp.lsn);
-        } else if let Some(bp) = db.get_backfill_progress(&config.name)? {
+        } else if let Some(bp) = db.get_backfill_progress(&config.name).await? {
             // Seed skip state for new configs: they have no streaming checkpoint
             // yet but completed backfill with a watermark LSN. Without this,
             // should_skip_config would never skip them and they'd re-process
@@ -203,7 +310,7 @@ pub(crate) async fn run_streaming_loop(
     let dlq_max_age_hours = env_config
         .dlq_max_age_hours
         .unwrap_or_else(|| project_config.dlq_permanent_max_age_hours());
-    let cleaned = db.clear_old_permanent_entries(dlq_max_age_hours)?;
+    let cleaned = db.clear_old_permanent_entries(dlq_max_age_hours).await?;
     if cleaned > 0 {
         tracing::info!(
             entries_removed = cleaned,
@@ -352,21 +459,35 @@ pub(crate) async fn run_streaming_loop(
                         events = sub_batch.events.len()
                     )
                     .entered();
-                    // Process immediately for throughput; no checkpoint or ack yet.
-                    let no_checkpoints = HashMap::new();
-                    process_events(
+                    let payload = route_spool_payload(
                         &sub_batch.events,
                         stream.relation_cache(),
                         router,
+                        &HashMap::new(),
+                        0,
+                    );
+                    let checkpoint_configs = Vec::new();
+                    let spool_id = insert_spool_entry(
+                        db,
+                        sub_batch.transaction_id,
+                        None,
+                        false,
+                        &checkpoint_configs,
+                        &payload,
+                    )
+                    .await?;
+                    process_spool_entry(
+                        spool_id,
+                        &payload,
+                        &checkpoint_configs,
+                        None,
                         transformers,
                         namespaces,
                         puff_client,
                         db,
                         metrics,
                         &mut events_processed,
-                        0, // no ack_lsn for sub-batches
-                        &no_checkpoints,
-                        0,
+                        &mut config_checkpoint_lsns,
                     )
                     .await?;
                     continue;
@@ -387,7 +508,7 @@ pub(crate) async fn run_streaming_loop(
                             events_processed: *events_processed.get(&config.name).unwrap_or(&0),
                             updated_at: Utc::now(),
                         };
-                        db.save_streaming_checkpoint(&checkpoint)?;
+                        db.save_streaming_checkpoint(&checkpoint).await?;
                     }
                     stream.ack();
 
@@ -425,46 +546,27 @@ pub(crate) async fn run_streaming_loop(
             .entered();
             let batch_start = std::time::Instant::now();
 
-            if !batch.events.is_empty() {
-                process_events(
-                    &batch.events,
-                    stream.relation_cache(),
-                    router,
-                    transformers,
-                    namespaces,
-                    puff_client,
-                    db,
-                    metrics,
-                    &mut events_processed,
-                    batch.ack_lsn,
-                    &config_checkpoint_lsns,
-                    batch.ack_lsn,
-                )
-                .await?;
-            }
-
-            for (_, config) in applied_configs {
-                // Only advance the checkpoint if this config actually processed
-                // this batch (i.e. was not skipped). Otherwise we'd collapse the
-                // skip window and defeat per-config catch-up on replay.
-                if should_skip_config(&config.name, batch.ack_lsn, &config_checkpoint_lsns) {
-                    continue;
-                }
-                let checkpoint = StreamingCheckpoint {
-                    config_name: config.name.clone(),
-                    lsn: batch.ack_lsn,
-                    events_processed: *events_processed.get(&config.name).unwrap_or(&0),
-                    updated_at: Utc::now(),
-                };
-                db.save_streaming_checkpoint(&checkpoint)?;
-                config_checkpoint_lsns.insert(config.name.clone(), batch.ack_lsn);
-            }
-
+            let payload = route_spool_payload(
+                &batch.events,
+                stream.relation_cache(),
+                router,
+                &config_checkpoint_lsns,
+                batch.ack_lsn,
+            );
+            let checkpoint_configs =
+                checkpoint_config_names(applied_configs, &config_checkpoint_lsns, batch.ack_lsn);
+            let spool_id = insert_spool_entry(
+                db,
+                batch.transaction_id,
+                Some(batch.ack_lsn),
+                true,
+                &checkpoint_configs,
+                &payload,
+            )
+            .await?;
             stream.ack();
             if let Some(m) = metrics {
                 m.replication_acks.add(1, &[]);
-                m.cdc_batch_duration
-                    .record(batch_start.elapsed().as_millis() as f64, &[]);
                 // Replication lag: PG commit timestamp is microseconds since
                 // 2000-01-01. Convert to Unix epoch and compare to wall clock.
                 const PG_EPOCH_OFFSET_MICROS: i64 = 946_684_800_000_000;
@@ -472,6 +574,26 @@ pub(crate) async fn run_streaming_loop(
                 let now_micros = Utc::now().timestamp_micros();
                 let lag_ms = (now_micros - commit_unix_micros) as f64 / 1000.0;
                 m.replication_lag_ms.record(lag_ms, &[]);
+            }
+
+            process_spool_entry(
+                spool_id,
+                &payload,
+                &checkpoint_configs,
+                Some(batch.ack_lsn),
+                transformers,
+                namespaces,
+                puff_client,
+                db,
+                metrics,
+                &mut events_processed,
+                &mut config_checkpoint_lsns,
+            )
+            .await?;
+
+            if let Some(m) = metrics {
+                m.cdc_batch_duration
+                    .record(batch_start.elapsed().as_millis() as f64, &[]);
             }
 
             batch_count += 1;
@@ -528,7 +650,7 @@ pub(crate) async fn run_streaming_loop(
 
         let mut checkpoint_lsns = Vec::new();
         for (_, config) in applied_configs {
-            if let Some(cp) = db.get_streaming_checkpoint(&config.name)? {
+            if let Some(cp) = db.get_streaming_checkpoint(&config.name).await? {
                 checkpoint_lsns.push(cp.lsn);
             }
         }
@@ -541,6 +663,45 @@ pub(crate) async fn run_streaming_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use config::Config;
+    use puffgres_core::{ColumnValue, Operation, RelationInfo, TupleData};
+    use replication::ReplicaIdentity;
+    use std::sync::Arc;
+
+    fn load_fixture(name: &str) -> Config {
+        let path = format!(
+            "{}/../core/tests/fixtures/{name}.toml",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn users_relation() -> RelationInfo {
+        RelationInfo {
+            id: 16384,
+            namespace: "public".to_string(),
+            name: "users".to_string(),
+            replica_identity: ReplicaIdentity::Default,
+            columns: vec![replication::ColumnInfo {
+                part_of_key: true,
+                name: "id".to_string(),
+                type_oid: 23,
+                type_modifier: -1,
+            }],
+        }
+    }
+
+    fn insert_event(id: &'static [u8]) -> RowEvent {
+        RowEvent {
+            relation_id: 16384,
+            operation: Operation::Insert,
+            new_tuple: Some(Arc::new(TupleData {
+                columns: vec![ColumnValue::Text(Bytes::from_static(id))],
+            })),
+            old_tuple: None,
+        }
+    }
 
     #[test]
     fn should_skip_when_batch_lsn_below_checkpoint() {
@@ -581,5 +742,37 @@ mod tests {
         let batch_lsn = 3000;
         assert!(should_skip_config("old_config", batch_lsn, &checkpoints));
         assert!(!should_skip_config("new_config", batch_lsn, &checkpoints));
+    }
+
+    #[test]
+    fn route_spool_payload_skips_checkpointed_configs() {
+        let router = Router::new(vec![puffgres_core::Mapping::from_config(&load_fixture("valid"))]);
+        let mut relation_cache = RelationCache::new();
+        relation_cache.insert(users_relation());
+        let events = vec![insert_event(b"1"), insert_event(b"2")];
+        let checkpoints = HashMap::from([("users".to_string(), 1000)]);
+
+        let payload = route_spool_payload(&events, &relation_cache, &router, &checkpoints, 1000);
+
+        assert!(payload.config_batches.is_empty());
+    }
+
+    #[test]
+    fn checkpoint_config_names_excludes_skipped_configs() {
+        let applied_configs = vec![
+            (std::path::PathBuf::from("a.toml"), load_fixture("valid")),
+            (
+                std::path::PathBuf::from("b.toml"),
+                Config {
+                    name: "other".to_string(),
+                    ..load_fixture("valid")
+                },
+            ),
+        ];
+        let checkpoints = HashMap::from([("users".to_string(), 1000)]);
+
+        let checkpoint_configs = checkpoint_config_names(&applied_configs, &checkpoints, 1000);
+
+        assert_eq!(checkpoint_configs, vec!["other".to_string()]);
     }
 }
