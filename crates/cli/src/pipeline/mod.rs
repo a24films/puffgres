@@ -3,7 +3,6 @@ pub(crate) mod dlq;
 pub(crate) mod setup;
 pub(crate) mod streaming;
 
-use std::fs;
 use std::time::Duration;
 
 use backon::{BackoffBuilder, ExponentialBuilder};
@@ -185,23 +184,8 @@ async fn run_cdc_inner(
     metrics: Option<&Metrics>,
     token: CancellationToken,
 ) -> Result<(), CliError> {
-    let state_db_existed = env_config.state_db_path.exists();
-    if let Some(parent) = env_config.state_db_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    let db = state::StateDb::open(&env_config.state_db_path)?;
-    db.verify_startup_roundtrip()?;
-
-    if !state_db_existed {
-        tracing::warn!(
-            state_db_path = %env_config.state_db_path.display(),
-            "state database did not exist before startup — created a new one. \
-             If PUFFGRES_STATE_DB is set, verify the path and volume mount are correct. \
-             Backfills will re-run from scratch."
-        );
-    }
+    let db = state::PostgresStateStore::connect(&env_config.database_url).await?;
+    state::StateStore::verify_startup_roundtrip(&db)?;
 
     let Some((applied_configs, router, _tables, namespaces, transformers, pg_client)) =
         setup::setup_pipeline(paths, env_config, project_config, &db).await?
@@ -232,7 +216,7 @@ async fn run_cdc_inner(
     let start_lsn = {
         let mut candidates: Vec<u64> = watermark_lsns;
         for (_, config) in &applied_configs {
-            if let Some(cp) = db.get_streaming_checkpoint(&config.name)? {
+            if let Some(cp) = state::StateStore::get_streaming_checkpoint(&db, &config.name)? {
                 candidates.push(cp.lsn);
             }
         }
@@ -270,6 +254,7 @@ async fn run_cdc_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -403,12 +388,13 @@ mod tests {
 
     use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
     use config::ConfigLoader;
+    use pg::test_utils::{TestContext, setup_postgres};
     use sha2::{Digest, Sha256};
-    use state::ConfigRecord;
+    use state::{ConfigRecord, PostgresStateStore};
 
-    fn dummy_env(state_db_path: PathBuf) -> EnvConfig {
+    fn dummy_env(database_url: String, state_db_path: PathBuf) -> EnvConfig {
         EnvConfig {
-            database_url: "host=invalid".to_string(),
+            database_url,
             turbopuffer_api_key: "fake".to_string(),
             turbopuffer_region: None,
             turbopuffer_namespace_prefix: None,
@@ -439,19 +425,33 @@ mod tests {
         ))
     }
 
+    fn setup_postgres_env(state_db_path: PathBuf) -> (tokio::runtime::Runtime, TestContext, EnvConfig) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let ctx = rt.block_on(setup_postgres());
+        let env = dummy_env(ctx.connection_string.clone(), state_db_path);
+        (rt, ctx, env)
+    }
+
+    fn insert_applied_config(
+        rt: &tokio::runtime::Runtime,
+        env: &EnvConfig,
+        record: &ConfigRecord,
+    ) {
+        rt.block_on(async {
+            let store = PostgresStateStore::connect(&env.database_url).await.unwrap();
+            store.insert_config(record).await.unwrap();
+        });
+    }
+
     #[test]
     fn no_applied_configs_returns_ok() {
         let (_dir, paths, state_db_path) = setup_project();
+        let (_rt, _ctx, env) = setup_postgres_env(state_db_path);
         // Write a config but don't apply it — no record in state db
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
-        let result = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path),
-            &ProjectConfig::default(),
-            None,
-        );
+        let result = run_no_retry(&paths, &env, &ProjectConfig::default(), None);
         assert!(
             result.is_ok(),
             "expected Ok(()) when no configs are applied, got: {:?}",
@@ -462,6 +462,7 @@ mod tests {
     #[test]
     fn run_auto_tombstones_configs_marked_on_disk() {
         let (_dir, paths, state_db_path) = setup_project();
+        let (rt, _ctx, env) = setup_postgres_env(state_db_path.clone());
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -469,8 +470,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::open(&state_db_path).unwrap();
-        db.insert_config(&ConfigRecord {
+        let record = ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
             content_hash: config::Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
@@ -478,8 +478,8 @@ mod tests {
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,
             namespace_prefix: None,
-        })
-        .unwrap();
+        };
+        insert_applied_config(&rt, &env, &record);
 
         fs::write(
             user_dir.join("tombstone.toml"),
@@ -487,19 +487,17 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path.clone()),
-            &ProjectConfig::default(),
-            None,
-        );
+        let result = run_no_retry(&paths, &env, &ProjectConfig::default(), None);
         assert!(
             result.is_ok(),
             "expected run to skip auto-tombstoned config, got: {:?}",
             result.unwrap_err()
         );
 
-        let updated = db.get_config(&cfg.name).unwrap().unwrap();
+        let updated = rt.block_on(async {
+            let store = PostgresStateStore::connect(&env.database_url).await.unwrap();
+            store.get_config(&cfg.name).await.unwrap().unwrap()
+        });
         assert!(
             updated.tombstone_applied_at.is_some(),
             "expected tombstone marker on disk to be reconciled into state db"
@@ -509,6 +507,7 @@ mod tests {
     #[test]
     fn errors_on_unreadable_transform_for_applied_config() {
         let (_dir, paths, state_db_path) = setup_project();
+        let (rt, _ctx, env) = setup_postgres_env(state_db_path);
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -516,8 +515,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::open(&state_db_path).unwrap();
-        db.insert_config(&ConfigRecord {
+        insert_applied_config(&rt, &env, &ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
             content_hash: config::Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
@@ -525,19 +523,12 @@ mod tests {
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,
             namespace_prefix: None,
-        })
-        .unwrap();
+        });
 
         // Delete the transform file so it can't be read
         fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
-        let err = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path),
-            &ProjectConfig::default(),
-            None,
-        )
-        .unwrap_err();
+        let err = run_no_retry(&paths, &env, &ProjectConfig::default(), None).unwrap_err();
         assert!(
             err.to_string().contains("cannot read transform"),
             "expected unreadable transform error, got: {err}"
@@ -547,6 +538,7 @@ mod tests {
     #[test]
     fn errors_on_modified_content_hash_for_applied_config() {
         let (_dir, paths, state_db_path) = setup_project();
+        let (rt, _ctx, env) = setup_postgres_env(state_db_path);
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -554,8 +546,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::open(&state_db_path).unwrap();
-        db.insert_config(&ConfigRecord {
+        insert_applied_config(&rt, &env, &ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
             content_hash: "stale_content_hash".to_string(),
@@ -563,16 +554,9 @@ mod tests {
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,
             namespace_prefix: None,
-        })
-        .unwrap();
+        });
 
-        let err = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path),
-            &ProjectConfig::default(),
-            None,
-        )
-        .unwrap_err();
+        let err = run_no_retry(&paths, &env, &ProjectConfig::default(), None).unwrap_err();
         assert!(
             err.to_string()
                 .contains("has been modified since last apply"),
@@ -587,13 +571,13 @@ mod tests {
     #[test]
     fn errors_on_modified_transform_for_applied_config() {
         let (_dir, paths, state_db_path) = setup_project();
+        let (rt, _ctx, env) = setup_postgres_env(state_db_path);
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let db = state::StateDb::open(&state_db_path).unwrap();
-        db.insert_config(&ConfigRecord {
+        insert_applied_config(&rt, &env, &ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
             content_hash: config::Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
@@ -601,16 +585,9 @@ mod tests {
             applied_at: chrono::Utc::now(),
             tombstone_applied_at: None,
             namespace_prefix: None,
-        })
-        .unwrap();
+        });
 
-        let err = run_no_retry(
-            &paths,
-            &dummy_env(state_db_path),
-            &ProjectConfig::default(),
-            None,
-        )
-        .unwrap_err();
+        let err = run_no_retry(&paths, &env, &ProjectConfig::default(), None).unwrap_err();
         assert!(
             err.to_string().contains("was modified"),
             "expected modified transform error, got: {err}"
