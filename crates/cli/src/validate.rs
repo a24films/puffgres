@@ -115,6 +115,16 @@ pub async fn preflight_check(
         }
     }
 
+    for (path, config) in &valid_configs {
+        if is_reserved_source_schema(&config.source.schema) {
+            namespace_errors.push(format!(
+                "{}: source schema '{}' is reserved for puffgres state tables",
+                path.display(),
+                config.source.schema,
+            ));
+        }
+    }
+
     if !namespace_errors.is_empty() {
         for err in &namespace_errors {
             println!("Error: {}", err);
@@ -277,6 +287,10 @@ fn id_type_display(id_type: &IdType) -> &'static str {
     }
 }
 
+fn is_reserved_source_schema(schema: &str) -> bool {
+    schema == pg::schema_bootstrap::PUFFGRES_SCHEMA
+}
+
 /// Check that the config id type is compatible with the Postgres column type.
 /// Returns an error message if incompatible, None if OK.
 ///
@@ -366,5 +380,11 @@ mod tests {
         assert_eq!(id_type_display(&IdType::Int), "int");
         assert_eq!(id_type_display(&IdType::Uuid), "uuid");
         assert_eq!(id_type_display(&IdType::String), "string");
+    }
+
+    #[test]
+    fn reserved_source_schema_rejected() {
+        assert!(is_reserved_source_schema("puffgres"));
+        assert!(!is_reserved_source_schema("public"));
     }
 }

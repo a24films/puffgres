@@ -1,7 +1,25 @@
 use tokio_postgres::Client;
 
 use crate::connect::quote_identifier;
+use crate::schema_bootstrap::PUFFGRES_SCHEMA;
 use crate::{PgError, Result};
+
+fn table_schema(table: &str) -> &str {
+    table.split_once('.').map_or("public", |(schema, _)| schema)
+}
+
+fn validate_publication_tables(tables: &[String]) -> Result<()> {
+    if let Some(table) = tables
+        .iter()
+        .find(|table| table_schema(table) == PUFFGRES_SCHEMA)
+    {
+        return Err(PgError::QueryError(format!(
+            "refusing to replicate table '{table}' from reserved schema '{PUFFGRES_SCHEMA}'"
+        )));
+    }
+
+    Ok(())
+}
 
 async fn publication_exists(client: &Client, publication_name: &str) -> Result<bool> {
     let row = client
@@ -70,6 +88,8 @@ pub async fn ensure_publication(
     publication_name: &str,
     tables: &[String],
 ) -> Result<()> {
+    validate_publication_tables(tables)?;
+
     if publication_exists(client, publication_name).await? {
         let current = get_publication_tables(client, publication_name).await?;
 
@@ -108,6 +128,8 @@ pub async fn add_tables_to_publication(
     publication_name: &str,
     tables: &[String],
 ) -> Result<()> {
+    validate_publication_tables(tables)?;
+
     if tables.is_empty() {
         return Ok(());
     }
@@ -147,6 +169,8 @@ pub async fn remove_tables_from_publication(
     publication_name: &str,
     tables: &[String],
 ) -> Result<()> {
+    validate_publication_tables(tables)?;
+
     if tables.is_empty() {
         return Ok(());
     }
@@ -189,6 +213,8 @@ pub async fn remove_tables_from_publication(
 /// Runs all ALTER TABLE statements inside a single transaction so that
 /// either all tables get REPLICA IDENTITY FULL or none do.
 pub async fn ensure_replica_identity_full(client: &Client, tables: &[String]) -> Result<()> {
+    validate_publication_tables(tables)?;
+
     // Table/schema names are SQL identifiers and cannot be parameterized;
     // we use quote_identifier() which matches PG's quote_ident() algorithm.
     client.execute("BEGIN", &[]).await.map_err(|e| {
@@ -218,6 +244,26 @@ pub async fn ensure_replica_identity_full(client: &Client, tables: &[String]) ->
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_reserved_puffgres_schema() {
+        let error = validate_publication_tables(&["puffgres.configs".to_string()]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Query error: refusing to replicate table 'puffgres.configs' from reserved schema 'puffgres'"
+        );
+    }
+
+    #[test]
+    fn allows_non_reserved_schemas() {
+        let tables = ["public.movies".to_string(), "analytics.rollups".to_string()];
+        assert!(validate_publication_tables(&tables).is_ok());
+    }
 }
 
 pub async fn get_publication_tables(
