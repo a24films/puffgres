@@ -16,7 +16,7 @@ configs/1772230207731_film/
 
 After filling in your `config.toml`, run `puffgres generate` to pull your table's schema from Postgres and create `schema.ts` — the transform imports this to get typed column definitions.
 
-The timestamp ensures configs are applied in creation order, like database migrations. Configs are immutable — both the config and transform are content-hashed, and puffgres will refuse to run if the code has changed after being applied (state is maintained in a separate SQLite DB). We enforce immutability to prevent a turbopuffer namespace from containing rows produced by two different versions of a transform. If you need to change how a config works, tombstone the old one and create a new one (see [Applying](#applying)) for more. 
+The timestamp ensures configs are applied in creation order, like database migrations. Configs are immutable — both the config and transform are content-hashed, and puffgres will refuse to run if the code has changed after being applied (state is maintained in a dedicated `puffgres` schema inside your source Postgres). We enforce immutability to prevent a turbopuffer namespace from containing rows produced by two different versions of a transform. If you need to change how a config works, tombstone the old one and create a new one (see [Applying](#applying)) for more. 
 
 ## Configs
 
@@ -203,7 +203,7 @@ Validates all configs against the live database without applying. This verifies 
 puffgres apply
 ```
 
-This registers all configs into the SQLite state database so they're picked up for replication. The config and transform are content-hashed at this point — if you change either after applying, puffgres will error.
+This registers all configs into the `puffgres` state schema so they're picked up for replication. The config and transform are content-hashed at this point — if you change either after applying, puffgres will error.
 
 ### Running
 
@@ -224,7 +224,7 @@ This generates a `tombstone.toml` in the config's directory, and the CDC loop wi
 
 ### Removing
 
-To fully remove a config — deleting the turbopuffer namespace, clearing all state from SQLite, and removing the config directory:
+To fully remove a config — deleting the turbopuffer namespace, clearing all state from the `puffgres` schema, and removing the config directory:
 
 ```sh
 puffgres remove {config_name}

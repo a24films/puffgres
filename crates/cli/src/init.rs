@@ -56,7 +56,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
         ("TURBOPUFFER_API_KEY", true),
         ("TURBOPUFFER_REGION", false),
         ("TURBOPUFFER_NAMESPACE_PREFIX", false),
-        ("PUFFGRES_STATE_DB", false),
+        ("PUFFGRES_STATE_SCHEMA", false),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", false),
     ];
 
@@ -78,12 +78,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
 fn ensure_gitignore(_cwd: &std::path::Path, paths: &ProjectPaths) -> Result<(), CliError> {
     let gitignore_path = paths.root.join(".gitignore");
 
-    let entries = [
-        "state.db",
-        "state.db-journal",
-        "state.db-wal",
-        "state.db-shm",
-    ];
+    let entries = [".env", ".env.*", "node_modules"];
 
     if gitignore_path.exists() {
         let existing = fs::read_to_string(&gitignore_path)?;
@@ -128,7 +123,7 @@ fn ensure_dockerignore(paths: &ProjectPaths) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let content = "state.db\nstate.db-journal\nstate.db-wal\nstate.db-shm\n.env\n.env.*\nnode_modules\nDockerfile\n.dockerignore\n.git\n";
+    let content = ".env\n.env.*\nnode_modules\nDockerfile\n.dockerignore\n.git\n";
     fs::write(&paths.dockerignore, content)?;
 
     Ok(())
@@ -237,20 +232,19 @@ mod tests {
     }
 
     #[test]
-    fn creates_gitignore_with_state_db_entries() {
+    fn creates_gitignore_with_env_entries() {
         let dir = tempfile::tempdir().unwrap();
 
         run_in(dir.path()).unwrap();
 
         let gitignore = fs::read_to_string(dir.path().join("puffgres").join(".gitignore")).unwrap();
-        assert!(gitignore.contains("state.db\n"));
-        assert!(gitignore.contains("state.db-journal"));
-        assert!(gitignore.contains("state.db-wal"));
-        assert!(gitignore.contains("state.db-shm"));
+        assert!(gitignore.contains(".env\n"));
+        assert!(gitignore.contains(".env.*"));
+        assert!(gitignore.contains("node_modules"));
     }
 
     #[test]
-    fn appends_state_db_to_existing_gitignore() {
+    fn appends_env_entries_to_existing_gitignore() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("puffgres");
         fs::create_dir_all(&sub).unwrap();
@@ -260,8 +254,8 @@ mod tests {
 
         let gitignore = fs::read_to_string(sub.join(".gitignore")).unwrap();
         assert!(gitignore.contains("node_modules"));
-        assert!(gitignore.contains("state.db\n"));
-        assert!(gitignore.contains("state.db-wal"));
+        assert!(gitignore.contains(".env\n"));
+        assert!(gitignore.contains(".env.*"));
     }
 
     #[test]
@@ -269,15 +263,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("puffgres");
         fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join(".gitignore"), "state.db\nstate.db-wal\n").unwrap();
+        fs::write(sub.join(".gitignore"), ".env\nnode_modules\n").unwrap();
 
         run_in(dir.path()).unwrap();
 
         let gitignore = fs::read_to_string(sub.join(".gitignore")).unwrap();
         // Should not have duplicates
-        assert_eq!(gitignore.matches("state.db\n").count(), 1);
-        assert!(gitignore.contains("state.db-journal"));
-        assert!(gitignore.contains("state.db-shm"));
+        assert_eq!(gitignore.matches(".env\n").count(), 1);
+        assert!(gitignore.contains(".env.*"));
+        assert!(gitignore.contains("node_modules"));
     }
 
     #[test]
@@ -314,9 +308,8 @@ mod tests {
 
         let dockerignore =
             fs::read_to_string(dir.path().join("puffgres").join(".dockerignore")).unwrap();
-        assert!(dockerignore.contains("state.db"));
-        assert!(dockerignore.contains("state.db-wal"));
         assert!(dockerignore.contains(".env"));
+        assert!(dockerignore.contains("node_modules"));
     }
 
     #[test]
@@ -330,15 +323,6 @@ mod tests {
 
         let dockerignore = fs::read_to_string(sub.join(".dockerignore")).unwrap();
         assert_eq!(dockerignore, "custom");
-    }
-
-    #[test]
-    fn does_not_create_state_db() {
-        let dir = tempfile::tempdir().unwrap();
-
-        run_in(dir.path()).unwrap();
-
-        assert!(!dir.path().join("puffgres").join("state.db").exists());
     }
 
     #[test]
@@ -387,8 +371,6 @@ mod tests {
         // Should create files directly in cwd
         assert!(dir.path().join("configs").is_dir());
         assert!(dir.path().join("transforms").is_dir());
-        // Should NOT create state.db (created on first run/apply)
-        assert!(!dir.path().join("state.db").exists());
     }
 
     #[test]

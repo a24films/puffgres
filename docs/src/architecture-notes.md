@@ -11,7 +11,7 @@ puffgres is a Rust workspace divided into several crates under `crates/`:
 - **`pg`** — Postgres setup. Creates and manages the logical replication publication and slot, runs backfill queries, and generates `schema.ts` files from table definitions.
 - **`puff`** — turbopuffer API client. Handles upserts, deletes, and namespace operations.
 - **`replication`** — the change data capture stream. Decodes the Postgres logical replication protocol (pgoutput), manages relation caching, schema change detection, transaction batching, and sub-batch streaming for large transactions.
-- **`state`** — SQLite state management via Diesel. Tracks applied configs, replication checkpoints, backfill progress, and dead letter queue entries. Runs in WAL mode.
+- **`state`** — puffgres' own state, stored in a dedicated Postgres schema (default `puffgres`) inside the source database, managed via Diesel. Tracks applied configs, replication checkpoints, backfill progress, and dead letter queue entries. Co-locating state with the source means PITR restores naturally roll the two together.
 
 Documentation lives in `docs/` and is built with [mdbook](https://rust-lang.github.io/mdBook/).
 

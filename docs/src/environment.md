@@ -26,13 +26,15 @@ Prefix for all turbopuffer namespaces. If set to `PUFFGRES_PRODUCTION` and you c
 TURBOPUFFER_NAMESPACE_PREFIX="PUFFGRES_PRODUCTION"
 ```
 
-### `PUFFGRES_STATE_DB`
+### `PUFFGRES_STATE_SCHEMA`
 
-Filesystem path for the SQLite state DB. On startup, puffgres performs a write/read roundtrip against this database to confirm the state file is writable.
+Postgres schema (in the same database as `DATABASE_URL`) where puffgres keeps its own state — applied configs, replication checkpoints, backfill cursors, and the DLQ. Defaults to `puffgres`. The schema is created on first run; the `DATABASE_URL` role needs `CREATE SCHEMA` and DML privileges on it (or you can pre-create the schema and grant DML only).
 
 ```sh
-PUFFGRES_STATE_DB="/puffgres-volume/data/puffgres-state.db"
+PUFFGRES_STATE_SCHEMA="puffgres"
 ```
+
+Because state lives in the source database, source rollbacks (e.g. PITR restores) naturally roll puffgres' state back with them — backfill cursors and config registrations stay consistent. The trade-off is that `puffgres status`, `reset`, and `tombstone` now require the source DB to be reachable.
 
 ### `OTEL_EXPORTER_OTLP_ENDPOINT`
 
