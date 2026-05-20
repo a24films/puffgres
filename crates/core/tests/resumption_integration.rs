@@ -1,6 +1,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -10,16 +11,56 @@ use pg::slot::{ensure_slot, get_current_wal_lsn, terminate_active_slot_backend};
 use puffgres_core::{BackfillOutcome, DocumentId, run_backfill};
 use replication::{ReplicationStream, ReplicationStreamConfig, RowEvent};
 use state::{BackfillProgress, BackfillStatus, ConfigRecord, StateDb, StreamingCheckpoint};
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
+use testcontainers_modules::postgres::Postgres as PgImage;
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
 use common::*;
 
-/// Create a StateDb backed by a real file inside a temp directory.
-/// Returns both the dir handle (must be kept alive) and the initialized db.
-async fn create_state_db() -> (tempfile::TempDir, StateDb) {
-    let dir = tempfile::tempdir().expect("failed to create tempdir");
-    let path = dir.path().join("state.db");
-    let db = StateDb::open(&path).await.expect("failed to open state db");
+struct ResumptionPg {
+    _container: ContainerAsync<PgImage>,
+    database_url: String,
+}
+
+static SHARED_PG: OnceCell<ResumptionPg> = OnceCell::const_new();
+static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+async fn shared_pg() -> &'static ResumptionPg {
+    SHARED_PG
+        .get_or_init(|| async {
+            let container = PgImage::default()
+                .with_tag("17-alpine")
+                .start()
+                .await
+                .expect("failed to start postgres testcontainer");
+            let host = container.get_host().await.unwrap();
+            let port = container.get_host_port_ipv4(5432).await.unwrap();
+            let database_url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+            ResumptionPg {
+                _container: container,
+                database_url,
+            }
+        })
+        .await
+}
+
+/// Tracks the database URL + schema so reopen_state_db can reconnect.
+struct StateDir {
+    database_url: String,
+    schema: String,
+}
+
+/// Create a StateDb backed by a fresh Postgres schema.
+/// Returns a handle to the schema (so reopen_state_db can reconnect) plus the
+/// initialized db.
+async fn create_state_db() -> (StateDir, StateDb) {
+    let pg = shared_pg().await;
+    let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let schema = format!("resumption_{n}");
+    let db = StateDb::connect(&pg.database_url, &schema)
+        .await
+        .expect("failed to open state db");
     db.insert_config(&ConfigRecord {
         name: "test".to_string(),
         namespace: "test_ns".to_string(),
@@ -31,15 +72,18 @@ async fn create_state_db() -> (tempfile::TempDir, StateDb) {
     })
     .await
     .expect("failed to insert config record");
-    (dir, db)
+    (
+        StateDir {
+            database_url: pg.database_url.clone(),
+            schema,
+        },
+        db,
+    )
 }
 
-/// Re-open the state db from the same directory (simulates restart).
-async fn reopen_state_db(dir: &tempfile::TempDir) -> StateDb {
-    let path = dir.path().join("state.db");
-
-    // No need to reinitialize -- tables already exist from first open.
-    StateDb::open(&path)
+/// Re-connect to the same schema (simulates restart).
+async fn reopen_state_db(dir: &StateDir) -> StateDb {
+    StateDb::connect(&dir.database_url, &dir.schema)
         .await
         .expect("failed to reopen state db")
 }

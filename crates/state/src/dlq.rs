@@ -1,12 +1,12 @@
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
-use diesel::Connection;
 use diesel::prelude::*;
 use strum::{Display, EnumString};
 
 use crate::epoch;
 use crate::models::{DlqRow, NewDlqEntry};
+use crate::pg_lsn::Lsn;
 use crate::schema::dlq;
 use crate::{StateDb, StateError};
 
@@ -118,7 +118,7 @@ impl DlqEntry {
         Ok(Self {
             id: row.id,
             config_name: row.config_name.clone(),
-            lsn: u64::from_ne_bytes(row.lsn.to_ne_bytes()),
+            lsn: row.lsn.into(),
             doc_id: row.doc_id.clone(),
             operation: row
                 .operation
@@ -141,7 +141,7 @@ impl StateDb {
             let op_str = e.operation.as_ref().map(|o| o.to_string());
             let new = NewDlqEntry {
                 config_name: &e.config_name,
-                lsn: i64::from_ne_bytes(e.lsn.to_ne_bytes()),
+                lsn: Lsn(e.lsn),
                 doc_id: e.doc_id.as_deref(),
                 error_message: &e.error_message,
                 error_kind: e.error_kind.to_str(),
@@ -157,13 +157,10 @@ impl StateDb {
                 operation: op_str.as_deref(),
             };
 
-            let id = conn.transaction::<i64, diesel::result::Error, _>(|conn| {
-                diesel::insert_into(dlq::table).values(&new).execute(conn)?;
-                diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
-                    "last_insert_rowid()",
-                ))
-                .get_result(conn)
-            })?;
+            let id = diesel::insert_into(dlq::table)
+                .values(&new)
+                .returning(dlq::id)
+                .get_result::<i64>(conn)?;
 
             Ok(id)
         })
@@ -397,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_and_retrieve_entry() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
@@ -415,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_and_retrieve_entry_without_doc_id() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
@@ -428,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_and_retrieve_delete_operation() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = DlqEntry::retryable(
@@ -446,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_with_config_filter() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -467,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_without_config_filter() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -484,7 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn increment_retry_count() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
@@ -504,7 +501,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_by_config_name() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -528,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_all() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -548,7 +545,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_dlq_entry_returns_true_when_exists() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
@@ -561,14 +558,14 @@ mod tests {
 
     #[tokio::test]
     async fn delete_dlq_entry_returns_false_when_not_exists() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let deleted = db.delete_dlq_entry(999).await.unwrap();
         assert!(!deleted);
     }
 
     #[tokio::test]
     async fn dlq_count_with_config_filter() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -588,7 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn dlq_count_without_filter() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -604,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn dlq_entry_deleted_when_config_deleted() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
@@ -619,7 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn dlq_entry_requires_valid_config() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let entry = sample_dlq_entry("nonexistent_config", 1000, ErrorKind::Retryable);
 
         let result = db.insert_dlq_entry(&entry).await;
@@ -628,13 +625,13 @@ mod tests {
 
     #[tokio::test]
     async fn get_nonexistent_dlq_entry_returns_none() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         assert!(db.get_dlq_entry(999).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn increment_retry_fails_for_nonexistent_entry() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let result = db.increment_retry(999).await;
         assert!(result.is_err());
     }
@@ -678,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_retryable_entries() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
@@ -702,7 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_retryable_entries_excludes_tombstoned() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -722,7 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_permanent() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
@@ -741,13 +738,13 @@ mod tests {
 
     #[tokio::test]
     async fn mark_permanent_nonexistent_fails() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         assert!(db.mark_permanent(999, "error").await.is_err());
     }
 
     #[tokio::test]
     async fn dlq_count_by_kind_empty() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let (r, p) = db.dlq_count_by_kind(None).await.unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
@@ -755,7 +752,7 @@ mod tests {
 
     #[tokio::test]
     async fn dlq_count_by_kind_mixed() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
 
@@ -787,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn dlq_count_by_kind_nonexistent_config() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let (r, p) = db.dlq_count_by_kind(Some("nonexistent")).await.unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
@@ -795,7 +792,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_old_permanent_entries_removes_old() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let old_time = Utc::now() - chrono::Duration::hours(100);
@@ -832,7 +829,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_old_permanent_entries_leaves_recent() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         db.insert_dlq_entry(&DlqEntry::permanent(
@@ -861,7 +858,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_old_permanent_entries_uses_permanent_at_not_created_at() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
@@ -878,14 +875,14 @@ mod tests {
 
     #[tokio::test]
     async fn clear_old_permanent_entries_empty_dlq() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let cleaned = db.clear_old_permanent_entries(72).await.unwrap();
         assert_eq!(cleaned, 0);
     }
 
     #[tokio::test]
     async fn list_respects_limit() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         for i in 0..10 {

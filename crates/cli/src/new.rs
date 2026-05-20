@@ -68,7 +68,7 @@ mod tests {
 
     #[tokio::test]
     async fn creates_config_and_transform() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         run(&paths, "user").unwrap();
 
@@ -87,7 +87,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_config_is_valid_toml() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         run(&paths, "film").unwrap();
 
@@ -110,7 +110,7 @@ mod tests {
 
     #[tokio::test]
     async fn dir_name_contains_timestamp_and_name() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         run(&paths, "user").unwrap();
 
@@ -138,7 +138,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_contains_name() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         run(&paths, "product").unwrap();
 
@@ -154,7 +154,7 @@ mod tests {
 
     #[tokio::test]
     async fn different_names_create_separate_dirs() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         run(&paths, "user").unwrap();
         run(&paths, "film").unwrap();
@@ -169,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_duplicate_name() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         run(&paths, "user").unwrap();
         let err = run(&paths, "user").unwrap_err();
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_duplicate_namespace() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         // Create a config with namespace "user" but name "other"
         let dir = paths.configs.join("1000_other");

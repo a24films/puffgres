@@ -1,22 +1,76 @@
-use crate::paths::ProjectPaths;
-use state::StateDb;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
+use testcontainers_modules::postgres::Postgres;
+use tokio::sync::OnceCell;
+
+use crate::paths::ProjectPaths;
 
 static TEST_TIMESTAMP: AtomicU64 = AtomicU64::new(1000000000000);
 
-pub async fn setup_project() -> (tempfile::TempDir, ProjectPaths, PathBuf) {
+/// Shared Postgres testcontainer for CLI integration/unit tests.
+///
+/// Per-test isolation is achieved by allocating a fresh schema (`test_<N>`)
+/// for each call to `fresh_schema`.
+pub struct SharedTestPg {
+    _container: ContainerAsync<Postgres>,
+    pub database_url: String,
+}
+
+static SHARED_PG: OnceCell<SharedTestPg> = OnceCell::const_new();
+static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+impl SharedTestPg {
+    pub async fn get() -> &'static SharedTestPg {
+        SHARED_PG
+            .get_or_init(|| async {
+                let container = Postgres::default()
+                    .with_tag("17-alpine")
+                    .start()
+                    .await
+                    .expect("failed to start postgres testcontainer");
+                let host = container.get_host().await.unwrap();
+                let port = container.get_host_port_ipv4(5432).await.unwrap();
+                let database_url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+                SharedTestPg {
+                    _container: container,
+                    database_url,
+                }
+            })
+            .await
+    }
+
+    /// Allocate a fresh, unique schema name for this test.
+    /// Returns (database_url, schema_name).
+    pub fn fresh_schema(&self) -> (String, String) {
+        let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
+        (self.database_url.clone(), format!("cli_test_{n}"))
+    }
+}
+
+/// Set up a project directory tree (no state DB connection).
+///
+/// Returns the tempdir handle (must be kept alive for the project to exist
+/// on disk) and a `ProjectPaths` pointing at it.
+pub fn setup_project() -> (tempfile::TempDir, ProjectPaths) {
     let dir = tempfile::tempdir().unwrap();
     let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
 
     fs::create_dir_all(&paths.configs).unwrap();
     fs::create_dir_all(&paths.transforms).unwrap();
 
-    let state_db_path = dir.path().join("state.db");
-    StateDb::open(&state_db_path).await.unwrap();
+    (dir, paths)
+}
 
-    (dir, paths, state_db_path)
+/// Set up a project directory tree plus a fresh Postgres schema in the
+/// shared testcontainer. Returns (tempdir, paths, database_url, schema).
+pub async fn setup_project_with_state() -> (tempfile::TempDir, ProjectPaths, String, String) {
+    let (dir, paths) = setup_project();
+    let pg = SharedTestPg::get().await;
+    let (url, schema) = pg.fresh_schema();
+    (dir, paths, url, schema)
 }
 
 pub fn write_config(
@@ -95,8 +149,6 @@ pub fn stub_schema(config_dir: &Path) {
     )
     .unwrap();
 }
-
-use std::path::Path;
 
 pub const PASSTHROUGH_TRANSFORM: &str = r#"
 import { createInterface } from "readline";

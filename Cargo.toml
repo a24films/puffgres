@@ -46,9 +46,8 @@ opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs"] }
 opentelemetry-otlp = { version = "0.31", features = ["http-proto", "http-json", "reqwest-blocking-client", "trace", "metrics", "logs"] }
 opentelemetry-appender-tracing = "0.31"
-diesel = { version = "2.3", features = ["sqlite"] }
+diesel = { version = "2.3", features = ["postgres", "chrono"] }
 diesel_migrations = "2.3"
-libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
 async-trait = "0.1"
 backon = "1.6.0"
 rand = "0.10.0"

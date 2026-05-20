@@ -1,2 +1,0 @@
-ALTER TABLE dlq ADD COLUMN operation TEXT;
-ALTER TABLE dlq DROP COLUMN event_json;

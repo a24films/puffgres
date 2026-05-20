@@ -17,9 +17,10 @@ pub enum StateError {
 impl StateError {
     pub fn is_transient(&self) -> bool {
         match self {
-            StateError::Database(diesel::result::Error::DatabaseError(_, info)) => {
-                let msg = info.message().to_lowercase();
-                msg.contains("database is locked") || msg.contains("database is busy")
+            StateError::Connection(_) => true,
+            StateError::Database(diesel::result::Error::DatabaseError(kind, _)) => {
+                use diesel::result::DatabaseErrorKind::*;
+                matches!(kind, SerializationFailure | ClosedConnection)
             }
             _ => false,
         }

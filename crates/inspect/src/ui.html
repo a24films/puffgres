@@ -39,7 +39,6 @@
 <h1>puffgres inspect</h1>
 
 <div class="actions">
-  <a href="/api/state/download">Download state.db</a>
   <button onclick="refresh()">Refresh</button>
   <span class="path" id="db-path"></span>
 </div>
@@ -60,7 +59,7 @@ async function refresh() {
 }
 
 function render(d) {
-  document.getElementById('db-path').textContent = d.state_db_path;
+  document.getElementById('db-path').textContent = 'schema: ' + d.state_schema;
   let html = '';
 
   // Configs

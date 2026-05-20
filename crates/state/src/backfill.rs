@@ -7,6 +7,7 @@ use strum::{AsRefStr, Display, EnumString};
 
 use crate::epoch;
 use crate::models::{BackfillProgressRow, NewBackfillProgress};
+use crate::pg_lsn::Lsn;
 use crate::schema::backfill_progress;
 use crate::{StateDb, StateError};
 
@@ -40,18 +41,27 @@ impl BackfillProgress {
         let started_at = row.started_at.and_then(epoch::from_millis);
         let completed_at = row.completed_at.and_then(epoch::from_millis);
 
+        let total_rows = row
+            .total_rows
+            .map(|v| {
+                u64::try_from(v)
+                    .map_err(|_| StateError::InvalidState(format!("negative total_rows: {v}")))
+            })
+            .transpose()?;
+        let processed_rows = u64::try_from(row.processed_rows).map_err(|_| {
+            StateError::InvalidState(format!("negative processed_rows: {}", row.processed_rows))
+        })?;
+
         Ok(Self {
             config_name: row.config_name.clone(),
             last_id: row.last_id.clone(),
-            total_rows: row.total_rows.map(|v| u64::from_ne_bytes(v.to_ne_bytes())),
-            processed_rows: u64::from_ne_bytes(row.processed_rows.to_ne_bytes()),
+            total_rows,
+            processed_rows,
             status,
             started_at,
             completed_at,
             error_message: row.error_message.clone(),
-            watermark_lsn: row
-                .watermark_lsn
-                .map(|v| u64::from_ne_bytes(v.to_ne_bytes())),
+            watermark_lsn: row.watermark_lsn.map(u64::from),
         })
     }
 }
@@ -94,20 +104,38 @@ impl StateDb {
     ) -> Result<(), StateError> {
         let p = progress.clone();
         self.run_blocking(move |conn| {
+            let total_rows = p
+                .total_rows
+                .map(|v| {
+                    i64::try_from(v).map_err(|_| {
+                        StateError::InvalidState(format!("total_rows {v} exceeds i64::MAX"))
+                    })
+                })
+                .transpose()?;
+            let processed_rows = i64::try_from(p.processed_rows).map_err(|_| {
+                StateError::InvalidState(format!(
+                    "processed_rows {} exceeds i64::MAX",
+                    p.processed_rows
+                ))
+            })?;
+
             let new = NewBackfillProgress {
                 config_name: &p.config_name,
                 last_id: p.last_id.as_deref(),
-                total_rows: p.total_rows.map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
-                processed_rows: i64::from_ne_bytes(p.processed_rows.to_ne_bytes()),
+                total_rows,
+                processed_rows,
                 status: p.status.as_ref(),
                 started_at: p.started_at.as_ref().map(epoch::to_millis),
                 completed_at: p.completed_at.as_ref().map(epoch::to_millis),
                 error_message: p.error_message.as_deref(),
-                watermark_lsn: p.watermark_lsn.map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+                watermark_lsn: p.watermark_lsn.map(Lsn),
             };
 
-            diesel::replace_into(backfill_progress::table)
+            diesel::insert_into(backfill_progress::table)
                 .values(&new)
+                .on_conflict(backfill_progress::config_name)
+                .do_update()
+                .set(&new)
                 .execute(conn)?;
             Ok(())
         })
@@ -152,26 +180,38 @@ impl StateDb {
                 .or_else(|| Some(Utc::now()))
                 .map(|dt| epoch::to_millis(&dt));
 
+            let total_rows = existing
+                .as_ref()
+                .and_then(|p| p.total_rows)
+                .map(|v| {
+                    i64::try_from(v).map_err(|_| {
+                        StateError::InvalidState(format!("total_rows {v} exceeds i64::MAX"))
+                    })
+                })
+                .transpose()?;
+            let processed_rows_i64 = i64::try_from(processed_rows).map_err(|_| {
+                StateError::InvalidState(format!(
+                    "processed_rows {processed_rows} exceeds i64::MAX"
+                ))
+            })?;
+
             let new = NewBackfillProgress {
                 config_name: &config_name,
                 last_id: Some(&last_id),
-                total_rows: existing
-                    .as_ref()
-                    .and_then(|p| p.total_rows)
-                    .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
-                processed_rows: i64::from_ne_bytes(processed_rows.to_ne_bytes()),
+                total_rows,
+                processed_rows: processed_rows_i64,
                 status: BackfillStatus::InProgress.as_ref(),
                 started_at: started_at_millis,
                 completed_at: None,
                 error_message: None,
-                watermark_lsn: existing
-                    .as_ref()
-                    .and_then(|p| p.watermark_lsn)
-                    .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+                watermark_lsn: existing.as_ref().and_then(|p| p.watermark_lsn).map(Lsn),
             };
 
-            diesel::replace_into(backfill_progress::table)
+            diesel::insert_into(backfill_progress::table)
                 .values(&new)
+                .on_conflict(backfill_progress::config_name)
+                .do_update()
+                .set(&new)
                 .execute(conn)?;
             Ok(())
         })
@@ -218,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_and_retrieve_backfill_progress() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let progress = sample_backfill_progress("film");
@@ -236,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_backfill_progress_upsert() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut progress1 = sample_backfill_progress("film");
@@ -256,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn backfill_progress_deleted_when_config_deleted() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let progress = sample_backfill_progress("film");
@@ -271,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_nonexistent_backfill_progress_returns_none() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         assert!(
             db.get_backfill_progress("nonexistent")
                 .await
@@ -282,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn backfill_progress_requires_valid_config() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let progress = sample_backfill_progress("nonexistent_config");
 
         let result = db.save_backfill_progress(&progress).await;
@@ -291,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn watermark_lsn_saved_and_retrieved() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut progress = sample_backfill_progress("film");
@@ -304,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_backfill_cursor_returns_none_when_no_progress() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         assert!(
             db.get_backfill_cursor("nonexistent")
                 .await
@@ -315,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_backfill_cursor_returns_none_when_no_last_id() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut progress = sample_backfill_progress("film");
@@ -327,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_backfill_cursor_returns_id_and_count() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.save_backfill_progress(&sample_backfill_progress("film"))
             .await
@@ -340,7 +380,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_backfill_cursor_creates_in_progress_record() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         db.save_backfill_cursor("film", "500", 250).await.unwrap();
@@ -354,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_backfill_cursor_updates_existing() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         db.save_backfill_cursor("film", "100", 50).await.unwrap();
@@ -367,7 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_backfill_cursor_preserves_watermark_lsn() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         // Set initial progress with a watermark
@@ -392,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn watermark_lsn_above_i32_max_roundtrips() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let big_lsn: u64 = (i32::MAX as u64) + 5_000;
@@ -406,7 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn watermark_lsn_defaults_to_none() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let progress = sample_backfill_progress("film");

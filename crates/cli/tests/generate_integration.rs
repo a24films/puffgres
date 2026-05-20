@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use pg::test_utils::setup_postgres;
 use puffgres_cli::EnvConfig;
 use puffgres_cli::check::run_async as check_async;
@@ -8,7 +6,7 @@ use puffgres_cli::test_utils::{
     PASSTHROUGH_TRANSFORM, setup_project, write_config, write_config_with_columns, write_transform,
 };
 
-async fn start_postgres_env(state_db_path: PathBuf) -> (pg::test_utils::TestContext, EnvConfig) {
+async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
     let ctx = setup_postgres().await;
     let env_config = EnvConfig {
         database_url: ctx.connection_url.clone(),
@@ -17,18 +15,15 @@ async fn start_postgres_env(state_db_path: PathBuf) -> (pg::test_utils::TestCont
         turbopuffer_namespace_prefix: None,
         otel_endpoint: None,
         otel_headers: None,
-        state_db_path,
+        state_schema: "puffgres".to_string(),
         dlq_max_age_hours: None,
         inspect_port: None,
     };
     (ctx, env_config)
 }
 
-async fn setup_pg(
-    tables: &[(&str, &str)],
-    state_db_path: PathBuf,
-) -> (pg::test_utils::TestContext, EnvConfig) {
-    let (ctx, env_config) = start_postgres_env(state_db_path).await;
+async fn setup_pg(tables: &[(&str, &str)]) -> (pg::test_utils::TestContext, EnvConfig) {
+    let (ctx, env_config) = start_postgres_env().await;
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
         .unwrap();
@@ -44,12 +39,9 @@ async fn setup_pg(
 
 #[tokio::test]
 async fn generate_check_lifecycle() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = setup_pg(
-        &[("users", "id SERIAL PRIMARY KEY, name TEXT, email VARCHAR")],
-        state_db_path,
-    )
-    .await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) =
+        setup_pg(&[("users", "id SERIAL PRIMARY KEY, name TEXT, email VARCHAR")]).await;
 
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
     write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -73,7 +65,7 @@ async fn generate_check_lifecycle() {
     check_async(
         &paths,
         &env_config.database_url,
-        &env_config.state_db_path,
+        &env_config.state_schema,
         &puffgres_cli::ProjectConfig::default(),
     )
     .await
@@ -92,7 +84,7 @@ async fn generate_check_lifecycle() {
     let check_result = check_async(
         &paths,
         &env_config.database_url,
-        &env_config.state_db_path,
+        &env_config.state_schema,
         &puffgres_cli::ProjectConfig::default(),
     )
     .await;
@@ -121,7 +113,7 @@ async fn generate_check_lifecycle() {
     check_async(
         &paths,
         &env_config.database_url,
-        &env_config.state_db_path,
+        &env_config.state_schema,
         &puffgres_cli::ProjectConfig::default(),
     )
     .await
@@ -130,12 +122,8 @@ async fn generate_check_lifecycle() {
 
 #[tokio::test]
 async fn tombstoned_config_skipped() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = setup_pg(
-        &[("items", "id SERIAL PRIMARY KEY, title TEXT")],
-        state_db_path,
-    )
-    .await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = setup_pg(&[("items", "id SERIAL PRIMARY KEY, title TEXT")]).await;
 
     let item_dir = write_config(&paths, "item", "public", "items", "id", "uint");
     write_transform(&item_dir, PASSTHROUGH_TRANSFORM);
@@ -161,14 +149,11 @@ async fn tombstoned_config_skipped() {
 
 #[tokio::test]
 async fn config_columns_filtering() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = setup_pg(
-        &[(
-            "products",
-            "id SERIAL PRIMARY KEY, name TEXT, price NUMERIC, description TEXT",
-        )],
-        state_db_path,
-    )
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = setup_pg(&[(
+        "products",
+        "id SERIAL PRIMARY KEY, name TEXT, price NUMERIC, description TEXT",
+    )])
     .await;
 
     // Config only selects id and name columns

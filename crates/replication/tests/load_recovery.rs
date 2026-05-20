@@ -143,10 +143,43 @@ fn insert_event_with_id(txn_index: usize, event_index: usize) -> ReplicationEven
     }
 }
 
-async fn setup_state_db() -> (tempfile::TempDir, StateDb) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
-    let db = StateDb::open(&path).await.unwrap();
+use std::sync::atomic::{AtomicU64, Ordering};
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
+use testcontainers_modules::postgres::Postgres as PgImage;
+use tokio::sync::OnceCell;
+
+struct LoadRecoveryPg {
+    _container: ContainerAsync<PgImage>,
+    database_url: String,
+}
+
+static SHARED_PG: OnceCell<LoadRecoveryPg> = OnceCell::const_new();
+static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+async fn shared_pg() -> &'static LoadRecoveryPg {
+    SHARED_PG
+        .get_or_init(|| async {
+            let container = PgImage::default()
+                .with_tag("17-alpine")
+                .start()
+                .await
+                .expect("failed to start postgres testcontainer");
+            let host = container.get_host().await.unwrap();
+            let port = container.get_host_port_ipv4(5432).await.unwrap();
+            let database_url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+            LoadRecoveryPg {
+                _container: container,
+                database_url,
+            }
+        })
+        .await
+}
+
+async fn setup_state_db() -> ((), StateDb) {
+    let pg = shared_pg().await;
+    let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let schema = format!("load_recovery_{n}");
+    let db = StateDb::connect(&pg.database_url, &schema).await.unwrap();
     db.insert_config(&ConfigRecord {
         name: "test".to_string(),
         namespace: "test".to_string(),
@@ -158,7 +191,7 @@ async fn setup_state_db() -> (tempfile::TempDir, StateDb) {
     })
     .await
     .unwrap();
-    (dir, db)
+    ((), db)
 }
 
 async fn save_checkpoint(db: &StateDb, lsn: u64, events: u64) {

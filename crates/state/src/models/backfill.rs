@@ -1,5 +1,6 @@
 use diesel::prelude::*;
 
+use crate::pg_lsn::Lsn;
 use crate::schema::backfill_progress;
 
 #[derive(Queryable, Selectable, Debug, Clone)]
@@ -13,7 +14,7 @@ pub struct BackfillProgressRow {
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
     pub error_message: Option<String>,
-    pub watermark_lsn: Option<i64>,
+    pub watermark_lsn: Option<Lsn>,
 }
 
 #[derive(Insertable, AsChangeset, Debug)]
@@ -27,5 +28,5 @@ pub struct NewBackfillProgress<'a> {
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
     pub error_message: Option<&'a str>,
-    pub watermark_lsn: Option<i64>,
+    pub watermark_lsn: Option<Lsn>,
 }

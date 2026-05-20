@@ -214,7 +214,7 @@ pub(crate) async fn setup_pipeline(
 
     crate::validate::preflight_check(
         &env_config.database_url,
-        &env_config.state_db_path,
+        &env_config.state_schema,
         &applied_configs,
         Some(&pg_client),
         transform_timeout,

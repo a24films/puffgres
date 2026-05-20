@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Duration;
 
 use crate::error::CliError;
@@ -10,7 +9,7 @@ use crate::validate::preflight_check;
 pub async fn run_async(
     paths: &ProjectPaths,
     database_url: &str,
-    state_db_path: &Path,
+    state_schema: &str,
     project_config: &ProjectConfig,
 ) -> Result<(), CliError> {
     let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
@@ -36,7 +35,7 @@ pub async fn run_async(
 
     preflight_check(
         database_url,
-        state_db_path,
+        state_schema,
         &configs,
         None,
         transform_timeout,

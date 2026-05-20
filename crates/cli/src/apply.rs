@@ -38,12 +38,7 @@ pub async fn run_async(
     project_config: &ProjectConfig,
 ) -> Result<(), CliError> {
     let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
-    if let Some(parent) = env_config.state_db_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let db = StateDb::open(&env_config.state_db_path).await?;
+    let db = StateDb::connect(&env_config.database_url, &env_config.state_schema).await?;
     reconcile_on_disk_tombstones(paths, &db).await?;
 
     let loader = config::ConfigLoader::new(&paths.configs);
@@ -161,7 +156,7 @@ pub async fn run_async(
 
         preflight_check(
             &env_config.database_url,
-            &env_config.state_db_path,
+            &env_config.state_schema,
             &new_config_refs,
             None,
             transform_timeout,
@@ -217,17 +212,19 @@ pub async fn run_async(
 mod tests {
     use super::*;
 
-    use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
+    use crate::test_utils::{
+        PASSTHROUGH_TRANSFORM, setup_project_with_state, write_config, write_transform,
+    };
 
-    fn dummy_env(state_db_path: PathBuf) -> EnvConfig {
+    fn dummy_env(database_url: String, state_schema: String) -> EnvConfig {
         EnvConfig {
-            database_url: "host=invalid".to_string(),
+            database_url,
             turbopuffer_api_key: "fake".to_string(),
             turbopuffer_region: None,
             turbopuffer_namespace_prefix: None,
             otel_endpoint: None,
             otel_headers: None,
-            state_db_path,
+            state_schema,
             dlq_max_age_hours: None,
             inspect_port: None,
         }
@@ -235,18 +232,18 @@ mod tests {
 
     #[tokio::test]
     async fn no_configs_succeeds() {
-        let (_dir, paths, state_db_path) = setup_project().await;
-        run_async(&paths, &dummy_env(state_db_path), &ProjectConfig::default())
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
+        run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn errors_on_missing_transform() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         write_config(&paths, "user", "public", "users", "id", "uint");
 
-        let err = run_async(&paths, &dummy_env(state_db_path), &ProjectConfig::default())
+        let err = run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
             .await
             .unwrap_err();
         assert!(
@@ -257,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn any_error_prevents_all_applies() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
 
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -266,19 +263,19 @@ mod tests {
 
         run_async(
             &paths,
-            &dummy_env(state_db_path.clone()),
+            &dummy_env(url.clone(), schema.clone()),
             &ProjectConfig::default(),
         )
         .await
         .unwrap_err();
 
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         assert!(db.get_config("user").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn skips_already_applied_unchanged() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -288,10 +285,9 @@ mod tests {
         let (config_path, cfg) = &all[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-
             namespace: cfg.namespace.clone(),
             content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some(transform_hash),
@@ -303,7 +299,7 @@ mod tests {
         .unwrap();
 
         // Config is unchanged → skipped, no PG validation needed
-        run_async(&paths, &dummy_env(state_db_path), &ProjectConfig::default())
+        run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
             .await
             .unwrap();
         assert_eq!(db.list_configs().await.unwrap().len(), 1);
@@ -311,7 +307,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_auto_tombstones_configs_marked_on_disk() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -319,7 +315,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -338,13 +334,9 @@ mod tests {
         )
         .unwrap();
 
-        run_async(
-            &paths,
-            &dummy_env(state_db_path.clone()),
-            &ProjectConfig::default(),
-        )
-        .await
-        .unwrap();
+        run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
+            .await
+            .unwrap();
 
         let updated = db.get_config(&cfg.name).await.unwrap().unwrap();
         assert!(updated.tombstone_applied_at.is_some());
@@ -352,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn skips_multiple_already_applied() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
         let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
@@ -360,14 +352,13 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let all = loader.load_all().unwrap();
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         for (config_path, cfg) in &all {
             let transform_bytes =
                 fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
             let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
             db.insert_config(&ConfigRecord {
                 name: cfg.name.clone(),
-
                 namespace: cfg.namespace.clone(),
                 content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
                 transform_hash: Some(transform_hash),
@@ -379,7 +370,7 @@ mod tests {
             .unwrap();
         }
 
-        run_async(&paths, &dummy_env(state_db_path), &ProjectConfig::default())
+        run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
             .await
             .unwrap();
         assert_eq!(db.list_configs().await.unwrap().len(), 2);
@@ -387,16 +378,15 @@ mod tests {
 
     #[tokio::test]
     async fn errors_on_modified_config() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-
             namespace: cfg.namespace.clone(),
             content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some("abc".into()),
@@ -422,7 +412,7 @@ type = "uint"
         .to_string();
         fs::write(config_path, content).unwrap();
 
-        let err = run_async(&paths, &dummy_env(state_db_path), &ProjectConfig::default())
+        let err = run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
             .await
             .unwrap_err();
         assert!(
@@ -433,7 +423,7 @@ type = "uint"
 
     #[tokio::test]
     async fn errors_on_unreadable_transform_for_applied_config() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -441,10 +431,9 @@ type = "uint"
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-
             namespace: cfg.namespace.clone(),
             content_hash: Config::content_hash_from_bytes(&fs::read(config_path).unwrap()),
             transform_hash: Some(transform_hash),
@@ -458,7 +447,7 @@ type = "uint"
         // Delete the transform file so it can't be read
         fs::remove_file(config_path.parent().unwrap().join("transform.ts")).unwrap();
 
-        let err = run_async(&paths, &dummy_env(state_db_path), &ProjectConfig::default())
+        let err = run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
             .await
             .unwrap_err();
         assert!(
@@ -469,7 +458,7 @@ type = "uint"
 
     #[tokio::test]
     async fn stored_record_fields() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         let film_dir = write_config(&paths, "film", "public", "films", "id", "uint");
         write_transform(&film_dir, PASSTHROUGH_TRANSFORM);
 
@@ -477,10 +466,9 @@ type = "uint"
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let content_hash = Config::content_hash_from_bytes(&fs::read(config_path).unwrap());
 
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
-
             namespace: cfg.namespace.clone(),
             content_hash: content_hash.clone(),
             transform_hash: Some("t_hash".into()),

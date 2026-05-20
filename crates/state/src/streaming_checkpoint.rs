@@ -3,6 +3,7 @@ use diesel::prelude::*;
 
 use crate::epoch;
 use crate::models::{NewStreamingCheckpoint, StreamingCheckpointRow};
+use crate::pg_lsn::Lsn;
 use crate::schema::streaming_checkpoints;
 use crate::{StateDb, StateError};
 
@@ -20,10 +21,17 @@ impl StreamingCheckpoint {
             StateError::InvalidState(format!("invalid updated_at millis: {}", row.updated_at))
         })?;
 
+        let events_processed = u64::try_from(row.events_processed).map_err(|_| {
+            StateError::InvalidState(format!(
+                "negative events_processed: {}",
+                row.events_processed
+            ))
+        })?;
+
         Ok(Self {
             config_name: row.config_name.clone(),
-            lsn: u64::from_ne_bytes(row.lsn.to_ne_bytes()),
-            events_processed: u64::from_ne_bytes(row.events_processed.to_ne_bytes()),
+            lsn: row.lsn.into(),
+            events_processed,
             updated_at,
         })
     }
@@ -36,14 +44,23 @@ impl StateDb {
     ) -> Result<(), StateError> {
         let cp = checkpoint.clone();
         self.run_blocking(move |conn| {
+            let events_processed = i64::try_from(cp.events_processed).map_err(|_| {
+                StateError::InvalidState(format!(
+                    "events_processed {} exceeds i64::MAX",
+                    cp.events_processed
+                ))
+            })?;
             let new = NewStreamingCheckpoint {
                 config_name: &cp.config_name,
-                lsn: i64::from_ne_bytes(cp.lsn.to_ne_bytes()),
-                events_processed: i64::from_ne_bytes(cp.events_processed.to_ne_bytes()),
+                lsn: Lsn(cp.lsn),
+                events_processed,
                 updated_at: epoch::to_millis(&cp.updated_at),
             };
-            diesel::replace_into(streaming_checkpoints::table)
+            diesel::insert_into(streaming_checkpoints::table)
                 .values(&new)
+                .on_conflict(streaming_checkpoints::config_name)
+                .do_update()
+                .set(&new)
                 .execute(conn)?;
             Ok(())
         })
@@ -111,7 +128,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_and_retrieve_streaming_checkpoint() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let checkpoint = sample_streaming_checkpoint("film", 1000, 50);
@@ -125,7 +142,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_existing_streaming_checkpoint() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", 1000, 50))
@@ -145,7 +162,7 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_checkpoint_deleted_when_config_deleted() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", 1000, 50))
             .await
@@ -158,7 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_streaming_checkpoint_returns_true_when_exists() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", 1000, 50))
             .await
@@ -171,14 +188,14 @@ mod tests {
 
     #[tokio::test]
     async fn delete_streaming_checkpoint_returns_false_when_not_exists() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let deleted = db.delete_streaming_checkpoint("nonexistent").await.unwrap();
         assert!(!deleted);
     }
 
     #[tokio::test]
     async fn list_multiple_streaming_checkpoints() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         for n in ["alpha", "beta", "gamma"] {
             db.insert_config(&sample_config(n)).await.unwrap();
         }
@@ -205,7 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_nonexistent_streaming_checkpoint_returns_none() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         assert!(
             db.get_streaming_checkpoint("nonexistent")
                 .await
@@ -216,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn lsn_above_i32_max_roundtrips() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let big_lsn: u64 = (i32::MAX as u64) + 1_000;
@@ -232,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_checkpoint_requires_valid_config() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let checkpoint = sample_streaming_checkpoint("nonexistent_config", 1000, 50);
 
         let result = db.save_streaming_checkpoint(&checkpoint).await;
