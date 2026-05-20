@@ -37,7 +37,7 @@ pub(crate) async fn setup_pipeline(
     )>,
     CliError,
 > {
-    reconcile_on_disk_tombstones(paths, db)?;
+    reconcile_on_disk_tombstones(paths, db).await?;
 
     let loader = ConfigLoader::new(&paths.configs);
     let all_configs_with_bytes = loader.load_all_with_bytes()?;
@@ -45,7 +45,7 @@ pub(crate) async fn setup_pipeline(
     let mut applied_configs = Vec::new();
     let mut config_raw_bytes: HashMap<String, Vec<u8>> = HashMap::new();
     for (path, config, bytes) in all_configs_with_bytes {
-        let record = db.get_config(&config.name)?;
+        let record = db.get_config(&config.name).await?;
         if record.is_some_and(|r| r.tombstone_applied_at.is_none()) {
             config_raw_bytes.insert(config.name.clone(), bytes);
             applied_configs.push((path, config));
@@ -53,8 +53,8 @@ pub(crate) async fn setup_pipeline(
     }
 
     // Clear DLQ entries for tombstoned configs so they don't accumulate.
-    for config in db.list_tombstoned_configs()? {
-        let cleared = db.clear_dlq(Some(&config.name))?;
+    for config in db.list_tombstoned_configs().await? {
+        let cleared = db.clear_dlq(Some(&config.name)).await?;
         if cleared > 0 {
             tracing::info!(config = %config.name, cleared, "cleared DLQ entries for tombstoned config");
         }
@@ -68,12 +68,13 @@ pub(crate) async fn setup_pipeline(
     // Re-key: detect namespace prefix changes and reset state if needed
     let current_prefix = env_config.turbopuffer_namespace_prefix.clone();
     for (_, config) in &applied_configs {
-        let stored_prefix = db.get_namespace_prefix(&config.name)?;
+        let stored_prefix = db.get_namespace_prefix(&config.name).await?;
         match &stored_prefix {
             None => {
                 // First run or legacy config -- just store the current prefix
                 let prefix_to_store = current_prefix.as_deref().unwrap_or("");
-                db.set_namespace_prefix(&config.name, Some(prefix_to_store))?;
+                db.set_namespace_prefix(&config.name, Some(prefix_to_store))
+                    .await?;
             }
             Some(stored) => {
                 let effective_current = current_prefix.as_deref().unwrap_or("");
@@ -84,8 +85,8 @@ pub(crate) async fn setup_pipeline(
                         new_prefix = %effective_current,
                         "namespace prefix changed \u{2014} resetting state, backfill will re-run",
                     );
-                    db.delete_streaming_checkpoint(&config.name)?;
-                    db.clear_dlq(Some(&config.name))?;
+                    db.delete_streaming_checkpoint(&config.name).await?;
+                    db.clear_dlq(Some(&config.name)).await?;
                     db.save_backfill_progress(&BackfillProgress {
                         config_name: config.name.clone(),
                         last_id: None,
@@ -96,8 +97,10 @@ pub(crate) async fn setup_pipeline(
                         completed_at: None,
                         error_message: None,
                         watermark_lsn: None,
-                    })?;
-                    db.set_namespace_prefix(&config.name, Some(effective_current))?;
+                    })
+                    .await?;
+                    db.set_namespace_prefix(&config.name, Some(effective_current))
+                        .await?;
                 }
             }
         }
@@ -127,7 +130,7 @@ pub(crate) async fn setup_pipeline(
             ))
         })?;
 
-        if let Some(record) = db.get_config(&config.name)? {
+        if let Some(record) = db.get_config(&config.name).await? {
             let config_bytes = config_raw_bytes
                 .get(&config.name)
                 .expect("config_raw_bytes populated for every applied config");

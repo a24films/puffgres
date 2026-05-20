@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEST_TIMESTAMP: AtomicU64 = AtomicU64::new(1000000000000);
 
-pub fn setup_project() -> (tempfile::TempDir, ProjectPaths, PathBuf) {
+pub async fn setup_project() -> (tempfile::TempDir, ProjectPaths, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let paths = ProjectPaths::new(dir.path().to_path_buf()).unwrap();
 
@@ -14,7 +14,7 @@ pub fn setup_project() -> (tempfile::TempDir, ProjectPaths, PathBuf) {
     fs::create_dir_all(&paths.transforms).unwrap();
 
     let state_db_path = dir.path().join("state.db");
-    StateDb::open(&state_db_path).unwrap();
+    StateDb::open(&state_db_path).await.unwrap();
 
     (dir, paths, state_db_path)
 }

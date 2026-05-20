@@ -66,9 +66,9 @@ mod tests {
 
     use crate::test_utils::setup_project;
 
-    #[test]
-    fn creates_config_and_transform() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn creates_config_and_transform() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         run(&paths, "user").unwrap();
 
@@ -85,9 +85,9 @@ mod tests {
         assert!(config_dir.join("transform.ts").exists());
     }
 
-    #[test]
-    fn generated_config_is_valid_toml() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn generated_config_is_valid_toml() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         run(&paths, "film").unwrap();
 
@@ -108,9 +108,9 @@ mod tests {
         assert_eq!(config.id.id_type, config::IdType::Uint);
     }
 
-    #[test]
-    fn dir_name_contains_timestamp_and_name() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn dir_name_contains_timestamp_and_name() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         run(&paths, "user").unwrap();
 
@@ -136,9 +136,9 @@ mod tests {
         assert!(err.to_string().contains("puffgres init"));
     }
 
-    #[test]
-    fn transform_contains_name() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn transform_contains_name() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         run(&paths, "product").unwrap();
 
@@ -152,9 +152,9 @@ mod tests {
         assert!(content.contains("product"));
     }
 
-    #[test]
-    fn different_names_create_separate_dirs() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn different_names_create_separate_dirs() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         run(&paths, "user").unwrap();
         run(&paths, "film").unwrap();
@@ -167,9 +167,9 @@ mod tests {
         assert_eq!(entries.len(), 2);
     }
 
-    #[test]
-    fn rejects_duplicate_name() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn rejects_duplicate_name() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         run(&paths, "user").unwrap();
         let err = run(&paths, "user").unwrap_err();
@@ -185,9 +185,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
     }
 
-    #[test]
-    fn rejects_duplicate_namespace() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn rejects_duplicate_namespace() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         // Create a config with namespace "user" but name "other"
         let dir = paths.configs.join("1000_other");

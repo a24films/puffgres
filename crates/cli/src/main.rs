@@ -221,11 +221,11 @@ async fn run() -> (
                 };
 
             let result = match cli.command {
-                Command::Reset { force } => puffgres_cli::reset::run(&state_db_path, force),
+                Command::Reset { force } => puffgres_cli::reset::run(&state_db_path, force).await,
                 Command::Tombstone { ref name } => {
-                    puffgres_cli::tombstone::run(&paths, &state_db_path, name)
+                    puffgres_cli::tombstone::run(&paths, &state_db_path, name).await
                 }
-                Command::Inspect { port } => match state::StateDb::open(&state_db_path) {
+                Command::Inspect { port } => match state::StateDb::open(&state_db_path).await {
                     Ok(db) => puffgres_inspect::run(db, port)
                         .await
                         .map_err(|e| CliError::Run(e.to_string())),
@@ -323,7 +323,7 @@ async fn run() -> (
                         let _ = std::fs::create_dir_all(parent);
                     }
                 }
-                match state::StateDb::open(&env_config.state_db_path) {
+                match state::StateDb::open(&env_config.state_db_path).await {
                     Ok(db) => {
                         tokio::spawn(async move {
                             if let Err(e) = puffgres_inspect::run(db, port).await {

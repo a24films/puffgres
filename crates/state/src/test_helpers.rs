@@ -2,10 +2,10 @@ use chrono::Utc;
 
 use crate::{ConfigRecord, StateDb};
 
-pub fn setup_test_db() -> (tempfile::TempDir, StateDb) {
+pub async fn setup_test_db() -> (tempfile::TempDir, StateDb) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
-    let db = StateDb::open(&path).unwrap();
+    let db = StateDb::open(&path).await.unwrap();
     (dir, db)
 }
 

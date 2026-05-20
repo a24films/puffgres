@@ -30,7 +30,7 @@ pub(crate) async fn check_and_run_backfills(
     let mut watermark_lsns: Vec<u64> = Vec::new();
 
     for (_, config) in applied_configs {
-        match db.get_backfill_progress(&config.name)? {
+        match db.get_backfill_progress(&config.name).await? {
             Some(bp) if bp.status == BackfillStatus::Completed => {
                 if let Some(wlsn) = bp.watermark_lsn {
                     watermark_lsns.push(wlsn);
@@ -54,7 +54,8 @@ pub(crate) async fn check_and_run_backfills(
                     completed_at: None,
                     error_message: None,
                     watermark_lsn: bp.watermark_lsn,
-                })?;
+                })
+                .await?;
                 needs_backfill.push(config);
             }
             _ => needs_backfill.push(config),
@@ -128,7 +129,8 @@ pub(crate) async fn check_and_run_backfills(
                         completed_at: Some(Utc::now()),
                         error_message: None,
                         watermark_lsn: Some(watermark),
-                    })?;
+                    })
+                    .await?;
                     tracing::info!(
                         config = %config.name,
                         rows = result.processed_rows,

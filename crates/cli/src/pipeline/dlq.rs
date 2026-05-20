@@ -31,7 +31,7 @@ fn dlq_to_operation(op: &DlqOperation) -> Operation {
 
 /// Insert failed events into the DLQ with only the operation and doc_id
 /// (no full event payload).
-pub(crate) fn send_events_to_dlq(
+pub(crate) async fn send_events_to_dlq(
     db: &StateDb,
     config_name: &str,
     lsn: u64,
@@ -48,7 +48,7 @@ pub(crate) fn send_events_to_dlq(
         } else {
             DlqEntry::retryable(config_name, lsn, dlq_op, Some(doc_id_json), error)
         };
-        db.insert_dlq_entry(&entry)?;
+        db.insert_dlq_entry(&entry).await?;
     }
     Ok(())
 }
@@ -81,7 +81,9 @@ pub(crate) async fn replay_dlq(
     metrics: Option<&Metrics>,
     token: &CancellationToken,
 ) -> Result<ReplayResult, CliError> {
-    let entries = db.list_retryable_entries(project_config.dlq_replay_batch_size())?;
+    let entries = db
+        .list_retryable_entries(project_config.dlq_replay_batch_size())
+        .await?;
     if entries.is_empty() {
         return Ok(ReplayResult {
             fetched: 0,
@@ -112,21 +114,24 @@ pub(crate) async fn replay_dlq(
             Some(c) => c,
             None => {
                 tracing::warn!(dlq_id = entry.id, config = %entry.config_name, "config no longer exists, marking permanent");
-                db.mark_permanent(entry.id, "config no longer exists")?;
+                db.mark_permanent(entry.id, "config no longer exists")
+                    .await?;
                 continue;
             }
         };
         let transformer = match transformers.get(&entry.config_name) {
             Some(t) => t,
             None => {
-                db.mark_permanent(entry.id, "transformer no longer exists")?;
+                db.mark_permanent(entry.id, "transformer no longer exists")
+                    .await?;
                 continue;
             }
         };
         let namespace = match namespaces.get(&entry.config_name) {
             Some(ns) => ns,
             None => {
-                db.mark_permanent(entry.id, "namespace no longer exists")?;
+                db.mark_permanent(entry.id, "namespace no longer exists")
+                    .await?;
                 continue;
             }
         };
@@ -135,12 +140,13 @@ pub(crate) async fn replay_dlq(
             Some(json) => match serde_json::from_str::<DocumentId>(json) {
                 Ok(id) => id,
                 Err(e) => {
-                    db.mark_permanent(entry.id, &format!("doc_id deserialization failed: {e}"))?;
+                    db.mark_permanent(entry.id, &format!("doc_id deserialization failed: {e}"))
+                        .await?;
                     continue;
                 }
             },
             None => {
-                db.mark_permanent(entry.id, "missing doc_id")?;
+                db.mark_permanent(entry.id, "missing doc_id").await?;
                 continue;
             }
         };
@@ -148,7 +154,8 @@ pub(crate) async fn replay_dlq(
         let operation = match &entry.operation {
             Some(op) => op,
             None => {
-                db.mark_permanent(entry.id, "missing operation (legacy entry)")?;
+                db.mark_permanent(entry.id, "missing operation (legacy entry)")
+                    .await?;
                 continue;
             }
         };
@@ -176,7 +183,7 @@ pub(crate) async fn replay_dlq(
         match result {
             Ok(()) => {
                 // On success, remove from the DLQ.
-                db.delete_dlq_entry(entry.id)?;
+                db.delete_dlq_entry(entry.id).await?;
                 tracing::info!(dlq_id = entry.id, "DLQ entry replayed successfully");
                 succeeded += 1;
                 if let Some(m) = metrics {
@@ -186,9 +193,10 @@ pub(crate) async fn replay_dlq(
             Err(e) => {
                 if entry.retry_count + 1 >= project_config.dlq_max_retries() {
                     tracing::warn!(dlq_id = entry.id, error = %e, "DLQ max retries exhausted, marking permanent");
-                    db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))?;
+                    db.mark_permanent(entry.id, &format!("max retries exhausted: {e}"))
+                        .await?;
                 } else {
-                    db.increment_retry(entry.id)?;
+                    db.increment_retry(entry.id).await?;
                 }
                 if let Some(m) = metrics {
                     m.dlq_replay_failed.add(1, &[]);

@@ -17,11 +17,11 @@ pub async fn run_async(
         return Err(CliError::NotInitialized("state.db".to_string()));
     }
 
-    let db = StateDb::open(&env_config.state_db_path)?;
+    let db = StateDb::open(&env_config.state_db_path).await?;
 
-    let config_name = resolve_config_name(&db, name, last)?;
+    let config_name = resolve_config_name(&db, name, last).await?;
 
-    let config = db.get_config(&config_name)?;
+    let config = db.get_config(&config_name).await?;
 
     match config {
         Some(config) => {
@@ -176,7 +176,7 @@ async fn run_remove_saga(
     }
 
     // Step 3: Delete from state DB (the final commit)
-    let deleted = db.delete_config(config_name)?;
+    let deleted = db.delete_config(config_name).await?;
     if deleted {
         println!(
             "  Deleted config, checkpoints, backfill progress, and DLQ entries from state database"
@@ -219,7 +219,11 @@ fn cleanup_config_dir(loader: &ConfigLoader, config_name: &str) -> Result<(), Cl
     }
 }
 
-fn resolve_config_name(db: &StateDb, name: Option<&str>, last: bool) -> Result<String, CliError> {
+async fn resolve_config_name(
+    db: &StateDb,
+    name: Option<&str>,
+    last: bool,
+) -> Result<String, CliError> {
     if let Some(name) = name {
         return Ok(name.to_string());
     }
@@ -232,7 +236,8 @@ fn resolve_config_name(db: &StateDb, name: Option<&str>, last: bool) -> Result<S
     }
 
     let config = db
-        .get_last_applied_config()?
+        .get_last_applied_config()
+        .await?
         .ok_or_else(|| CliError::Remove("no configs found in state database".to_string()))?;
 
     print!(
@@ -274,36 +279,36 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolve_config_name_with_explicit_name() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
-        let name = resolve_config_name(&db, Some("film"), false).unwrap();
+    #[tokio::test]
+    async fn resolve_config_name_with_explicit_name() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
+        let name = resolve_config_name(&db, Some("film"), false).await.unwrap();
         assert_eq!(name, "film");
     }
 
-    #[test]
-    fn resolve_config_name_errors_without_name_or_last() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
-        let err = resolve_config_name(&db, None, false).unwrap_err();
+    #[tokio::test]
+    async fn resolve_config_name_errors_without_name_or_last() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
+        let err = resolve_config_name(&db, None, false).await.unwrap_err();
         assert!(err.to_string().contains("provide a config name"));
     }
 
-    #[test]
-    fn resolve_config_name_last_errors_on_empty_db() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
-        let err = resolve_config_name(&db, None, true).unwrap_err();
+    #[tokio::test]
+    async fn resolve_config_name_last_errors_on_empty_db() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
+        let err = resolve_config_name(&db, None, true).await.unwrap_err();
         assert!(err.to_string().contains("no configs found"));
     }
 
-    #[test]
-    fn delete_config_cascades_to_all_tables() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
+    #[tokio::test]
+    async fn delete_config_cascades_to_all_tables() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
 
-        db.insert_config(&sample_config("film")).unwrap();
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         // Insert DLQ entries
         db.insert_dlq_entry(&DlqEntry::retryable(
@@ -313,6 +318,7 @@ mod tests {
             None,
             "error",
         ))
+        .await
         .unwrap();
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
@@ -321,6 +327,7 @@ mod tests {
             None,
             "error",
         ))
+        .await
         .unwrap();
 
         // Insert backfill progress
@@ -335,6 +342,7 @@ mod tests {
             error_message: None,
             watermark_lsn: None,
         })
+        .await
         .unwrap();
 
         // Insert streaming checkpoint
@@ -344,31 +352,32 @@ mod tests {
             events_processed: 50,
             updated_at: Utc::now(),
         })
+        .await
         .unwrap();
 
         // Verify everything exists
-        assert_eq!(db.dlq_count(Some("film")).unwrap(), 2);
-        assert!(db.get_backfill_progress("film").unwrap().is_some());
-        assert!(db.get_streaming_checkpoint("film").unwrap().is_some());
+        assert_eq!(db.dlq_count(Some("film")).await.unwrap(), 2);
+        assert!(db.get_backfill_progress("film").await.unwrap().is_some());
+        assert!(db.get_streaming_checkpoint("film").await.unwrap().is_some());
 
         // Delete the config
-        let deleted = db.delete_config("film").unwrap();
+        let deleted = db.delete_config("film").await.unwrap();
         assert!(deleted);
 
         // Verify everything is cleaned up via FK cascades
-        assert!(db.get_config("film").unwrap().is_none());
-        assert_eq!(db.dlq_count(Some("film")).unwrap(), 0);
-        assert!(db.get_backfill_progress("film").unwrap().is_none());
-        assert!(db.get_streaming_checkpoint("film").unwrap().is_none());
+        assert!(db.get_config("film").await.unwrap().is_none());
+        assert_eq!(db.dlq_count(Some("film")).await.unwrap(), 0);
+        assert!(db.get_backfill_progress("film").await.unwrap().is_none());
+        assert!(db.get_streaming_checkpoint("film").await.unwrap().is_none());
     }
 
-    #[test]
-    fn delete_config_does_not_affect_other_configs() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
+    #[tokio::test]
+    async fn delete_config_does_not_affect_other_configs() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
 
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&DlqEntry::retryable(
             "film",
@@ -377,6 +386,7 @@ mod tests {
             None,
             "error",
         ))
+        .await
         .unwrap();
         db.insert_dlq_entry(&DlqEntry::retryable(
             "actor",
@@ -385,55 +395,56 @@ mod tests {
             None,
             "error",
         ))
+        .await
         .unwrap();
 
-        db.delete_config("film").unwrap();
+        db.delete_config("film").await.unwrap();
 
-        assert!(db.get_config("film").unwrap().is_none());
-        assert!(db.get_config("actor").unwrap().is_some());
-        assert_eq!(db.dlq_count(Some("film")).unwrap(), 0);
-        assert_eq!(db.dlq_count(Some("actor")).unwrap(), 1);
+        assert!(db.get_config("film").await.unwrap().is_none());
+        assert!(db.get_config("actor").await.unwrap().is_some());
+        assert_eq!(db.dlq_count(Some("film")).await.unwrap(), 0);
+        assert_eq!(db.dlq_count(Some("actor")).await.unwrap(), 1);
     }
 
-    #[test]
-    fn delete_nonexistent_config_returns_false() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
-        let deleted = db.delete_config("nonexistent").unwrap();
+    #[tokio::test]
+    async fn delete_nonexistent_config_returns_false() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
+        let deleted = db.delete_config("nonexistent").await.unwrap();
         assert!(!deleted);
     }
 
-    #[test]
-    fn get_last_applied_config_returns_most_recent() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
+    #[tokio::test]
+    async fn get_last_applied_config_returns_most_recent() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
 
         let mut config1 = sample_config("alpha");
         config1.applied_at = Utc::now() - chrono::Duration::hours(2);
-        db.insert_config(&config1).unwrap();
+        db.insert_config(&config1).await.unwrap();
 
         let mut config2 = sample_config("beta");
         config2.applied_at = Utc::now() - chrono::Duration::hours(1);
-        db.insert_config(&config2).unwrap();
+        db.insert_config(&config2).await.unwrap();
 
         let mut config3 = sample_config("gamma");
         config3.applied_at = Utc::now();
-        db.insert_config(&config3).unwrap();
+        db.insert_config(&config3).await.unwrap();
 
-        let last = db.get_last_applied_config().unwrap().unwrap();
+        let last = db.get_last_applied_config().await.unwrap().unwrap();
         assert_eq!(last.name, "gamma");
     }
 
-    #[test]
-    fn get_last_applied_config_returns_none_on_empty_db() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        let db = StateDb::open(&state_db_path).unwrap();
-        assert!(db.get_last_applied_config().unwrap().is_none());
+    #[tokio::test]
+    async fn get_last_applied_config_returns_none_on_empty_db() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        let db = StateDb::open(&state_db_path).await.unwrap();
+        assert!(db.get_last_applied_config().await.unwrap().is_none());
     }
 
-    #[test]
-    fn delete_config_removes_filesystem_directory() {
-        let (_dir, paths, _state_db_path) = setup_project();
+    #[tokio::test]
+    async fn delete_config_removes_filesystem_directory() {
+        let (_dir, paths, _state_db_path) = setup_project().await;
 
         let config_dir = write_config(&paths, "film", "public", "films", "id", "uint");
         write_transform(&config_dir, PASSTHROUGH_TRANSFORM);

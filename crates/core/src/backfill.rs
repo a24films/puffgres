@@ -142,7 +142,7 @@ pub async fn run_backfill(
     };
 
     // 4. Resume from checkpoint or start fresh
-    let (mut cursor, mut processed) = match checkpointer.load_progress(&config.config_name) {
+    let (mut cursor, mut processed) = match checkpointer.load_progress(&config.config_name).await {
         Ok(Some((last_id, count))) => (Some(last_id), count),
         Ok(None) => (None, 0),
         Err(e) => {
@@ -284,11 +284,10 @@ pub async fn run_backfill(
         {
             let mut cp_backoff = backoff_builder.build();
             loop {
-                match checkpointer.save_progress(
-                    &config.config_name,
-                    last_id,
-                    processed + batch_len,
-                ) {
+                match checkpointer
+                    .save_progress(&config.config_name, last_id, processed + batch_len)
+                    .await
+                {
                     Ok(()) => break,
                     Err(e) => match cp_backoff.next() {
                         Some(delay) => {

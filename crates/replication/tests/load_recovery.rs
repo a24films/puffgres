@@ -143,10 +143,10 @@ fn insert_event_with_id(txn_index: usize, event_index: usize) -> ReplicationEven
     }
 }
 
-fn setup_state_db() -> (tempfile::TempDir, StateDb) {
+async fn setup_state_db() -> (tempfile::TempDir, StateDb) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
-    let db = StateDb::open(&path).unwrap();
+    let db = StateDb::open(&path).await.unwrap();
     db.insert_config(&ConfigRecord {
         name: "test".to_string(),
         namespace: "test".to_string(),
@@ -156,17 +156,19 @@ fn setup_state_db() -> (tempfile::TempDir, StateDb) {
         tombstone_applied_at: None,
         namespace_prefix: None,
     })
+    .await
     .unwrap();
     (dir, db)
 }
 
-fn save_checkpoint(db: &StateDb, lsn: u64, events: u64) {
+async fn save_checkpoint(db: &StateDb, lsn: u64, events: u64) {
     db.save_streaming_checkpoint(&StreamingCheckpoint {
         config_name: "test".to_string(),
         lsn,
         events_processed: events,
         updated_at: Utc::now(),
     })
+    .await
     .unwrap();
 }
 
@@ -193,7 +195,7 @@ async fn crash_mid_stream_resume_from_checkpoint() {
     let events_per_txn = 100;
     let crash_after_txn = 50;
 
-    let (_dir, db) = setup_state_db();
+    let (_dir, db) = setup_state_db().await;
 
     // Phase 1: process first 50 transactions, checkpointing after each
     let transport = LazyTransport::new(events_per_txn, num_txns);
@@ -208,7 +210,7 @@ async fn crash_mid_stream_resume_from_checkpoint() {
             Some(BatchResult::Batch(b)) => {
                 phase1_ids.extend(collect_event_ids(&b));
                 total_events += b.events.len() as u64;
-                save_checkpoint(&db, b.ack_lsn, total_events);
+                save_checkpoint(&db, b.ack_lsn, total_events).await;
                 stream.ack();
                 txns_processed += 1;
             }
@@ -217,7 +219,7 @@ async fn crash_mid_stream_resume_from_checkpoint() {
         }
     }
 
-    let checkpoint = db.get_streaming_checkpoint("test").unwrap().unwrap();
+    let checkpoint = db.get_streaming_checkpoint("test").await.unwrap().unwrap();
     println!(
         "Phase 1: {txns_processed} txns, {} events, LSN={}",
         phase1_ids.len(),
@@ -241,7 +243,7 @@ async fn crash_mid_stream_resume_from_checkpoint() {
             Some(BatchResult::Batch(b)) => {
                 phase2_ids.extend(collect_event_ids(&b));
                 total_events += b.events.len() as u64;
-                save_checkpoint(&db, b.ack_lsn, total_events);
+                save_checkpoint(&db, b.ack_lsn, total_events).await;
                 stream.ack();
             }
             Some(_) => {}
@@ -334,7 +336,7 @@ async fn crash_during_sub_batched_transaction_replays_full_txn() {
 async fn rapid_crash_loop_every_transaction() {
     let num_txns = 20;
     let events_per_txn = 50;
-    let (_dir, db) = setup_state_db();
+    let (_dir, db) = setup_state_db().await;
 
     let mut all_ids: Vec<String> = Vec::new();
     let mut total_events = 0u64;
@@ -347,14 +349,14 @@ async fn rapid_crash_loop_every_transaction() {
             Some(BatchResult::Batch(b)) => {
                 all_ids.extend(collect_event_ids(&b));
                 total_events += b.events.len() as u64;
-                save_checkpoint(&db, b.ack_lsn, total_events);
+                save_checkpoint(&db, b.ack_lsn, total_events).await;
                 stream.ack();
             }
             _ => panic!("expected batch for txn {i}"),
         }
 
         // Verify checkpoint
-        let cp = db.get_streaming_checkpoint("test").unwrap().unwrap();
+        let cp = db.get_streaming_checkpoint("test").await.unwrap().unwrap();
         assert_eq!(cp.lsn, LazyTransport::lsn_for_txn(i));
 
         drop(stream); // "crash"

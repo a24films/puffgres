@@ -27,6 +27,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 test-utils = []
 
 [dev-dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 tokio-util.workspace = true
 pg = { workspace = true, features = ["test-utils"] }

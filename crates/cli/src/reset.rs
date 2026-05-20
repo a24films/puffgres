@@ -5,13 +5,13 @@ use state::StateDb;
 
 use crate::error::CliError;
 
-pub fn run(state_db_path: &Path, force: bool) -> Result<(), CliError> {
+pub async fn run(state_db_path: &Path, force: bool) -> Result<(), CliError> {
     if !state_db_path.exists() {
         return Err(CliError::NotInitialized("state.db".to_string()));
     }
-    let db = StateDb::open(state_db_path)?;
+    let db = StateDb::open(state_db_path).await?;
 
-    let configs = db.list_configs()?;
+    let configs = db.list_configs().await?;
 
     if !configs.is_empty() && !force {
         println!(
@@ -32,7 +32,7 @@ pub fn run(state_db_path: &Path, force: bool) -> Result<(), CliError> {
         }
     }
 
-    db.reset()?;
+    db.reset().await?;
     println!("Reset: cleared all state");
     Ok(())
 }
@@ -44,11 +44,11 @@ mod tests {
     use chrono::Utc;
     use state::ConfigRecord;
 
-    #[test]
-    fn reset_clears_configs() {
-        let (_dir, _paths, state_db_path) = setup_project();
+    #[tokio::test]
+    async fn reset_clears_configs() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
 
-        let db = StateDb::open(&state_db_path).unwrap();
+        let db = StateDb::open(&state_db_path).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: "user".to_string(),
 
@@ -59,28 +59,29 @@ mod tests {
             tombstone_applied_at: None,
             namespace_prefix: None,
         })
+        .await
         .unwrap();
-        assert_eq!(db.list_configs().unwrap().len(), 1);
+        assert_eq!(db.list_configs().await.unwrap().len(), 1);
         drop(db);
 
-        run(&state_db_path, true).unwrap();
+        run(&state_db_path, true).await.unwrap();
 
-        let db = StateDb::open(&state_db_path).unwrap();
-        assert_eq!(db.list_configs().unwrap().len(), 0);
+        let db = StateDb::open(&state_db_path).await.unwrap();
+        assert_eq!(db.list_configs().await.unwrap().len(), 0);
     }
 
-    #[test]
-    fn reset_on_empty_db() {
-        let (_dir, _paths, state_db_path) = setup_project();
-        run(&state_db_path, true).unwrap();
+    #[tokio::test]
+    async fn reset_on_empty_db() {
+        let (_dir, _paths, state_db_path) = setup_project().await;
+        run(&state_db_path, true).await.unwrap();
     }
 
-    #[test]
-    fn reset_rejects_uninitialized_project() {
+    #[tokio::test]
+    async fn reset_rejects_uninitialized_project() {
         let dir = tempfile::tempdir().unwrap();
         let missing_db = dir.path().join("nonexistent.db");
 
-        let err = run(&missing_db, true).unwrap_err();
+        let err = run(&missing_db, true).await.unwrap_err();
         assert!(
             err.to_string().contains("not found"),
             "expected NotInitialized error, got: {err}"

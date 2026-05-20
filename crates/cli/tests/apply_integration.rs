@@ -48,7 +48,7 @@ async fn setup_pg(
 
 #[tokio::test]
 async fn apply_and_idempotency() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = setup_pg(&["users", "films"], state_db_path.clone()).await;
 
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
@@ -63,27 +63,27 @@ async fn apply_and_idempotency() {
         .await
         .unwrap();
 
-    let db = StateDb::open(&state_db_path).unwrap();
-    assert_eq!(db.list_configs().unwrap().len(), 2);
+    let db = StateDb::open(&state_db_path).await.unwrap();
+    assert_eq!(db.list_configs().await.unwrap().len(), 2);
 
-    let user = db.get_config("user").unwrap().unwrap();
+    let user = db.get_config("user").await.unwrap().unwrap();
     assert_eq!(user.namespace, "user");
     assert!(user.transform_hash.is_some());
     assert_eq!(user.content_hash.len(), 64);
 
-    let film = db.get_config("film").unwrap().unwrap();
+    let film = db.get_config("film").await.unwrap().unwrap();
     assert_eq!(film.namespace, "film");
 
     // Second apply: idempotent, no errors, same count
     run_async(&paths, &env_config, &puffgres_cli::ProjectConfig::default())
         .await
         .unwrap();
-    assert_eq!(db.list_configs().unwrap().len(), 2);
+    assert_eq!(db.list_configs().await.unwrap().len(), 2);
 }
 
 #[tokio::test]
 async fn rejects_modified_config() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = setup_pg(&["users", "accounts"], state_db_path).await;
 
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
@@ -122,7 +122,7 @@ type = "uint"
 
 #[tokio::test]
 async fn rejects_nonexistent_table() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
     let ghost_dir = write_config(&paths, "ghost", "public", "nonexistent_table", "id", "uint");
@@ -140,7 +140,7 @@ async fn rejects_nonexistent_table() {
 
 #[tokio::test]
 async fn rejects_nonexistent_id_column() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
@@ -169,7 +169,7 @@ async fn rejects_nonexistent_id_column() {
 
 #[tokio::test]
 async fn rejects_incompatible_id_type() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
@@ -198,7 +198,7 @@ async fn rejects_incompatible_id_type() {
 
 #[tokio::test]
 async fn rejects_vector_without_distance_metric() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
@@ -231,7 +231,7 @@ async fn rejects_vector_without_distance_metric() {
 
 #[tokio::test]
 async fn accepts_vector_with_distance_metric() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
@@ -259,7 +259,7 @@ async fn accepts_vector_with_distance_metric() {
 
 #[tokio::test]
 async fn accepts_empty_table_skips_dry_run() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = start_postgres_env(state_db_path).await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)

@@ -42,14 +42,14 @@ async fn get_state(
     let db = &state.db;
     let err = |e: state::StateError| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
 
-    let configs = db.list_configs().map_err(err)?;
-    let checkpoints = db.list_streaming_checkpoints().map_err(err)?;
-    let (dlq_retryable, dlq_permanent) = db.dlq_count_by_kind(None).map_err(err)?;
-    let dlq_entries = db.list_dlq_entries(None, 50).map_err(err)?;
+    let configs = db.list_configs().await.map_err(err)?;
+    let checkpoints = db.list_streaming_checkpoints().await.map_err(err)?;
+    let (dlq_retryable, dlq_permanent) = db.dlq_count_by_kind(None).await.map_err(err)?;
+    let dlq_entries = db.list_dlq_entries(None, 50).await.map_err(err)?;
 
     let mut backfills = Vec::new();
     for config in &configs {
-        if let Some(p) = db.get_backfill_progress(&config.name).map_err(err)? {
+        if let Some(p) = db.get_backfill_progress(&config.name).await.map_err(err)? {
             backfills.push(serde_json::json!({
                 "config_name": p.config_name,
                 "status": p.status.to_string(),
