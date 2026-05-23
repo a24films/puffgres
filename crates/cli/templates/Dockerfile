@@ -31,9 +31,9 @@ COPY --from=builder /usr/local/cargo/bin/puffgres /usr/local/bin/puffgres
 
 WORKDIR /app
 
-COPY package.json .
+COPY apps/puffgres/package.json .
 RUN pnpm install
 
-COPY . .
+COPY apps/puffgres/ .
 
-CMD ["sh", "-c", "puffgres init && puffgres setup && puffgres apply && puffgres run"]
+CMD ["sh", "-c", "puffgres init && puffgres check && puffgres apply && puffgres run"]
