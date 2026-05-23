@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use config::ConfigLoader;
-use state::StateDb;
+use state::Store;
 
 use crate::env::EnvConfig;
 use crate::error::CliError;
@@ -13,7 +13,7 @@ pub async fn run_async(
     name: Option<&str>,
     last: bool,
 ) -> Result<(), CliError> {
-    let db = StateDb::connect(&env_config.database_url, &env_config.state_schema).await?;
+    let db = Store::connect(&env_config.database_url, &env_config.state_schema).await?;
 
     let config_name = resolve_config_name(&db, name, last).await?;
 
@@ -77,7 +77,7 @@ pub async fn run_async(
 /// If the process crashes at any point, re-running `puffgres remove --name X`
 /// picks up where it left off because each step is idempotent.
 async fn run_remove_saga(
-    db: &StateDb,
+    db: &Store,
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     config_name: &str,
@@ -216,7 +216,7 @@ fn cleanup_config_dir(loader: &ConfigLoader, config_name: &str) -> Result<(), Cl
 }
 
 async fn resolve_config_name(
-    db: &StateDb,
+    db: &Store,
     name: Option<&str>,
     last: bool,
 ) -> Result<String, CliError> {
@@ -281,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_config_name_with_explicit_name() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         let name = resolve_config_name(&db, Some("film"), false).await.unwrap();
         assert_eq!(name, "film");
     }
@@ -289,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_config_name_errors_without_name_or_last() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         let err = resolve_config_name(&db, None, false).await.unwrap_err();
         assert!(err.to_string().contains("provide a config name"));
     }
@@ -297,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_config_name_last_errors_on_empty_db() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         let err = resolve_config_name(&db, None, true).await.unwrap_err();
         assert!(err.to_string().contains("no configs found"));
     }
@@ -305,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn delete_config_cascades_to_all_tables() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
 
         db.insert_config(&sample_config("film")).await.unwrap();
 
@@ -373,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn delete_config_does_not_affect_other_configs() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
 
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
@@ -408,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn delete_nonexistent_config_returns_false() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         let deleted = db.delete_config("nonexistent").await.unwrap();
         assert!(!deleted);
     }
@@ -416,7 +416,7 @@ mod tests {
     #[tokio::test]
     async fn get_last_applied_config_returns_most_recent() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
 
         let mut config1 = sample_config("alpha");
         config1.applied_at = Utc::now() - chrono::Duration::hours(2);
@@ -437,7 +437,7 @@ mod tests {
     #[tokio::test]
     async fn get_last_applied_config_returns_none_on_empty_db() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         assert!(db.get_last_applied_config().await.unwrap().is_none());
     }
 

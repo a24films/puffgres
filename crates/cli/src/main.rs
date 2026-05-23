@@ -231,7 +231,7 @@ async fn run() -> (
                     puffgres_cli::tombstone::run(&paths, &database_url, &state_schema, name).await
                 }
                 Command::Inspect { port } => {
-                    match state::StateDb::connect(&database_url, &state_schema).await {
+                    match state::Store::connect(&database_url, &state_schema).await {
                         Ok(db) => puffgres_inspect::run(db, port)
                             .await
                             .map_err(|e| CliError::Run(e.to_string())),
@@ -324,7 +324,7 @@ async fn run() -> (
         }
         Command::Run => {
             if let Some(port) = env_config.inspect_port {
-                match state::StateDb::connect(&env_config.database_url, &env_config.state_schema)
+                match state::Store::connect(&env_config.database_url, &env_config.state_schema)
                     .await
                 {
                     Ok(db) => {

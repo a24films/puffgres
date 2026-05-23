@@ -184,7 +184,7 @@ async fn run_cdc_inner(
     metrics: Option<&Metrics>,
     token: CancellationToken,
 ) -> Result<(), CliError> {
-    let db = state::StateDb::connect(&env_config.database_url, &env_config.state_schema).await?;
+    let db = state::Store::connect(&env_config.database_url, &env_config.state_schema).await?;
 
     let Some((applied_configs, router, _tables, namespaces, transformers, pg_client)) =
         setup::setup_pipeline(paths, env_config, project_config, &db).await?
@@ -447,7 +447,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::connect(&url, &schema).await.unwrap();
+        let db = state::Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -496,7 +496,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::connect(&url, &schema).await.unwrap();
+        let db = state::Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -536,7 +536,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::connect(&url, &schema).await.unwrap();
+        let db = state::Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -576,7 +576,7 @@ mod tests {
 
         let loader = ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let db = state::StateDb::connect(&url, &schema).await.unwrap();
+        let db = state::Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),

@@ -10,7 +10,7 @@ use chrono::Utc;
 use pgwire_replication::{Lsn, ReplicationEvent};
 use replication::stream::{BatchResult, ReplicationStream};
 use replication::{ReplicationTransport, Result};
-use state::{ConfigRecord, StateDb, StreamingCheckpoint};
+use state::{ConfigRecord, Store, StreamingCheckpoint};
 
 struct LazyTransport {
     events_per_txn: usize,
@@ -175,11 +175,11 @@ async fn shared_pg() -> &'static LoadRecoveryPg {
         .await
 }
 
-async fn setup_state_db() -> ((), StateDb) {
+async fn setup_store() -> ((), Store) {
     let pg = shared_pg().await;
     let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
     let schema = format!("load_recovery_{n}");
-    let db = StateDb::connect(&pg.database_url, &schema).await.unwrap();
+    let db = Store::connect(&pg.database_url, &schema).await.unwrap();
     db.insert_config(&ConfigRecord {
         name: "test".to_string(),
         namespace: "test".to_string(),
@@ -194,7 +194,7 @@ async fn setup_state_db() -> ((), StateDb) {
     ((), db)
 }
 
-async fn save_checkpoint(db: &StateDb, lsn: u64, events: u64) {
+async fn save_checkpoint(db: &Store, lsn: u64, events: u64) {
     db.save_streaming_checkpoint(&StreamingCheckpoint {
         config_name: "test".to_string(),
         lsn,
@@ -228,7 +228,7 @@ async fn crash_mid_stream_resume_from_checkpoint() {
     let events_per_txn = 100;
     let crash_after_txn = 50;
 
-    let (_dir, db) = setup_state_db().await;
+    let (_dir, db) = setup_store().await;
 
     // Phase 1: process first 50 transactions, checkpointing after each
     let transport = LazyTransport::new(events_per_txn, num_txns);
@@ -369,7 +369,7 @@ async fn crash_during_sub_batched_transaction_replays_full_txn() {
 async fn rapid_crash_loop_every_transaction() {
     let num_txns = 20;
     let events_per_txn = 50;
-    let (_dir, db) = setup_state_db().await;
+    let (_dir, db) = setup_store().await;
 
     let mut all_ids: Vec<String> = Vec::new();
     let mut total_events = 0u64;

@@ -5,7 +5,7 @@ use crate::epoch;
 use crate::models::{NewStreamingCheckpoint, StreamingCheckpointRow};
 use crate::pg_lsn::Lsn;
 use crate::schema::streaming_checkpoints;
-use crate::{StateDb, StateError};
+use crate::{StateError, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamingCheckpoint {
@@ -37,7 +37,7 @@ impl StreamingCheckpoint {
     }
 }
 
-impl StateDb {
+impl Store {
     pub async fn save_streaming_checkpoint(
         &self,
         checkpoint: &StreamingCheckpoint,

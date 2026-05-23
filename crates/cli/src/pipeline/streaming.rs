@@ -5,7 +5,7 @@ use chrono::Utc;
 use puff::TurbopufferClient;
 use puffgres_core::{DocumentId, Router, Transformer};
 use replication::{RelationCache, ReplicationStream, ReplicationStreamConfig, RowEvent};
-use state::{StateDb, StreamingCheckpoint};
+use state::{Store, StreamingCheckpoint};
 use tokio_util::sync::CancellationToken;
 
 use super::dlq::send_events_to_dlq;
@@ -36,7 +36,7 @@ async fn process_events(
     transformers: &HashMap<String, Box<dyn Transformer>>,
     namespaces: &HashMap<String, String>,
     puff_client: &TurbopufferClient,
-    db: &StateDb,
+    db: &Store,
     metrics: Option<&Metrics>,
     events_processed: &mut HashMap<String, u64>,
     dlq_lsn: u64,
@@ -82,7 +82,7 @@ async fn process_config_events(
     namespace: &str,
     transformer: &dyn Transformer,
     puff_client: &TurbopufferClient,
-    db: &StateDb,
+    db: &Store,
     metrics: Option<&Metrics>,
     events_processed: &mut HashMap<String, u64>,
     dlq_lsn: u64,
@@ -147,7 +147,7 @@ pub(crate) async fn run_streaming_loop(
     namespaces: &HashMap<String, String>,
     transformers: &HashMap<String, Box<dyn Transformer>>,
     puff_client: &TurbopufferClient,
-    db: &StateDb,
+    db: &Store,
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
     token: CancellationToken,

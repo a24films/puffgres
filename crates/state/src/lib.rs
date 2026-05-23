@@ -37,7 +37,7 @@ struct Inner {
 /// The public API is async; internally each call defers to `spawn_blocking`
 /// because Diesel's Postgres backend is synchronous.
 #[derive(Clone)]
-pub struct StateDb {
+pub struct Store {
     inner: Arc<Inner>,
 }
 
@@ -69,7 +69,7 @@ fn validate_schema_name(name: &str) -> Result<(), StateError> {
     Ok(())
 }
 
-impl StateDb {
+impl Store {
     pub async fn connect(database_url: &str, schema: &str) -> Result<Self, StateError> {
         validate_schema_name(schema)?;
         let database_url = database_url.to_string();

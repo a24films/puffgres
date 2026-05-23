@@ -5,7 +5,7 @@ use puffgres_cli::test_utils::{
     PASSTHROUGH_TRANSFORM, VECTOR_NO_METRIC_TRANSFORM, VECTOR_WITH_METRIC_TRANSFORM, setup_project,
     stub_schema, write_config, write_transform,
 };
-use state::StateDb;
+use state::Store;
 
 async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
     let ctx = setup_postgres().await;
@@ -58,7 +58,7 @@ async fn apply_and_idempotency() {
         .await
         .unwrap();
 
-    let db = StateDb::connect(&env_config.database_url, &env_config.state_schema)
+    let db = Store::connect(&env_config.database_url, &env_config.state_schema)
         .await
         .unwrap();
     assert_eq!(db.list_configs().await.unwrap().len(), 2);

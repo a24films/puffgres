@@ -4,7 +4,7 @@ use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
-use crate::{ConfigRecord, StateDb};
+use crate::{ConfigRecord, Store};
 
 struct SharedContainer {
     _container: ContainerAsync<Postgres>,
@@ -33,14 +33,14 @@ async fn shared_container() -> &'static SharedContainer {
         .await
 }
 
-/// Open a fresh `StateDb` against a unique schema in the shared test container.
-pub async fn setup_test_db() -> StateDb {
+/// Open a fresh `Store` against a unique schema in the shared test container.
+pub async fn setup_test_db() -> Store {
     let container = shared_container().await;
     let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
     let schema = format!("test_{n}");
-    StateDb::connect(&container.database_url, &schema)
+    Store::connect(&container.database_url, &schema)
         .await
-        .expect("connect StateDb")
+        .expect("connect Store")
 }
 
 pub fn sample_config(name: &str) -> ConfigRecord {
