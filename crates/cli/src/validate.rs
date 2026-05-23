@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use config::{Config, IdType};
@@ -20,7 +20,7 @@ use state::StateDb;
 /// Returns `Ok(())` if all configs pass, or `Err(message)` on failure.
 pub async fn preflight_check(
     database_url: &str,
-    state_db_path: &Path,
+    state_schema: &str,
     configs: &[(PathBuf, Config)],
     pg_client: Option<&Client>,
     transform_timeout: Duration,
@@ -92,7 +92,7 @@ pub async fn preflight_check(
     }
 
     // Check against state DB for namespace conflicts
-    let db = StateDb::open(state_db_path)
+    let db = StateDb::connect(database_url, state_schema)
         .await
         .map_err(|e| format!("failed to open state database: {e}"))?;
     let applied = db

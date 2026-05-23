@@ -13,11 +13,7 @@ pub async fn run_async(
     name: Option<&str>,
     last: bool,
 ) -> Result<(), CliError> {
-    if !env_config.state_db_path.exists() {
-        return Err(CliError::NotInitialized("state.db".to_string()));
-    }
-
-    let db = StateDb::open(&env_config.state_db_path).await?;
+    let db = StateDb::connect(&env_config.database_url, &env_config.state_schema).await?;
 
     let config_name = resolve_config_name(&db, name, last).await?;
 
@@ -261,7 +257,10 @@ async fn resolve_config_name(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
+    use crate::test_utils::{
+        PASSTHROUGH_TRANSFORM, setup_project, setup_project_with_state, write_config,
+        write_transform,
+    };
     use chrono::Utc;
     use state::{
         BackfillProgress, BackfillStatus, ConfigRecord, DlqEntry, DlqOperation, StreamingCheckpoint,
@@ -281,32 +280,32 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_config_name_with_explicit_name() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         let name = resolve_config_name(&db, Some("film"), false).await.unwrap();
         assert_eq!(name, "film");
     }
 
     #[tokio::test]
     async fn resolve_config_name_errors_without_name_or_last() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         let err = resolve_config_name(&db, None, false).await.unwrap_err();
         assert!(err.to_string().contains("provide a config name"));
     }
 
     #[tokio::test]
     async fn resolve_config_name_last_errors_on_empty_db() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         let err = resolve_config_name(&db, None, true).await.unwrap_err();
         assert!(err.to_string().contains("no configs found"));
     }
 
     #[tokio::test]
     async fn delete_config_cascades_to_all_tables() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
 
         db.insert_config(&sample_config("film")).await.unwrap();
 
@@ -373,8 +372,8 @@ mod tests {
 
     #[tokio::test]
     async fn delete_config_does_not_affect_other_configs() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
 
         db.insert_config(&sample_config("film")).await.unwrap();
         db.insert_config(&sample_config("actor")).await.unwrap();
@@ -408,16 +407,16 @@ mod tests {
 
     #[tokio::test]
     async fn delete_nonexistent_config_returns_false() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         let deleted = db.delete_config("nonexistent").await.unwrap();
         assert!(!deleted);
     }
 
     #[tokio::test]
     async fn get_last_applied_config_returns_most_recent() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
 
         let mut config1 = sample_config("alpha");
         config1.applied_at = Utc::now() - chrono::Duration::hours(2);
@@ -437,14 +436,14 @@ mod tests {
 
     #[tokio::test]
     async fn get_last_applied_config_returns_none_on_empty_db() {
-        let (_dir, _paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         assert!(db.get_last_applied_config().await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn delete_config_removes_filesystem_directory() {
-        let (_dir, paths, _state_db_path) = setup_project().await;
+        let (_dir, paths) = setup_project();
 
         let config_dir = write_config(&paths, "film", "public", "films", "id", "uint");
         write_transform(&config_dir, PASSTHROUGH_TRANSFORM);

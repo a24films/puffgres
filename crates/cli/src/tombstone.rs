@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 
 use chrono::Utc;
 use config::ConfigLoader;
@@ -8,11 +7,13 @@ use state::StateDb;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
 
-pub async fn run(paths: &ProjectPaths, state_db_path: &Path, name: &str) -> Result<(), CliError> {
-    if !state_db_path.exists() {
-        return Err(CliError::NotInitialized("state.db".to_string()));
-    }
-    let db = StateDb::open(state_db_path).await?;
+pub async fn run(
+    paths: &ProjectPaths,
+    database_url: &str,
+    state_schema: &str,
+    name: &str,
+) -> Result<(), CliError> {
+    let db = StateDb::connect(database_url, state_schema).await?;
 
     let config = db.get_config(name).await?.ok_or_else(|| {
         CliError::Tombstone(format!("config '{name}' not found in state database"))
@@ -54,7 +55,9 @@ mod tests {
     use chrono::Utc;
     use state::ConfigRecord;
 
-    use crate::test_utils::{PASSTHROUGH_TRANSFORM, setup_project, write_config, write_transform};
+    use crate::test_utils::{
+        PASSTHROUGH_TRANSFORM, setup_project_with_state, write_config, write_transform,
+    };
 
     fn sample_config(name: &str) -> ConfigRecord {
         ConfigRecord {
@@ -70,11 +73,11 @@ mod tests {
 
     #[tokio::test]
     async fn tombstone_sets_timestamp() {
-        let (_dir, paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&sample_config("film")).await.unwrap();
 
-        run(&paths, &state_db_path, "film").await.unwrap();
+        run(&paths, &url, &schema, "film").await.unwrap();
 
         let config = db.get_config("film").await.unwrap().unwrap();
         assert!(config.tombstone_applied_at.is_some());
@@ -82,34 +85,32 @@ mod tests {
 
     #[tokio::test]
     async fn tombstone_nonexistent_errors() {
-        let (_dir, paths, state_db_path) = setup_project().await;
-        let err = run(&paths, &state_db_path, "nonexistent")
-            .await
-            .unwrap_err();
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
+        let err = run(&paths, &url, &schema, "nonexistent").await.unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 
     #[tokio::test]
     async fn tombstone_already_tombstoned_is_idempotent() {
-        let (_dir, paths, state_db_path) = setup_project().await;
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&sample_config("film")).await.unwrap();
 
-        run(&paths, &state_db_path, "film").await.unwrap();
+        run(&paths, &url, &schema, "film").await.unwrap();
         // Second call should succeed (skip with message)
-        run(&paths, &state_db_path, "film").await.unwrap();
+        run(&paths, &url, &schema, "film").await.unwrap();
     }
 
     #[tokio::test]
     async fn tombstone_writes_marker_file() {
-        let (_dir, paths, state_db_path) = setup_project().await;
+        let (_dir, paths, url, schema) = setup_project_with_state().await;
         let config_dir = write_config(&paths, "film", "public", "films", "id", "uint");
         write_transform(&config_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
 
-        let db = StateDb::open(&state_db_path).await.unwrap();
+        let db = StateDb::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -124,7 +125,7 @@ mod tests {
         .await
         .unwrap();
 
-        run(&paths, &state_db_path, "film").await.unwrap();
+        run(&paths, &url, &schema, "film").await.unwrap();
 
         let tombstone_path = config_dir.join("tombstone.toml");
         assert!(tombstone_path.exists());

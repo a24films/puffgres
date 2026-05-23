@@ -1,6 +1,9 @@
-// @generated automatically by Diesel CLI.
+// Hand-maintained — references the custom pg_lsn SQL type, so diesel print-schema cannot regenerate this file.
 
 diesel::table! {
+    use diesel::sql_types::*;
+    use crate::pg_lsn::PgLsn;
+
     backfill_progress (config_name) {
         config_name -> Text,
         last_id -> Nullable<Text>,
@@ -10,7 +13,7 @@ diesel::table! {
         started_at -> Nullable<BigInt>,
         completed_at -> Nullable<BigInt>,
         error_message -> Nullable<Text>,
-        watermark_lsn -> Nullable<BigInt>,
+        watermark_lsn -> Nullable<PgLsn>,
     }
 }
 
@@ -27,33 +30,31 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+    use crate::pg_lsn::PgLsn;
+
     dlq (id) {
         id -> BigInt,
         config_name -> Text,
-        lsn -> BigInt,
+        lsn -> PgLsn,
         doc_id -> Nullable<Text>,
+        operation -> Nullable<Text>,
         error_message -> Text,
         error_kind -> Text,
         retry_count -> Integer,
         created_at -> BigInt,
         last_retry_at -> Nullable<BigInt>,
         permanent_at -> Nullable<BigInt>,
-        operation -> Nullable<Text>,
     }
 }
 
 diesel::table! {
-    runtime_state (key) {
-        key -> Text,
-        value -> Text,
-        updated_at -> BigInt,
-    }
-}
+    use diesel::sql_types::*;
+    use crate::pg_lsn::PgLsn;
 
-diesel::table! {
     streaming_checkpoints (config_name) {
         config_name -> Text,
-        lsn -> BigInt,
+        lsn -> PgLsn,
         events_processed -> BigInt,
         updated_at -> BigInt,
     }
@@ -67,6 +68,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     backfill_progress,
     configs,
     dlq,
-    runtime_state,
     streaming_checkpoints,
 );

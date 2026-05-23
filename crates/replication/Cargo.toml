@@ -21,14 +21,15 @@ test-utils = []
 replication = { path = ".", features = ["test-utils"] }
 pg = { workspace = true, features = ["test-utils"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tokio-postgres.workspace = true
 proptest.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
 sysinfo = "0.35"
 state.workspace = true
 chrono.workspace = true
-tempfile.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
 
 [[bench]]
 name = "decoder_bench"

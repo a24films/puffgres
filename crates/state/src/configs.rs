@@ -239,7 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_and_retrieve_config() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let config = sample_config("film");
 
         db.insert_config(&config).await.unwrap();
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_multiple_configs() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
 
         db.insert_config(&sample_config("alpha")).await.unwrap();
         db.insert_config(&sample_config("beta")).await.unwrap();
@@ -269,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_name_fails() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let dup = sample_config("film");
@@ -279,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_namespace_fails() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut dup = sample_config("movie");
@@ -291,13 +291,13 @@ mod tests {
 
     #[tokio::test]
     async fn get_nonexistent_returns_none() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         assert!(db.get_config("nonexistent").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn config_with_transform_hash() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let mut config = sample_config("film");
         config.transform_hash = Some("transform_abc".to_string());
 
@@ -309,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn tombstone_config_sets_timestamp() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
 
         db.tombstone_config("film").await.unwrap();
@@ -320,21 +320,21 @@ mod tests {
 
     #[tokio::test]
     async fn tombstone_nonexistent_errors() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let result = db.tombstone_config("nonexistent").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn is_tombstoned_returns_false_for_active() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         assert!(!db.is_tombstoned("film").await.unwrap());
     }
 
     #[tokio::test]
     async fn is_tombstoned_returns_true_after_tombstone() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         db.tombstone_config("film").await.unwrap();
         assert!(db.is_tombstoned("film").await.unwrap());
@@ -342,7 +342,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_active_excludes_tombstoned() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("alpha")).await.unwrap();
         db.insert_config(&sample_config("beta")).await.unwrap();
         db.insert_config(&sample_config("gamma")).await.unwrap();
@@ -357,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_tombstoned_returns_only_tombstoned() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("alpha")).await.unwrap();
         db.insert_config(&sample_config("beta")).await.unwrap();
 
@@ -370,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_config_removes_row() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("film")).await.unwrap();
         assert!(db.get_config("film").await.unwrap().is_some());
 
@@ -381,14 +381,14 @@ mod tests {
 
     #[tokio::test]
     async fn delete_config_nonexistent_returns_false() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let deleted = db.delete_config("nonexistent").await.unwrap();
         assert!(!deleted);
     }
 
     #[tokio::test]
     async fn delete_config_does_not_affect_others() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("alpha")).await.unwrap();
         db.insert_config(&sample_config("beta")).await.unwrap();
 
@@ -400,7 +400,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_last_applied_config_returns_most_recent() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
 
         let mut c1 = sample_config("alpha");
         c1.applied_at = chrono::Utc::now() - chrono::Duration::hours(2);
@@ -420,13 +420,13 @@ mod tests {
 
     #[tokio::test]
     async fn get_last_applied_config_empty_returns_none() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         assert!(db.get_last_applied_config().await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn get_last_applied_config_single() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("only")).await.unwrap();
 
         let last = db.get_last_applied_config().await.unwrap().unwrap();
@@ -435,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_configs_batch_is_atomic() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let configs = vec![
             sample_config("alpha"),
             sample_config("beta"),
@@ -447,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_configs_rolls_back_on_duplicate() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         db.insert_config(&sample_config("alpha")).await.unwrap();
 
         // Second batch includes "alpha" again — should fail and roll back "beta"
@@ -460,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn timestamp_roundtrips_correctly() {
-        let (_dir, db) = setup_test_db().await;
+        let db = setup_test_db().await;
         let config = sample_config("film");
         let original_ts = config.applied_at;
         db.insert_config(&config).await.unwrap();

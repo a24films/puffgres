@@ -54,7 +54,7 @@ enum Command {
     },
     /// Generate typed schema.ts files for each config
     Generate,
-    /// Inspect the SQLite state database
+    /// Inspect the Postgres state schema
     Inspect {
         /// Port to serve on
         #[arg(long, default_value = "4444")]
@@ -204,7 +204,7 @@ async fn run() -> (
         return (result.map_err(|e| CliError::Debug(e.to_string())), None);
     }
 
-    // Tier 4: ProjectPaths + state_db_path (no full ProjectConfig validation needed).
+    // Tier 4: ProjectPaths + database_url + state_schema (no full ProjectConfig validation needed).
     // These recovery/status commands only read environment_files from puffgres.toml
     // so they still work when runtime config fields (e.g. batch_size) are invalid.
     match cli.command {
@@ -214,23 +214,30 @@ async fn run() -> (
                 Err(e) => return (Err(e), None),
             };
             let env_paths = project_config.resolve_env_paths(&paths.root);
-            let state_db_path =
-                match puffgres_cli::env::resolve_state_db_path(&env_paths, &paths.root) {
-                    Ok(p) => p,
-                    Err(e) => return (Err(e), None),
-                };
+            let database_url = match puffgres_cli::env::resolve_database_url(&env_paths) {
+                Ok(u) => u,
+                Err(e) => return (Err(e), None),
+            };
+            let state_schema = match puffgres_cli::env::resolve_state_schema(&env_paths) {
+                Ok(s) => s,
+                Err(e) => return (Err(e), None),
+            };
 
             let result = match cli.command {
-                Command::Reset { force } => puffgres_cli::reset::run(&state_db_path, force).await,
-                Command::Tombstone { ref name } => {
-                    puffgres_cli::tombstone::run(&paths, &state_db_path, name).await
+                Command::Reset { force } => {
+                    puffgres_cli::reset::run(&database_url, &state_schema, force).await
                 }
-                Command::Inspect { port } => match state::StateDb::open(&state_db_path).await {
-                    Ok(db) => puffgres_inspect::run(db, port)
-                        .await
-                        .map_err(|e| CliError::Run(e.to_string())),
-                    Err(e) => Err(CliError::Run(e.to_string())),
-                },
+                Command::Tombstone { ref name } => {
+                    puffgres_cli::tombstone::run(&paths, &database_url, &state_schema, name).await
+                }
+                Command::Inspect { port } => {
+                    match state::StateDb::connect(&database_url, &state_schema).await {
+                        Ok(db) => puffgres_inspect::run(db, port)
+                            .await
+                            .map_err(|e| CliError::Run(e.to_string())),
+                        Err(e) => Err(CliError::Run(e.to_string())),
+                    }
+                }
                 _ => unreachable!(),
             };
 
@@ -239,7 +246,7 @@ async fn run() -> (
         _ => {}
     }
 
-    // Tier 5: Check only needs DATABASE_URL + state_db_path (no TURBOPUFFER_API_KEY)
+    // Tier 5: Check only needs DATABASE_URL + state_schema (no TURBOPUFFER_API_KEY)
     if let Command::Check = cli.command {
         let project_config = match ProjectConfig::load(&paths.project_config) {
             Ok(c) => c,
@@ -259,14 +266,13 @@ async fn run() -> (
                 );
             }
         };
-        let state_db_path = match puffgres_cli::env::resolve_state_db_path(&env_paths, &paths.root)
-        {
-            Ok(p) => p,
+        let state_schema = match puffgres_cli::env::resolve_state_schema(&env_paths) {
+            Ok(s) => s,
             Err(e) => return (Err(e), None),
         };
 
         return (
-            puffgres_cli::check::run_async(&paths, &database_url, &state_db_path, &project_config)
+            puffgres_cli::check::run_async(&paths, &database_url, &state_schema, &project_config)
                 .await,
             None,
         );
@@ -278,13 +284,13 @@ async fn run() -> (
         Err(e) => return (Err(e), None),
     };
     let env_paths = project_config.resolve_env_paths(&paths.root);
-    let env_config = match EnvConfig::load(&env_paths, &paths.root) {
+    let env_config = match EnvConfig::load(&env_paths) {
         Ok(c) => c,
         Err(e) => return (Err(e), None),
     };
     tracing::info!(
-        state_db_path = %env_config.state_db_path.display(),
-        "state db path resolved"
+        state_schema = %env_config.state_schema,
+        "state schema resolved"
     );
 
     let (telemetry, metrics) = if let Some(endpoint) = &env_config.otel_endpoint {
@@ -318,12 +324,9 @@ async fn run() -> (
         }
         Command::Run => {
             if let Some(port) = env_config.inspect_port {
-                if let Some(parent) = env_config.state_db_path.parent() {
-                    if !parent.exists() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                }
-                match state::StateDb::open(&env_config.state_db_path).await {
+                match state::StateDb::connect(&env_config.database_url, &env_config.state_schema)
+                    .await
+                {
                     Ok(db) => {
                         tokio::spawn(async move {
                             if let Err(e) = puffgres_inspect::run(db, port).await {

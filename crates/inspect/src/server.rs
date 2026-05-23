@@ -2,14 +2,12 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    body::Body,
     extract::State,
-    http::{HeaderMap, StatusCode, header},
-    response::{Html, IntoResponse, Json},
+    http::StatusCode,
+    response::{Html, Json},
     routing::get,
 };
 use state::StateDb;
-use tokio_util::io::ReaderStream;
 
 const UI_HTML: &str = include_str!("ui.html");
 
@@ -23,7 +21,6 @@ pub async fn run(db: StateDb, port: u16) -> Result<(), Box<dyn std::error::Error
     let app = Router::new()
         .route("/", get(index))
         .route("/api/state", get(get_state))
-        .route("/api/state/download", get(download))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
@@ -64,7 +61,7 @@ async fn get_state(
     }
 
     Ok(Json(serde_json::json!({
-        "state_db_path": state.db.path().display().to_string(),
+        "state_schema": state.db.schema(),
         "configs": configs.iter().map(|c| serde_json::json!({
             "name": c.name,
             "namespace": c.namespace,
@@ -96,34 +93,4 @@ async fn get_state(
             })).collect::<Vec<_>>(),
         }),
     })))
-}
-
-async fn download(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let path = state.db.path();
-
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("state.db");
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        "application/x-sqlite3".parse().unwrap(),
-    );
-    let disposition = format!("attachment; filename=\"{filename}\"")
-        .parse()
-        .unwrap_or_else(|_| "attachment; filename=\"state.db\"".parse().unwrap());
-    headers.insert(header::CONTENT_DISPOSITION, disposition);
-
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
-    Ok((headers, body))
 }

@@ -1,12 +1,46 @@
 use chrono::Utc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
+use testcontainers_modules::postgres::Postgres;
+use tokio::sync::OnceCell;
 
 use crate::{ConfigRecord, StateDb};
 
-pub async fn setup_test_db() -> (tempfile::TempDir, StateDb) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test.db");
-    let db = StateDb::open(&path).await.unwrap();
-    (dir, db)
+struct SharedContainer {
+    _container: ContainerAsync<Postgres>,
+    database_url: String,
+}
+
+static CONTAINER: OnceCell<SharedContainer> = OnceCell::const_new();
+static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+async fn shared_container() -> &'static SharedContainer {
+    CONTAINER
+        .get_or_init(|| async {
+            let container = Postgres::default()
+                .with_tag("17-alpine")
+                .start()
+                .await
+                .expect("failed to start postgres testcontainer");
+            let host = container.get_host().await.unwrap();
+            let port = container.get_host_port_ipv4(5432).await.unwrap();
+            let database_url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+            SharedContainer {
+                _container: container,
+                database_url,
+            }
+        })
+        .await
+}
+
+/// Open a fresh `StateDb` against a unique schema in the shared test container.
+pub async fn setup_test_db() -> StateDb {
+    let container = shared_container().await;
+    let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let schema = format!("test_{n}");
+    StateDb::connect(&container.database_url, &schema)
+        .await
+        .expect("connect StateDb")
 }
 
 pub fn sample_config(name: &str) -> ConfigRecord {

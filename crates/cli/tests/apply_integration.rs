@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use pg::test_utils::setup_postgres;
 use puffgres_cli::EnvConfig;
 use puffgres_cli::apply::run_async;
@@ -9,7 +7,7 @@ use puffgres_cli::test_utils::{
 };
 use state::StateDb;
 
-async fn start_postgres_env(state_db_path: PathBuf) -> (pg::test_utils::TestContext, EnvConfig) {
+async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
     let ctx = setup_postgres().await;
     let env_config = EnvConfig {
         database_url: ctx.connection_string.clone(),
@@ -18,18 +16,15 @@ async fn start_postgres_env(state_db_path: PathBuf) -> (pg::test_utils::TestCont
         turbopuffer_namespace_prefix: None,
         otel_endpoint: None,
         otel_headers: None,
-        state_db_path,
+        state_schema: "puffgres".to_string(),
         dlq_max_age_hours: None,
         inspect_port: None,
     };
     (ctx, env_config)
 }
 
-async fn setup_pg(
-    tables: &[&str],
-    state_db_path: PathBuf,
-) -> (pg::test_utils::TestContext, EnvConfig) {
-    let (ctx, env_config) = start_postgres_env(state_db_path).await;
+async fn setup_pg(tables: &[&str]) -> (pg::test_utils::TestContext, EnvConfig) {
+    let (ctx, env_config) = start_postgres_env().await;
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
         .unwrap();
@@ -48,8 +43,8 @@ async fn setup_pg(
 
 #[tokio::test]
 async fn apply_and_idempotency() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = setup_pg(&["users", "films"], state_db_path.clone()).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = setup_pg(&["users", "films"]).await;
 
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
     write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -63,7 +58,9 @@ async fn apply_and_idempotency() {
         .await
         .unwrap();
 
-    let db = StateDb::open(&state_db_path).await.unwrap();
+    let db = StateDb::connect(&env_config.database_url, &env_config.state_schema)
+        .await
+        .unwrap();
     assert_eq!(db.list_configs().await.unwrap().len(), 2);
 
     let user = db.get_config("user").await.unwrap().unwrap();
@@ -83,8 +80,8 @@ async fn apply_and_idempotency() {
 
 #[tokio::test]
 async fn rejects_modified_config() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = setup_pg(&["users", "accounts"], state_db_path).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = setup_pg(&["users", "accounts"]).await;
 
     let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
     write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -122,8 +119,8 @@ type = "uint"
 
 #[tokio::test]
 async fn rejects_nonexistent_table() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = start_postgres_env(state_db_path).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = start_postgres_env().await;
 
     let ghost_dir = write_config(&paths, "ghost", "public", "nonexistent_table", "id", "uint");
     write_transform(&ghost_dir, PASSTHROUGH_TRANSFORM);
@@ -140,8 +137,8 @@ async fn rejects_nonexistent_table() {
 
 #[tokio::test]
 async fn rejects_nonexistent_id_column() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = start_postgres_env(state_db_path).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = start_postgres_env().await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -169,8 +166,8 @@ async fn rejects_nonexistent_id_column() {
 
 #[tokio::test]
 async fn rejects_incompatible_id_type() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = start_postgres_env(state_db_path).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = start_postgres_env().await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -198,8 +195,8 @@ async fn rejects_incompatible_id_type() {
 
 #[tokio::test]
 async fn rejects_vector_without_distance_metric() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = start_postgres_env(state_db_path).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = start_postgres_env().await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -231,8 +228,8 @@ async fn rejects_vector_without_distance_metric() {
 
 #[tokio::test]
 async fn accepts_vector_with_distance_metric() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = start_postgres_env(state_db_path).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = start_postgres_env().await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
@@ -259,8 +256,8 @@ async fn accepts_vector_with_distance_metric() {
 
 #[tokio::test]
 async fn accepts_empty_table_skips_dry_run() {
-    let (_dir, paths, state_db_path) = setup_project().await;
-    let (_ctx, env_config) = start_postgres_env(state_db_path).await;
+    let (_dir, paths) = setup_project();
+    let (_ctx, env_config) = start_postgres_env().await;
 
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await

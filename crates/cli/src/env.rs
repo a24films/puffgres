@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::CliError;
 
@@ -11,7 +11,7 @@ pub struct EnvConfig {
     pub turbopuffer_namespace_prefix: Option<String>,
     pub otel_endpoint: Option<String>,
     pub otel_headers: Option<String>,
-    pub state_db_path: PathBuf,
+    pub state_schema: String,
     pub dlq_max_age_hours: Option<u64>,
     pub inspect_port: Option<u16>,
 }
@@ -53,43 +53,23 @@ pub fn resolve_env_var(key: &str, file_vars: &HashMap<String, String>) -> Option
         .or_else(|| file_vars.get(key).cloned())
 }
 
-/// Resolve the state database path from env files and process env.
+/// Resolve the Postgres schema for state tables.
 ///
-/// Use this for commands that need only the DB path (reset, tombstone, status)
-/// without requiring the full EnvConfig (DATABASE_URL, TURBOPUFFER_API_KEY, etc.).
-///
-/// Falls back to `<project_root>/state.db` when `PUFFGRES_STATE_DB` is not set.
-/// Relative paths are resolved against `project_root`.
-pub fn resolve_state_db_path(
-    env_file_paths: &[impl AsRef<Path>],
-    project_root: &Path,
-) -> Result<PathBuf, CliError> {
+/// Falls back to `state::DEFAULT_SCHEMA` when `PUFFGRES_STATE_SCHEMA` is not set.
+/// Errors when the variable is set but empty/whitespace.
+pub fn resolve_state_schema(env_file_paths: &[impl AsRef<Path>]) -> Result<String, CliError> {
     let file_vars = load_env_files(env_file_paths)?;
-    let raw = resolve_env_var("PUFFGRES_STATE_DB", &file_vars);
-    resolve_state_db(raw, project_root)
+    resolve_state_schema_from(resolve_env_var("PUFFGRES_STATE_SCHEMA", &file_vars))
 }
 
-/// Shared logic for resolving the state DB path from a raw env var value.
-///
-/// - If the value is empty or whitespace-only, returns an error.
-/// - Falls back to `<project_root>/state.db` when the value is `None`.
-/// - Relative paths are resolved against `project_root`.
-fn resolve_state_db(raw: Option<String>, project_root: &Path) -> Result<PathBuf, CliError> {
-    let path = match raw {
-        Some(val) if val.trim().is_empty() => {
-            return Err(CliError::MissingEnvVar(
-                "PUFFGRES_STATE_DB is set but empty. Set it to a valid path or remove it to use the default."
-                    .into(),
-            ));
-        }
-        Some(val) => PathBuf::from(val),
-        None => PathBuf::from("state.db"),
-    };
-
-    if path.is_relative() {
-        Ok(project_root.join(path))
-    } else {
-        Ok(path)
+fn resolve_state_schema_from(raw: Option<String>) -> Result<String, CliError> {
+    match raw {
+        Some(val) if val.trim().is_empty() => Err(CliError::MissingEnvVar(
+            "PUFFGRES_STATE_SCHEMA is set but empty. Set it to a valid schema name or remove it to use the default."
+                .into(),
+        )),
+        Some(val) => Ok(val),
+        None => Ok(state::DEFAULT_SCHEMA.to_string()),
     }
 }
 
@@ -108,10 +88,7 @@ impl EnvConfig {
     ///
     /// Files are loaded in order — later files override earlier ones.
     /// Actual environment variables take highest precedence over all files.
-    ///
-    /// `project_root` is used to resolve relative `PUFFGRES_STATE_DB` paths
-    /// and as the default location for `state.db` when the var is unset.
-    pub fn load(paths: &[impl AsRef<Path>], project_root: &Path) -> Result<Self, CliError> {
+    pub fn load(paths: &[impl AsRef<Path>]) -> Result<Self, CliError> {
         let mut vars = load_env_files(paths)?;
 
         let mut resolve =
@@ -125,7 +102,7 @@ impl EnvConfig {
         let turbopuffer_namespace_prefix = resolve("TURBOPUFFER_NAMESPACE_PREFIX");
         let otel_endpoint = resolve("OTEL_EXPORTER_OTLP_ENDPOINT");
         let otel_headers = resolve("OTEL_EXPORTER_OTLP_HEADERS");
-        let state_db_path = resolve_state_db(resolve("PUFFGRES_STATE_DB"), project_root)?;
+        let state_schema = resolve_state_schema_from(resolve("PUFFGRES_STATE_SCHEMA"))?;
         let dlq_max_age_hours = match resolve("PUFFGRES_DLQ_MAX_AGE_HOURS") {
             Some(v) => Some(v.parse::<u64>().map_err(|_| {
                 CliError::MissingEnvVar(format!(
@@ -150,7 +127,7 @@ impl EnvConfig {
             turbopuffer_namespace_prefix,
             otel_endpoint,
             otel_headers,
-            state_db_path,
+            state_schema,
             dlq_max_age_hours,
             inspect_port,
         })
@@ -172,7 +149,7 @@ mod tests {
         "TURBOPUFFER_NAMESPACE_PREFIX",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_EXPORTER_OTLP_HEADERS",
-        "PUFFGRES_STATE_DB",
+        "PUFFGRES_STATE_SCHEMA",
         "PUFFGRES_DLQ_MAX_AGE_HOURS",
         "PUFFGRES_INSPECT_PORT",
     ];
@@ -195,15 +172,15 @@ mod tests {
         let p = write_env(
             dir.path(),
             ".env",
-            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=tp-key-123\nPUFFGRES_STATE_DB=/tmp/state.db\n",
+            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=tp-key-123\nPUFFGRES_STATE_SCHEMA=my_schema\n",
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p], dir.path()).unwrap();
+            let cfg = EnvConfig::load(&[&p]).unwrap();
             assert_eq!(cfg.database_url, "postgres://localhost/test");
             assert_eq!(cfg.turbopuffer_api_key, "tp-key-123");
             assert!(cfg.turbopuffer_region.is_none());
-            assert_eq!(cfg.state_db_path, PathBuf::from("/tmp/state.db"));
+            assert_eq!(cfg.state_schema, "my_schema");
         });
     }
 
@@ -213,7 +190,7 @@ mod tests {
         let base = write_env(
             dir.path(),
             ".env",
-            "DATABASE_URL=postgres://base\nTURBOPUFFER_API_KEY=base-key\nTURBOPUFFER_REGION=us-east-1\nPUFFGRES_STATE_DB=/tmp/state.db\n",
+            "DATABASE_URL=postgres://base\nTURBOPUFFER_API_KEY=base-key\nTURBOPUFFER_REGION=us-east-1\n",
         );
         let local = write_env(
             dir.path(),
@@ -222,7 +199,7 @@ mod tests {
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&base, &local], dir.path()).unwrap();
+            let cfg = EnvConfig::load(&[&base, &local]).unwrap();
             assert_eq!(cfg.database_url, "postgres://local");
             assert_eq!(cfg.turbopuffer_api_key, "local-key");
             assert_eq!(cfg.turbopuffer_region.as_deref(), Some("us-east-1"));
@@ -235,7 +212,7 @@ mod tests {
         let p = write_env(
             dir.path(),
             ".env",
-            "DATABASE_URL=postgres://file\nTURBOPUFFER_API_KEY=file-key\nPUFFGRES_STATE_DB=/tmp/state.db\n",
+            "DATABASE_URL=postgres://file\nTURBOPUFFER_API_KEY=file-key\n",
         );
 
         temp_env::with_vars(
@@ -244,10 +221,11 @@ mod tests {
                 ("TURBOPUFFER_API_KEY", Some("env-key")),
                 ("TURBOPUFFER_REGION", None),
                 ("TURBOPUFFER_NAMESPACE_PREFIX", None),
-                ("PUFFGRES_STATE_DB", None),
+                ("PUFFGRES_STATE_SCHEMA", None),
             ],
             || {
-                let cfg = EnvConfig::load(&[&p], dir.path()).unwrap();
+                let _ = dir;
+                let cfg = EnvConfig::load(&[&p]).unwrap();
                 assert_eq!(cfg.database_url, "postgres://env");
                 assert_eq!(cfg.turbopuffer_api_key, "env-key");
             },
@@ -260,7 +238,7 @@ mod tests {
         let p = write_env(dir.path(), ".env", "TURBOPUFFER_API_KEY=key\n");
 
         temp_env::with_vars(cleared(), || {
-            let err = EnvConfig::load(&[&p], dir.path()).unwrap_err();
+            let err = EnvConfig::load(&[&p]).unwrap_err();
             assert!(err.to_string().contains("DATABASE_URL"));
         });
     }
@@ -272,11 +250,11 @@ mod tests {
         let present = write_env(
             dir.path(),
             ".env",
-            "DATABASE_URL=postgres://ok\nTURBOPUFFER_API_KEY=key\nPUFFGRES_STATE_DB=/tmp/state.db\n",
+            "DATABASE_URL=postgres://ok\nTURBOPUFFER_API_KEY=key\n",
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&missing, &present], dir.path()).unwrap();
+            let cfg = EnvConfig::load(&[&missing, &present]).unwrap();
             assert_eq!(cfg.database_url, "postgres://ok");
         });
     }
@@ -287,11 +265,11 @@ mod tests {
         let p = write_env(
             dir.path(),
             ".env",
-            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\nTURBOPUFFER_NAMESPACE_PREFIX=PRODUCTION\nPUFFGRES_STATE_DB=/tmp/state.db\n",
+            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\nTURBOPUFFER_NAMESPACE_PREFIX=PRODUCTION\n",
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p], dir.path()).unwrap();
+            let cfg = EnvConfig::load(&[&p]).unwrap();
             assert_eq!(
                 cfg.turbopuffer_namespace_prefix.as_deref(),
                 Some("PRODUCTION")
@@ -305,28 +283,27 @@ mod tests {
         let p = write_env(
             dir.path(),
             ".env",
-            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\nPUFFGRES_STATE_DB=/tmp/state.db\n",
+            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\n",
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p], dir.path()).unwrap();
+            let cfg = EnvConfig::load(&[&p]).unwrap();
             assert!(cfg.turbopuffer_namespace_prefix.is_none());
         });
     }
 
     #[test]
     fn no_files_falls_back_to_env_vars() {
-        let dir = TempDir::new().unwrap();
         temp_env::with_vars(
             [
                 ("DATABASE_URL", Some("postgres://env-only")),
                 ("TURBOPUFFER_API_KEY", Some("env-only-key")),
                 ("TURBOPUFFER_REGION", None),
                 ("TURBOPUFFER_NAMESPACE_PREFIX", None),
-                ("PUFFGRES_STATE_DB", Some("/tmp/state.db")),
+                ("PUFFGRES_STATE_SCHEMA", None),
             ],
             || {
-                let cfg = EnvConfig::load(&[] as &[&Path], dir.path()).unwrap();
+                let cfg = EnvConfig::load(&[] as &[&Path]).unwrap();
                 assert_eq!(cfg.database_url, "postgres://env-only");
                 assert_eq!(cfg.turbopuffer_api_key, "env-only-key");
             },
@@ -334,46 +311,35 @@ mod tests {
     }
 
     #[test]
-    fn resolve_state_db_path_from_env_file() {
+    fn resolve_state_schema_from_env_file() {
         let dir = TempDir::new().unwrap();
-        let p = write_env(dir.path(), ".env", "PUFFGRES_STATE_DB=/mnt/data/state.db\n");
+        let p = write_env(dir.path(), ".env", "PUFFGRES_STATE_SCHEMA=custom_schema\n");
 
-        temp_env::with_vars([("PUFFGRES_STATE_DB", None::<&str>)], || {
-            let path = resolve_state_db_path(&[&p], dir.path()).unwrap();
-            assert_eq!(path, PathBuf::from("/mnt/data/state.db"));
+        temp_env::with_vars([("PUFFGRES_STATE_SCHEMA", None::<&str>)], || {
+            let schema = resolve_state_schema(&[&p]).unwrap();
+            assert_eq!(schema, "custom_schema");
         });
     }
 
     #[test]
-    fn resolve_state_db_path_falls_back_to_default() {
+    fn resolve_state_schema_falls_back_to_default() {
         let dir = TempDir::new().unwrap();
         let p = write_env(dir.path(), ".env", "OTHER_VAR=foo\n");
 
-        temp_env::with_vars([("PUFFGRES_STATE_DB", None::<&str>)], || {
-            let path = resolve_state_db_path(&[&p], dir.path()).unwrap();
-            assert_eq!(path, dir.path().join("state.db"));
+        temp_env::with_vars([("PUFFGRES_STATE_SCHEMA", None::<&str>)], || {
+            let schema = resolve_state_schema(&[&p]).unwrap();
+            assert_eq!(schema, state::DEFAULT_SCHEMA);
         });
     }
 
     #[test]
-    fn resolve_state_db_path_relative_resolved_against_root() {
+    fn resolve_state_schema_empty_errors() {
         let dir = TempDir::new().unwrap();
-        let p = write_env(dir.path(), ".env", "PUFFGRES_STATE_DB=data/my.db\n");
+        let p = write_env(dir.path(), ".env", "PUFFGRES_STATE_SCHEMA=\n");
 
-        temp_env::with_vars([("PUFFGRES_STATE_DB", None::<&str>)], || {
-            let path = resolve_state_db_path(&[&p], dir.path()).unwrap();
-            assert_eq!(path, dir.path().join("data/my.db"));
-        });
-    }
-
-    #[test]
-    fn resolve_state_db_path_empty_errors() {
-        let dir = TempDir::new().unwrap();
-        let p = write_env(dir.path(), ".env", "PUFFGRES_STATE_DB=\n");
-
-        temp_env::with_vars([("PUFFGRES_STATE_DB", None::<&str>)], || {
-            let err = resolve_state_db_path(&[&p], dir.path()).unwrap_err();
-            assert!(err.to_string().contains("PUFFGRES_STATE_DB"));
+        temp_env::with_vars([("PUFFGRES_STATE_SCHEMA", None::<&str>)], || {
+            let err = resolve_state_schema(&[&p]).unwrap_err();
+            assert!(err.to_string().contains("PUFFGRES_STATE_SCHEMA"));
         });
     }
 
@@ -387,7 +353,7 @@ mod tests {
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p], dir.path()).unwrap();
+            let cfg = EnvConfig::load(&[&p]).unwrap();
             assert_eq!(cfg.dlq_max_age_hours, Some(72));
         });
     }
@@ -402,7 +368,7 @@ mod tests {
         );
 
         temp_env::with_vars(cleared(), || {
-            let err = EnvConfig::load(&[&p], dir.path()).unwrap_err();
+            let err = EnvConfig::load(&[&p]).unwrap_err();
             assert!(err.to_string().contains("PUFFGRES_DLQ_MAX_AGE_HOURS"));
         });
     }
@@ -417,13 +383,13 @@ mod tests {
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p], dir.path()).unwrap();
+            let cfg = EnvConfig::load(&[&p]).unwrap();
             assert!(cfg.dlq_max_age_hours.is_none());
         });
     }
 
     #[test]
-    fn state_db_defaults_in_env_config_load() {
+    fn state_schema_defaults_in_env_config_load() {
         let dir = TempDir::new().unwrap();
         let p = write_env(
             dir.path(),
@@ -432,8 +398,8 @@ mod tests {
         );
 
         temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p], dir.path()).unwrap();
-            assert_eq!(cfg.state_db_path, dir.path().join("state.db"));
+            let cfg = EnvConfig::load(&[&p]).unwrap();
+            assert_eq!(cfg.state_schema, state::DEFAULT_SCHEMA);
         });
     }
 }
