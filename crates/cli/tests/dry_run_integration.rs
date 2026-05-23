@@ -124,7 +124,6 @@ async fn start_postgres() -> (ContainerAsync<Postgres>, EnvConfig) {
         otel_headers: None,
         state_schema: "puffgres".to_string(),
         dlq_max_age_hours: None,
-        inspect_port: None,
     };
 
     (container, env_config)
