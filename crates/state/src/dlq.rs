@@ -8,7 +8,7 @@ use crate::epoch;
 use crate::models::{DlqRow, NewDlqEntry};
 use crate::pg_lsn::Lsn;
 use crate::schema::dlq;
-use crate::{StateDb, StateError};
+use crate::{StateError, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DlqEntry {
@@ -134,7 +134,7 @@ impl DlqEntry {
     }
 }
 
-impl StateDb {
+impl Store {
     pub async fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
         let e = entry.clone();
         self.run_blocking(move |conn| {

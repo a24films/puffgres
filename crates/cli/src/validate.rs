@@ -6,7 +6,7 @@ use config::{Config, IdType};
 use pg::Client;
 
 use crate::dry_transform::dry_run_transform;
-use state::StateDb;
+use state::Store;
 
 /// Run all pre-flight validation checks on configs.
 ///
@@ -92,7 +92,7 @@ pub async fn preflight_check(
     }
 
     // Check against state DB for namespace conflicts
-    let db = StateDb::connect(database_url, state_schema)
+    let db = Store::connect(database_url, state_schema)
         .await
         .map_err(|e| format!("failed to open state database: {e}"))?;
     let applied = db

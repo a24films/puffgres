@@ -10,7 +10,7 @@ use pg::publication::ensure_publication;
 use pg::slot::{ensure_slot, get_current_wal_lsn, terminate_active_slot_backend};
 use puffgres_core::{BackfillOutcome, DocumentId, run_backfill};
 use replication::{ReplicationStream, ReplicationStreamConfig, RowEvent};
-use state::{BackfillProgress, BackfillStatus, ConfigRecord, StateDb, StreamingCheckpoint};
+use state::{BackfillProgress, BackfillStatus, ConfigRecord, Store, StreamingCheckpoint};
 use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres as PgImage;
 use tokio::sync::OnceCell;
@@ -45,20 +45,20 @@ async fn shared_pg() -> &'static ResumptionPg {
         .await
 }
 
-/// Tracks the database URL + schema so reopen_state_db can reconnect.
+/// Tracks the database URL + schema so reopen_store can reconnect.
 struct StateDir {
     database_url: String,
     schema: String,
 }
 
-/// Create a StateDb backed by a fresh Postgres schema.
-/// Returns a handle to the schema (so reopen_state_db can reconnect) plus the
+/// Create a Store backed by a fresh Postgres schema.
+/// Returns a handle to the schema (so reopen_store can reconnect) plus the
 /// initialized db.
-async fn create_state_db() -> (StateDir, StateDb) {
+async fn create_store() -> (StateDir, Store) {
     let pg = shared_pg().await;
     let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
     let schema = format!("resumption_{n}");
-    let db = StateDb::connect(&pg.database_url, &schema)
+    let db = Store::connect(&pg.database_url, &schema)
         .await
         .expect("failed to open state db");
     db.insert_config(&ConfigRecord {
@@ -82,8 +82,8 @@ async fn create_state_db() -> (StateDir, StateDb) {
 }
 
 /// Re-connect to the same schema (simulates restart).
-async fn reopen_state_db(dir: &StateDir) -> StateDb {
-    StateDb::connect(&dir.database_url, &dir.schema)
+async fn reopen_store(dir: &StateDir) -> Store {
+    Store::connect(&dir.database_url, &dir.schema)
         .await
         .expect("failed to reopen state db")
 }
@@ -101,7 +101,7 @@ async fn backfill_resumption_after_crash() {
     let (_ctx, client) = setup_replication_test("resumption_items").await;
     insert_rows(&client, "resumption_items", 1..=100).await;
 
-    let (state_dir, mut state_db) = create_state_db().await;
+    let (state_dir, mut store) = create_store().await;
 
     // Record a watermark LSN before backfill, simulating what production does.
     let watermark_lsn = get_current_wal_lsn(&client)
@@ -109,7 +109,7 @@ async fn backfill_resumption_after_crash() {
         .expect("failed to get WAL LSN");
 
     // Persist the watermark in the backfill progress record (production flow).
-    state_db
+    store
         .save_backfill_progress(&BackfillProgress {
             config_name: "test".to_string(),
             last_id: None,
@@ -132,7 +132,7 @@ async fn backfill_resumption_after_crash() {
         &config,
         &client,
         &sink1,
-        &mut state_db,
+        &mut store,
         &PassthroughTransformer,
         CancellationToken::new(),
     )
@@ -153,7 +153,7 @@ async fn backfill_resumption_after_crash() {
 
     // --- Verify run_backfill's own checkpointing (Issue 2) ---
     // The checkpoints were saved by run_backfill itself, not manually set.
-    let progress_after_crash = state_db
+    let progress_after_crash = store
         .get_backfill_progress("test")
         .await
         .expect("failed to load progress after crash")
@@ -179,10 +179,10 @@ async fn backfill_resumption_after_crash() {
     );
 
     // Drop the state db handle (simulates process crash).
-    drop(state_db);
+    drop(store);
 
     // --- Phase 2: restart from same state file ---
-    let mut state_db2 = reopen_state_db(&state_dir).await;
+    let mut store2 = reopen_store(&state_dir).await;
 
     // Resume backfill using the reopened state db
     let sink2 = CollectingSink::new();
@@ -190,7 +190,7 @@ async fn backfill_resumption_after_crash() {
         &config,
         &client,
         &sink2,
-        &mut state_db2,
+        &mut store2,
         &PassthroughTransformer,
         CancellationToken::new(),
     )
@@ -252,7 +252,7 @@ async fn cdc_resumption_after_crash() {
         .await
         .expect("failed to create publication");
 
-    let (state_dir, state_db) = create_state_db().await;
+    let (state_dir, store) = create_store().await;
 
     // Insert 10 rows to generate CDC events
     insert_rows(&client, "resumption_items", 1..=10).await;
@@ -280,7 +280,7 @@ async fn cdc_resumption_after_crash() {
 
     // Save a streaming checkpoint at the last acked LSN
     let last_ack_lsn = phase1_events.last().expect("should have events").1;
-    state_db
+    store
         .save_streaming_checkpoint(&StreamingCheckpoint {
             config_name: "test".to_string(),
             lsn: last_ack_lsn,
@@ -298,11 +298,11 @@ async fn cdc_resumption_after_crash() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // --- Simulate crash: drop and reopen state db ---
-    drop(state_db);
-    let state_db2 = reopen_state_db(&state_dir).await;
+    drop(store);
+    let store2 = reopen_store(&state_dir).await;
 
     // Verify checkpoint survived
-    let checkpoint = state_db2
+    let checkpoint = store2
         .get_streaming_checkpoint("test")
         .await
         .expect("failed to load checkpoint after crash")
@@ -376,7 +376,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         .await
         .expect("failed to create publication");
 
-    let (state_dir, mut state_db) = create_state_db().await;
+    let (state_dir, mut store) = create_store().await;
 
     // Insert seed data for backfill
     insert_rows(&client, "resumption_items", 1..=20).await;
@@ -394,7 +394,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         &config,
         &client,
         &backfill_sink,
-        &mut state_db,
+        &mut store,
         &PassthroughTransformer,
         CancellationToken::new(),
     )
@@ -407,7 +407,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
     assert_eq!(result.processed_rows, 20);
 
     // Mark backfill as completed with watermark in state db
-    state_db
+    store
         .save_backfill_progress(&BackfillProgress {
             config_name: "test".to_string(),
             last_id: Some("0020".to_string()),
@@ -450,7 +450,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
     let cdc_checkpoint_lsn = phase2_events.last().expect("should have events").1;
 
     // Save a streaming checkpoint after 5 events
-    state_db
+    store
         .save_streaming_checkpoint(&StreamingCheckpoint {
             config_name: "test".to_string(),
             lsn: cdc_checkpoint_lsn,
@@ -464,13 +464,13 @@ async fn backfill_to_cdc_handoff_after_crash() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     drop(stream1);
     tokio::time::sleep(Duration::from_secs(1)).await;
-    drop(state_db);
+    drop(store);
 
     // --- Phase 3: restart after crash ---
-    let state_db2 = reopen_state_db(&state_dir).await;
+    let store2 = reopen_store(&state_dir).await;
 
     // Verify backfill is marked Completed -- it should NOT be re-run
-    let backfill_progress = state_db2
+    let backfill_progress = store2
         .get_backfill_progress("test")
         .await
         .expect("failed to load backfill progress after crash")
@@ -487,7 +487,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
     );
 
     // Verify streaming checkpoint exists and differs from watermark
-    let streaming_ckpt = state_db2
+    let streaming_ckpt = store2
         .get_streaming_checkpoint("test")
         .await
         .expect("failed to load streaming checkpoint after crash")
@@ -538,7 +538,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
     );
 
     // Final sanity: backfill progress is still Completed (was NOT re-run)
-    let final_progress = state_db2
+    let final_progress = store2
         .get_backfill_progress("test")
         .await
         .expect("failed to re-check backfill progress")

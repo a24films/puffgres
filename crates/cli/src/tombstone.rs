@@ -2,7 +2,7 @@ use std::fs;
 
 use chrono::Utc;
 use config::ConfigLoader;
-use state::StateDb;
+use state::Store;
 
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
@@ -13,7 +13,7 @@ pub async fn run(
     state_schema: &str,
     name: &str,
 ) -> Result<(), CliError> {
-    let db = StateDb::connect(database_url, state_schema).await?;
+    let db = Store::connect(database_url, state_schema).await?;
 
     let config = db.get_config(name).await?.ok_or_else(|| {
         CliError::Tombstone(format!("config '{name}' not found in state database"))
@@ -74,7 +74,7 @@ mod tests {
     #[tokio::test]
     async fn tombstone_sets_timestamp() {
         let (_dir, paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&sample_config("film")).await.unwrap();
 
         run(&paths, &url, &schema, "film").await.unwrap();
@@ -93,7 +93,7 @@ mod tests {
     #[tokio::test]
     async fn tombstone_already_tombstoned_is_idempotent() {
         let (_dir, paths, url, schema) = setup_project_with_state().await;
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&sample_config("film")).await.unwrap();
 
         run(&paths, &url, &schema, "film").await.unwrap();
@@ -110,7 +110,7 @@ mod tests {
         let loader = ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
 
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),

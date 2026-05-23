@@ -9,7 +9,7 @@ use crate::epoch;
 use crate::models::{BackfillProgressRow, NewBackfillProgress};
 use crate::pg_lsn::Lsn;
 use crate::schema::backfill_progress;
-use crate::{StateDb, StateError};
+use crate::{StateError, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, EnumString, AsRefStr)]
 #[strum(serialize_all = "snake_case")]
@@ -66,7 +66,7 @@ impl BackfillProgress {
     }
 }
 
-/// Trait for persisting backfill cursor state. Implemented by `StateDb` for
+/// Trait for persisting backfill cursor state. Implemented by `Store` for
 /// production use; tests can supply an in-memory implementation.
 #[async_trait]
 pub trait BackfillCheckpointer: Send + Sync {
@@ -81,7 +81,7 @@ pub trait BackfillCheckpointer: Send + Sync {
 }
 
 #[async_trait]
-impl BackfillCheckpointer for StateDb {
+impl BackfillCheckpointer for Store {
     async fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError> {
         self.get_backfill_cursor(config_name).await
     }
@@ -97,7 +97,7 @@ impl BackfillCheckpointer for StateDb {
     }
 }
 
-impl StateDb {
+impl Store {
     pub async fn save_backfill_progress(
         &self,
         progress: &BackfillProgress,
@@ -156,7 +156,7 @@ impl StateDb {
     /// doesn't lose the original watermark.
     ///
     /// The read-modify-write is performed under a single lock acquisition so
-    /// concurrent callers on cloned `StateDb` handles cannot regress cursor state.
+    /// concurrent callers on cloned `Store` handles cannot regress cursor state.
     pub async fn save_backfill_cursor(
         &self,
         config_name: &str,

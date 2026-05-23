@@ -4,7 +4,7 @@ use diesel::prelude::*;
 use crate::epoch;
 use crate::models::{ConfigRow, NewConfig};
 use crate::schema::configs;
-use crate::{StateDb, StateError};
+use crate::{StateError, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigRecord {
@@ -44,7 +44,7 @@ impl ConfigRecord {
     }
 }
 
-impl StateDb {
+impl Store {
     pub async fn insert_config(&self, config: &ConfigRecord) -> Result<(), StateError> {
         let c = config.clone();
         self.run_blocking(move |conn| {

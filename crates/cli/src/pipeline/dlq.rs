@@ -4,7 +4,7 @@ use pg::batch::{BatchQueryConfig, fetch_row_by_id, resolve_column_names};
 use puff::TurbopufferClient;
 use puffgres_core::{DocumentId, Transformer, row_convert::pg_rows_to_events};
 use replication::{Operation, RowEvent};
-use state::{DlqEntry, DlqOperation, StateDb};
+use state::{DlqEntry, DlqOperation, Store};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::CliError;
@@ -32,7 +32,7 @@ fn dlq_to_operation(op: &DlqOperation) -> Operation {
 /// Insert failed events into the DLQ with only the operation and doc_id
 /// (no full event payload).
 pub(crate) async fn send_events_to_dlq(
-    db: &StateDb,
+    db: &Store,
     config_name: &str,
     lsn: u64,
     events: &[(&replication::RowEvent, DocumentId)],
@@ -71,7 +71,7 @@ pub(crate) struct ReplayResult {
 /// permanent if max retries exhausted.
 #[tracing::instrument(name = "replay_dlq", skip_all)]
 pub(crate) async fn replay_dlq(
-    db: &StateDb,
+    db: &Store,
     database_url: &str,
     configs: &HashMap<String, &config::Config>,
     transformers: &HashMap<String, Box<dyn Transformer>>,

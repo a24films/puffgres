@@ -1,11 +1,11 @@
 use std::io::{self, Write};
 
-use state::StateDb;
+use state::Store;
 
 use crate::error::CliError;
 
 pub async fn run(database_url: &str, state_schema: &str, force: bool) -> Result<(), CliError> {
-    let db = StateDb::connect(database_url, state_schema).await?;
+    let db = Store::connect(database_url, state_schema).await?;
 
     let configs = db.list_configs().await?;
 
@@ -44,7 +44,7 @@ mod tests {
     async fn reset_clears_configs() {
         let (_dir, _paths, url, schema) = setup_project_with_state().await;
 
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: "user".to_string(),
             namespace: "user".to_string(),
@@ -61,7 +61,7 @@ mod tests {
 
         run(&url, &schema, true).await.unwrap();
 
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         assert_eq!(db.list_configs().await.unwrap().len(), 0);
     }
 

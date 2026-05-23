@@ -5,7 +5,7 @@ use std::time::Duration;
 use chrono::Utc;
 use config::Config;
 use sha2::{Digest, Sha256};
-use state::{ConfigRecord, StateDb};
+use state::{ConfigRecord, Store};
 
 use crate::env::EnvConfig;
 use crate::error::CliError;
@@ -38,7 +38,7 @@ pub async fn run_async(
     project_config: &ProjectConfig,
 ) -> Result<(), CliError> {
     let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
-    let db = StateDb::connect(&env_config.database_url, &env_config.state_schema).await?;
+    let db = Store::connect(&env_config.database_url, &env_config.state_schema).await?;
     reconcile_on_disk_tombstones(paths, &db).await?;
 
     let loader = config::ConfigLoader::new(&paths.configs);
@@ -269,7 +269,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         assert!(db.get_config("user").await.unwrap().is_none());
     }
 
@@ -285,7 +285,7 @@ mod tests {
         let (config_path, cfg) = &all[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -315,7 +315,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -352,7 +352,7 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let all = loader.load_all().unwrap();
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         for (config_path, cfg) in &all {
             let transform_bytes =
                 fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
@@ -384,7 +384,7 @@ mod tests {
 
         let loader = config::ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -431,7 +431,7 @@ type = "uint"
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -466,7 +466,7 @@ type = "uint"
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let content_hash = Config::content_hash_from_bytes(&fs::read(config_path).unwrap());
 
-        let db = StateDb::connect(&url, &schema).await.unwrap();
+        let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),

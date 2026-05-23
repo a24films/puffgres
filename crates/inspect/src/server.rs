@@ -7,15 +7,15 @@ use axum::{
     response::{Html, Json},
     routing::get,
 };
-use state::StateDb;
+use state::Store;
 
 const UI_HTML: &str = include_str!("ui.html");
 
 struct AppState {
-    db: StateDb,
+    db: Store,
 }
 
-pub async fn run(db: StateDb, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn run(db: Store, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = Arc::new(AppState { db });
 
     let app = Router::new()

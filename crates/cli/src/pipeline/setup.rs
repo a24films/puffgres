@@ -6,7 +6,7 @@ use backon::{BackoffBuilder, ExponentialBuilder};
 use config::{Config, ConfigLoader};
 use puffgres_core::{JsTransformer, Mapping, Router, Transformer};
 use sha2::{Digest, Sha256};
-use state::{BackfillProgress, BackfillStatus, StateDb};
+use state::{BackfillProgress, BackfillStatus, Store};
 use tokio_util::sync::CancellationToken;
 
 use super::{ConfigInfo, PUBLICATION_NAME, SLOT_NAME};
@@ -25,7 +25,7 @@ pub(crate) async fn setup_pipeline(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     project_config: &ProjectConfig,
-    db: &StateDb,
+    db: &Store,
 ) -> Result<
     Option<(
         Vec<(std::path::PathBuf, config::Config)>,
