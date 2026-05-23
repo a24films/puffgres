@@ -22,7 +22,7 @@ Run transforms on sample data without writing state. Optionally filter to a sing
 
 ## `puffgres apply`
 
-Apply pending config changes. Registers configs in SQLite so they are picked up for replication.
+Apply pending config changes. Registers configs in the `puffgres` state schema so they are picked up for replication.
 
 ## `puffgres backfill`
 
@@ -42,8 +42,8 @@ Mark a config as inactive. Creates a `tombstone.toml` in the config directory so
 
 ## `puffgres remove <name>`
 
-Fully remove a config — deletes the turbopuffer namespace, clears all state from SQLite, and removes the config directory. Use `--last` to remove the most recently applied config.
+Fully remove a config — deletes the turbopuffer namespace, clears its state rows from the `puffgres` schema, and removes the config directory. Use `--last` to remove the most recently applied config.
 
 ## `puffgres reset`
 
-Clear all state (configs and checkpoints) from the SQLite database. Use `--force` to skip the confirmation prompt.
+Clear all state (configs and checkpoints) from the `puffgres` state schema. Use `--force` to skip the confirmation prompt.
