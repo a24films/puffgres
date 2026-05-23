@@ -13,7 +13,6 @@ pub struct EnvConfig {
     pub otel_headers: Option<String>,
     pub state_schema: String,
     pub dlq_max_age_hours: Option<u64>,
-    pub inspect_port: Option<u16>,
 }
 
 /// Load all key-value pairs from a list of `.env` file paths.
@@ -111,15 +110,6 @@ impl EnvConfig {
             })?),
             None => None,
         };
-        let inspect_port = match resolve("PUFFGRES_INSPECT_PORT") {
-            Some(v) => Some(v.parse::<u16>().map_err(|_| {
-                CliError::MissingEnvVar(format!(
-                    "PUFFGRES_INSPECT_PORT={v:?} is not a valid port number"
-                ))
-            })?),
-            None => None,
-        };
-
         Ok(Self {
             database_url,
             turbopuffer_api_key,
@@ -129,7 +119,6 @@ impl EnvConfig {
             otel_headers,
             state_schema,
             dlq_max_age_hours,
-            inspect_port,
         })
     }
 }
@@ -142,7 +131,7 @@ mod tests {
 
     /// All env vars that EnvConfig::load reads. Each test clears these via
     /// temp_env so that real env vars don't leak between tests.
-    const ENV_KEYS: [&str; 9] = [
+    const ENV_KEYS: [&str; 8] = [
         "DATABASE_URL",
         "TURBOPUFFER_API_KEY",
         "TURBOPUFFER_REGION",
@@ -151,7 +140,6 @@ mod tests {
         "OTEL_EXPORTER_OTLP_HEADERS",
         "PUFFGRES_STATE_SCHEMA",
         "PUFFGRES_DLQ_MAX_AGE_HOURS",
-        "PUFFGRES_INSPECT_PORT",
     ];
 
     /// Returns (key, None) pairs for every env var EnvConfig reads,

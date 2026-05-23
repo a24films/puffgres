@@ -54,12 +54,6 @@ enum Command {
     },
     /// Generate typed schema.ts files for each config
     Generate,
-    /// Inspect the Postgres state schema
-    Inspect {
-        /// Port to serve on
-        #[arg(long, default_value = "4444")]
-        port: u16,
-    },
     /// Launch a light UI to see the contents of turbopuffer namespaces
     Debug {
         /// Port to serve on
@@ -208,7 +202,7 @@ async fn run() -> (
     // These recovery/status commands only read environment_files from puffgres.toml
     // so they still work when runtime config fields (e.g. batch_size) are invalid.
     match cli.command {
-        Command::Reset { .. } | Command::Tombstone { .. } | Command::Inspect { .. } => {
+        Command::Reset { .. } | Command::Tombstone { .. } => {
             let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
                 Ok(c) => c,
                 Err(e) => return (Err(e), None),
@@ -229,14 +223,6 @@ async fn run() -> (
                 }
                 Command::Tombstone { ref name } => {
                     puffgres_cli::tombstone::run(&paths, &database_url, &state_schema, name).await
-                }
-                Command::Inspect { port } => {
-                    match state::Store::connect(&database_url, &state_schema).await {
-                        Ok(db) => puffgres_inspect::run(db, port)
-                            .await
-                            .map_err(|e| CliError::Run(e.to_string())),
-                        Err(e) => Err(CliError::Run(e.to_string())),
-                    }
                 }
                 _ => unreachable!(),
             };
@@ -308,7 +294,6 @@ async fn run() -> (
         | Command::New { .. }
         | Command::Reset { .. }
         | Command::Tombstone { .. }
-        | Command::Inspect { .. }
         | Command::Check
         | Command::Generate
         | Command::Debug { .. } => unreachable!(),
@@ -323,23 +308,6 @@ async fn run() -> (
             puffgres_cli::apply::run_async(&paths, &env_config, &project_config).await
         }
         Command::Run => {
-            if let Some(port) = env_config.inspect_port {
-                match state::Store::connect(&env_config.database_url, &env_config.state_schema)
-                    .await
-                {
-                    Ok(db) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = puffgres_inspect::run(db, port).await {
-                                eprintln!("Inspect server error: {e}");
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: could not start inspect server: {e}");
-                    }
-                }
-            }
-
             puffgres_cli::pipeline::run_async(
                 &paths,
                 &env_config,

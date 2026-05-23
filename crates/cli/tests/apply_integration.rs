@@ -18,7 +18,6 @@ async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
         otel_headers: None,
         state_schema: "puffgres".to_string(),
         dlq_max_age_hours: None,
-        inspect_port: None,
     };
     (ctx, env_config)
 }

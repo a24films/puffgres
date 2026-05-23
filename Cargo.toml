@@ -57,7 +57,6 @@ pg = { path = "crates/pg" }
 puff = { path = "crates/puff" }
 puffgres-core = { path = "crates/core" }
 puffgres-debug = { path = "crates/debug" }
-puffgres-inspect = { path = "crates/inspect" }
 replication = { path = "crates/replication" }
 state = { path = "crates/state" }
 pgwire-replication = "0.2"
