@@ -95,7 +95,7 @@ async fn process_config_events(
             if let Some(m) = metrics {
                 m.cdc_events_failed.add(events.len() as u64, &[]);
             }
-            send_events_to_dlq(db, config_name, dlq_lsn, events, &e.to_string(), false)?;
+            send_events_to_dlq(db, config_name, dlq_lsn, events, &e.to_string(), false).await?;
         }
         Ok(actions) => {
             let send_start = std::time::Instant::now();
@@ -108,7 +108,8 @@ async fn process_config_events(
                         m.turbopuffer_latency
                             .record(send_start.elapsed().as_millis() as f64, &[]);
                     }
-                    send_events_to_dlq(db, config_name, dlq_lsn, events, &e.to_string(), false)?;
+                    send_events_to_dlq(db, config_name, dlq_lsn, events, &e.to_string(), false)
+                        .await?;
                 }
                 Ok(()) => {
                     let count = events_processed.entry(config_name.to_string()).or_insert(0);
@@ -167,11 +168,11 @@ pub(crate) async fn run_streaming_loop(
         .collect();
 
     for (_, config) in applied_configs {
-        let checkpoint = db.get_streaming_checkpoint(&config.name)?;
+        let checkpoint = db.get_streaming_checkpoint(&config.name).await?;
         let count = checkpoint.as_ref().map(|c| c.events_processed).unwrap_or(0);
         if let Some(ref cp) = checkpoint {
             config_checkpoint_lsns.insert(config.name.clone(), cp.lsn);
-        } else if let Some(bp) = db.get_backfill_progress(&config.name)? {
+        } else if let Some(bp) = db.get_backfill_progress(&config.name).await? {
             // Seed skip state for new configs: they have no streaming checkpoint
             // yet but completed backfill with a watermark LSN. Without this,
             // should_skip_config would never skip them and they'd re-process
@@ -203,7 +204,7 @@ pub(crate) async fn run_streaming_loop(
     let dlq_max_age_hours = env_config
         .dlq_max_age_hours
         .unwrap_or_else(|| project_config.dlq_permanent_max_age_hours());
-    let cleaned = db.clear_old_permanent_entries(dlq_max_age_hours)?;
+    let cleaned = db.clear_old_permanent_entries(dlq_max_age_hours).await?;
     if cleaned > 0 {
         tracing::info!(
             entries_removed = cleaned,
@@ -387,7 +388,7 @@ pub(crate) async fn run_streaming_loop(
                             events_processed: *events_processed.get(&config.name).unwrap_or(&0),
                             updated_at: Utc::now(),
                         };
-                        db.save_streaming_checkpoint(&checkpoint)?;
+                        db.save_streaming_checkpoint(&checkpoint).await?;
                     }
                     stream.ack();
 
@@ -456,7 +457,7 @@ pub(crate) async fn run_streaming_loop(
                     events_processed: *events_processed.get(&config.name).unwrap_or(&0),
                     updated_at: Utc::now(),
                 };
-                db.save_streaming_checkpoint(&checkpoint)?;
+                db.save_streaming_checkpoint(&checkpoint).await?;
                 config_checkpoint_lsns.insert(config.name.clone(), batch.ack_lsn);
             }
 
@@ -497,7 +498,7 @@ pub(crate) async fn run_streaming_loop(
             let maintenance_interval =
                 Duration::from_secs(project_config.maintenance_interval_secs());
             if last_maintenance.elapsed() >= maintenance_interval {
-                match db.run_maintenance(dlq_max_age_hours) {
+                match db.run_maintenance(dlq_max_age_hours).await {
                     Ok(cleaned) if cleaned > 0 => {
                         tracing::info!(
                             entries_removed = cleaned,
@@ -528,7 +529,7 @@ pub(crate) async fn run_streaming_loop(
 
         let mut checkpoint_lsns = Vec::new();
         for (_, config) in applied_configs {
-            if let Some(cp) = db.get_streaming_checkpoint(&config.name)? {
+            if let Some(cp) = db.get_streaming_checkpoint(&config.name).await? {
                 checkpoint_lsns.push(cp.lsn);
             }
         }

@@ -16,10 +16,10 @@ use common::*;
 
 /// Create a StateDb backed by a real file inside a temp directory.
 /// Returns both the dir handle (must be kept alive) and the initialized db.
-fn create_state_db() -> (tempfile::TempDir, StateDb) {
+async fn create_state_db() -> (tempfile::TempDir, StateDb) {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let path = dir.path().join("state.db");
-    let db = StateDb::open(&path).expect("failed to open state db");
+    let db = StateDb::open(&path).await.expect("failed to open state db");
     db.insert_config(&ConfigRecord {
         name: "test".to_string(),
         namespace: "test_ns".to_string(),
@@ -29,16 +29,19 @@ fn create_state_db() -> (tempfile::TempDir, StateDb) {
         tombstone_applied_at: None,
         namespace_prefix: None,
     })
+    .await
     .expect("failed to insert config record");
     (dir, db)
 }
 
 /// Re-open the state db from the same directory (simulates restart).
-fn reopen_state_db(dir: &tempfile::TempDir) -> StateDb {
+async fn reopen_state_db(dir: &tempfile::TempDir) -> StateDb {
     let path = dir.path().join("state.db");
 
     // No need to reinitialize -- tables already exist from first open.
-    StateDb::open(&path).expect("failed to reopen state db")
+    StateDb::open(&path)
+        .await
+        .expect("failed to reopen state db")
 }
 
 /// Backfill resumption after simulated crash.
@@ -54,7 +57,7 @@ async fn backfill_resumption_after_crash() {
     let (_ctx, client) = setup_replication_test("resumption_items").await;
     insert_rows(&client, "resumption_items", 1..=100).await;
 
-    let (state_dir, mut state_db) = create_state_db();
+    let (state_dir, mut state_db) = create_state_db().await;
 
     // Record a watermark LSN before backfill, simulating what production does.
     let watermark_lsn = get_current_wal_lsn(&client)
@@ -74,6 +77,7 @@ async fn backfill_resumption_after_crash() {
             error_message: None,
             watermark_lsn: Some(watermark_lsn),
         })
+        .await
         .expect("failed to save initial backfill progress");
 
     // --- Phase 1: partial backfill using a sink that fails after 5 batches ---
@@ -107,6 +111,7 @@ async fn backfill_resumption_after_crash() {
     // The checkpoints were saved by run_backfill itself, not manually set.
     let progress_after_crash = state_db
         .get_backfill_progress("test")
+        .await
         .expect("failed to load progress after crash")
         .expect("progress should exist after crash");
     assert_eq!(
@@ -133,7 +138,7 @@ async fn backfill_resumption_after_crash() {
     drop(state_db);
 
     // --- Phase 2: restart from same state file ---
-    let mut state_db2 = reopen_state_db(&state_dir);
+    let mut state_db2 = reopen_state_db(&state_dir).await;
 
     // Resume backfill using the reopened state db
     let sink2 = CollectingSink::new();
@@ -203,7 +208,7 @@ async fn cdc_resumption_after_crash() {
         .await
         .expect("failed to create publication");
 
-    let (state_dir, state_db) = create_state_db();
+    let (state_dir, state_db) = create_state_db().await;
 
     // Insert 10 rows to generate CDC events
     insert_rows(&client, "resumption_items", 1..=10).await;
@@ -238,6 +243,7 @@ async fn cdc_resumption_after_crash() {
             events_processed: 10,
             updated_at: Utc::now(),
         })
+        .await
         .expect("failed to save streaming checkpoint");
 
     // Give Postgres a moment to process the status update, then drop
@@ -249,11 +255,12 @@ async fn cdc_resumption_after_crash() {
 
     // --- Simulate crash: drop and reopen state db ---
     drop(state_db);
-    let state_db2 = reopen_state_db(&state_dir);
+    let state_db2 = reopen_state_db(&state_dir).await;
 
     // Verify checkpoint survived
     let checkpoint = state_db2
         .get_streaming_checkpoint("test")
+        .await
         .expect("failed to load checkpoint after crash")
         .expect("checkpoint should exist after crash");
     assert_eq!(
@@ -325,7 +332,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
         .await
         .expect("failed to create publication");
 
-    let (state_dir, mut state_db) = create_state_db();
+    let (state_dir, mut state_db) = create_state_db().await;
 
     // Insert seed data for backfill
     insert_rows(&client, "resumption_items", 1..=20).await;
@@ -368,6 +375,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
             error_message: None,
             watermark_lsn: Some(watermark_lsn),
         })
+        .await
         .expect("failed to save completed backfill progress");
 
     // --- Phase 2: CDC from watermark, process 5 events ---
@@ -405,6 +413,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
             events_processed: 5,
             updated_at: Utc::now(),
         })
+        .await
         .expect("failed to save streaming checkpoint");
 
     // Give Postgres time to process ack, then "crash"
@@ -414,11 +423,12 @@ async fn backfill_to_cdc_handoff_after_crash() {
     drop(state_db);
 
     // --- Phase 3: restart after crash ---
-    let state_db2 = reopen_state_db(&state_dir);
+    let state_db2 = reopen_state_db(&state_dir).await;
 
     // Verify backfill is marked Completed -- it should NOT be re-run
     let backfill_progress = state_db2
         .get_backfill_progress("test")
+        .await
         .expect("failed to load backfill progress after crash")
         .expect("backfill progress should exist");
     assert_eq!(
@@ -435,6 +445,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
     // Verify streaming checkpoint exists and differs from watermark
     let streaming_ckpt = state_db2
         .get_streaming_checkpoint("test")
+        .await
         .expect("failed to load streaming checkpoint after crash")
         .expect("streaming checkpoint should exist");
     assert_eq!(
@@ -485,6 +496,7 @@ async fn backfill_to_cdc_handoff_after_crash() {
     // Final sanity: backfill progress is still Completed (was NOT re-run)
     let final_progress = state_db2
         .get_backfill_progress("test")
+        .await
         .expect("failed to re-check backfill progress")
         .expect("backfill progress should still exist");
     assert_eq!(

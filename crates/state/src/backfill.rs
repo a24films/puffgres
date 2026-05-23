@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use strum::{AsRefStr, Display, EnumString};
@@ -57,10 +58,11 @@ impl BackfillProgress {
 
 /// Trait for persisting backfill cursor state. Implemented by `StateDb` for
 /// production use; tests can supply an in-memory implementation.
-pub trait BackfillCheckpointer {
-    fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError>;
+#[async_trait]
+pub trait BackfillCheckpointer: Send + Sync {
+    async fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError>;
 
-    fn save_progress(
+    async fn save_progress(
         &self,
         config_name: &str,
         last_id: &str,
@@ -68,53 +70,56 @@ pub trait BackfillCheckpointer {
     ) -> Result<(), StateError>;
 }
 
+#[async_trait]
 impl BackfillCheckpointer for StateDb {
-    fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError> {
-        self.get_backfill_cursor(config_name)
+    async fn load_progress(&self, config_name: &str) -> Result<Option<(String, u64)>, StateError> {
+        self.get_backfill_cursor(config_name).await
     }
 
-    fn save_progress(
+    async fn save_progress(
         &self,
         config_name: &str,
         last_id: &str,
         processed_rows: u64,
     ) -> Result<(), StateError> {
         self.save_backfill_cursor(config_name, last_id, processed_rows)
+            .await
     }
 }
 
 impl StateDb {
-    pub fn save_backfill_progress(&self, progress: &BackfillProgress) -> Result<(), StateError> {
-        let new = NewBackfillProgress {
-            config_name: &progress.config_name,
-            last_id: progress.last_id.as_deref(),
-            total_rows: progress
-                .total_rows
-                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
-            processed_rows: i64::from_ne_bytes(progress.processed_rows.to_ne_bytes()),
-            status: progress.status.as_ref(),
-            started_at: progress.started_at.as_ref().map(epoch::to_millis),
-            completed_at: progress.completed_at.as_ref().map(epoch::to_millis),
-            error_message: progress.error_message.as_deref(),
-            watermark_lsn: progress
-                .watermark_lsn
-                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
-        };
+    pub async fn save_backfill_progress(
+        &self,
+        progress: &BackfillProgress,
+    ) -> Result<(), StateError> {
+        let p = progress.clone();
+        self.run_blocking(move |conn| {
+            let new = NewBackfillProgress {
+                config_name: &p.config_name,
+                last_id: p.last_id.as_deref(),
+                total_rows: p.total_rows.map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+                processed_rows: i64::from_ne_bytes(p.processed_rows.to_ne_bytes()),
+                status: p.status.as_ref(),
+                started_at: p.started_at.as_ref().map(epoch::to_millis),
+                completed_at: p.completed_at.as_ref().map(epoch::to_millis),
+                error_message: p.error_message.as_deref(),
+                watermark_lsn: p.watermark_lsn.map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+            };
 
-        let mut conn = self.lock()?;
-        diesel::replace_into(backfill_progress::table)
-            .values(&new)
-            .execute(&mut *conn)?;
-
-        Ok(())
+            diesel::replace_into(backfill_progress::table)
+                .values(&new)
+                .execute(conn)?;
+            Ok(())
+        })
+        .await
     }
 
     /// Lightweight cursor load for the backfill loop — returns just (last_id, processed_rows).
-    pub fn get_backfill_cursor(
+    pub async fn get_backfill_cursor(
         &self,
         config_name: &str,
     ) -> Result<Option<(String, u64)>, StateError> {
-        let p = self.get_backfill_progress(config_name)?;
+        let p = self.get_backfill_progress(config_name).await?;
         Ok(p.and_then(|p| p.last_id.map(|id| (id, p.processed_rows))))
     }
 
@@ -124,67 +129,71 @@ impl StateDb {
     ///
     /// The read-modify-write is performed under a single lock acquisition so
     /// concurrent callers on cloned `StateDb` handles cannot regress cursor state.
-    pub fn save_backfill_cursor(
+    pub async fn save_backfill_cursor(
         &self,
         config_name: &str,
         last_id: &str,
         processed_rows: u64,
     ) -> Result<(), StateError> {
-        let mut conn = self.lock()?;
+        let config_name = config_name.to_string();
+        let last_id = last_id.to_string();
+        self.run_blocking(move |conn| {
+            // Read existing progress under the same lock.
+            let existing = backfill_progress::table
+                .filter(backfill_progress::config_name.eq(&config_name))
+                .first::<BackfillProgressRow>(conn)
+                .optional()?
+                .map(|r| BackfillProgress::from_row(&r))
+                .transpose()?;
 
-        // Read existing progress under the same lock.
-        let existing = backfill_progress::table
-            .filter(backfill_progress::config_name.eq(config_name))
-            .first::<BackfillProgressRow>(&mut *conn)
-            .optional()?
-            .map(|r| BackfillProgress::from_row(&r))
-            .transpose()?;
-
-        let started_at_millis = existing
-            .as_ref()
-            .and_then(|p| p.started_at)
-            .or_else(|| Some(Utc::now()))
-            .map(|dt| epoch::to_millis(&dt));
-
-        let new = NewBackfillProgress {
-            config_name,
-            last_id: Some(last_id),
-            total_rows: existing
+            let started_at_millis = existing
                 .as_ref()
-                .and_then(|p| p.total_rows)
-                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
-            processed_rows: i64::from_ne_bytes(processed_rows.to_ne_bytes()),
-            status: BackfillStatus::InProgress.as_ref(),
-            started_at: started_at_millis,
-            completed_at: None,
-            error_message: None,
-            watermark_lsn: existing
-                .as_ref()
-                .and_then(|p| p.watermark_lsn)
-                .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
-        };
+                .and_then(|p| p.started_at)
+                .or_else(|| Some(Utc::now()))
+                .map(|dt| epoch::to_millis(&dt));
 
-        diesel::replace_into(backfill_progress::table)
-            .values(&new)
-            .execute(&mut *conn)?;
+            let new = NewBackfillProgress {
+                config_name: &config_name,
+                last_id: Some(&last_id),
+                total_rows: existing
+                    .as_ref()
+                    .and_then(|p| p.total_rows)
+                    .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+                processed_rows: i64::from_ne_bytes(processed_rows.to_ne_bytes()),
+                status: BackfillStatus::InProgress.as_ref(),
+                started_at: started_at_millis,
+                completed_at: None,
+                error_message: None,
+                watermark_lsn: existing
+                    .as_ref()
+                    .and_then(|p| p.watermark_lsn)
+                    .map(|v| i64::from_ne_bytes(v.to_ne_bytes())),
+            };
 
-        Ok(())
+            diesel::replace_into(backfill_progress::table)
+                .values(&new)
+                .execute(conn)?;
+            Ok(())
+        })
+        .await
     }
 
-    pub fn get_backfill_progress(
+    pub async fn get_backfill_progress(
         &self,
         config_name: &str,
     ) -> Result<Option<BackfillProgress>, StateError> {
-        let mut conn = self.lock()?;
-        let row = backfill_progress::table
-            .filter(backfill_progress::config_name.eq(config_name))
-            .first::<BackfillProgressRow>(&mut *conn)
-            .optional()?;
-
-        match row {
-            Some(r) => Ok(Some(BackfillProgress::from_row(&r)?)),
-            None => Ok(None),
-        }
+        let config_name = config_name.to_string();
+        self.run_blocking(move |conn| {
+            let row = backfill_progress::table
+                .filter(backfill_progress::config_name.eq(&config_name))
+                .first::<BackfillProgressRow>(conn)
+                .optional()?;
+            match row {
+                Some(r) => Ok(Some(BackfillProgress::from_row(&r)?)),
+                None => Ok(None),
+            }
+        })
+        .await
     }
 }
 
@@ -207,16 +216,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn save_and_retrieve_backfill_progress() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn save_and_retrieve_backfill_progress() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let progress = sample_backfill_progress("film");
-        db.save_backfill_progress(&progress).unwrap();
+        db.save_backfill_progress(&progress).await.unwrap();
 
-        let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
+        let retrieved = db.get_backfill_progress("film").await.unwrap().unwrap();
         assert_eq!(retrieved.config_name, "film");
         assert_eq!(retrieved.last_id, Some("12345".to_string()));
         assert_eq!(retrieved.total_rows, Some(1000));
@@ -226,152 +234,153 @@ mod tests {
         assert!(retrieved.completed_at.is_none());
     }
 
-    #[test]
-    fn update_backfill_progress_upsert() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn update_backfill_progress_upsert() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut progress1 = sample_backfill_progress("film");
         progress1.processed_rows = 100;
         progress1.status = BackfillStatus::InProgress;
-        db.save_backfill_progress(&progress1).unwrap();
+        db.save_backfill_progress(&progress1).await.unwrap();
 
         let mut progress2 = sample_backfill_progress("film");
         progress2.processed_rows = 500;
         progress2.last_id = Some("67890".to_string());
-        db.save_backfill_progress(&progress2).unwrap();
+        db.save_backfill_progress(&progress2).await.unwrap();
 
-        let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
+        let retrieved = db.get_backfill_progress("film").await.unwrap().unwrap();
         assert_eq!(retrieved.processed_rows, 500);
         assert_eq!(retrieved.last_id, Some("67890".to_string()));
     }
 
-    #[test]
-    fn backfill_progress_deleted_when_config_deleted() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn backfill_progress_deleted_when_config_deleted() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let progress = sample_backfill_progress("film");
-        db.save_backfill_progress(&progress).unwrap();
+        db.save_backfill_progress(&progress).await.unwrap();
 
-        assert!(db.get_backfill_progress("film").unwrap().is_some());
+        assert!(db.get_backfill_progress("film").await.unwrap().is_some());
 
-        {
-            let mut conn = db.lock().unwrap();
-            diesel::delete(
-                crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
-            )
-            .execute(&mut *conn)
-            .unwrap();
-        }
+        db.delete_config("film").await.unwrap();
 
-        assert!(db.get_backfill_progress("film").unwrap().is_none());
+        assert!(db.get_backfill_progress("film").await.unwrap().is_none());
     }
 
-    #[test]
-    fn get_nonexistent_backfill_progress_returns_none() {
-        let (_dir, db) = setup_test_db();
-        assert!(db.get_backfill_progress("nonexistent").unwrap().is_none());
+    #[tokio::test]
+    async fn get_nonexistent_backfill_progress_returns_none() {
+        let (_dir, db) = setup_test_db().await;
+        assert!(
+            db.get_backfill_progress("nonexistent")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
-    #[test]
-    fn backfill_progress_requires_valid_config() {
-        let (_dir, db) = setup_test_db();
+    #[tokio::test]
+    async fn backfill_progress_requires_valid_config() {
+        let (_dir, db) = setup_test_db().await;
         let progress = sample_backfill_progress("nonexistent_config");
 
-        let result = db.save_backfill_progress(&progress);
+        let result = db.save_backfill_progress(&progress).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn watermark_lsn_saved_and_retrieved() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn watermark_lsn_saved_and_retrieved() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut progress = sample_backfill_progress("film");
         progress.watermark_lsn = Some(42_000);
-        db.save_backfill_progress(&progress).unwrap();
+        db.save_backfill_progress(&progress).await.unwrap();
 
-        let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
+        let retrieved = db.get_backfill_progress("film").await.unwrap().unwrap();
         assert_eq!(retrieved.watermark_lsn, Some(42_000));
     }
 
-    #[test]
-    fn get_backfill_cursor_returns_none_when_no_progress() {
-        let (_dir, db) = setup_test_db();
-        assert!(db.get_backfill_cursor("nonexistent").unwrap().is_none());
+    #[tokio::test]
+    async fn get_backfill_cursor_returns_none_when_no_progress() {
+        let (_dir, db) = setup_test_db().await;
+        assert!(
+            db.get_backfill_cursor("nonexistent")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
-    #[test]
-    fn get_backfill_cursor_returns_none_when_no_last_id() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn get_backfill_cursor_returns_none_when_no_last_id() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut progress = sample_backfill_progress("film");
         progress.last_id = None;
-        db.save_backfill_progress(&progress).unwrap();
+        db.save_backfill_progress(&progress).await.unwrap();
 
-        assert!(db.get_backfill_cursor("film").unwrap().is_none());
+        assert!(db.get_backfill_cursor("film").await.unwrap().is_none());
     }
 
-    #[test]
-    fn get_backfill_cursor_returns_id_and_count() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn get_backfill_cursor_returns_id_and_count() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
         db.save_backfill_progress(&sample_backfill_progress("film"))
+            .await
             .unwrap();
 
-        let (id, rows) = db.get_backfill_cursor("film").unwrap().unwrap();
+        let (id, rows) = db.get_backfill_cursor("film").await.unwrap().unwrap();
         assert_eq!(id, "12345");
         assert_eq!(rows, 100);
     }
 
-    #[test]
-    fn save_backfill_cursor_creates_in_progress_record() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn save_backfill_cursor_creates_in_progress_record() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
-        db.save_backfill_cursor("film", "500", 250).unwrap();
+        db.save_backfill_cursor("film", "500", 250).await.unwrap();
 
-        let p = db.get_backfill_progress("film").unwrap().unwrap();
+        let p = db.get_backfill_progress("film").await.unwrap().unwrap();
         assert_eq!(p.last_id, Some("500".to_string()));
         assert_eq!(p.processed_rows, 250);
         assert_eq!(p.status, BackfillStatus::InProgress);
         assert!(p.started_at.is_some());
     }
 
-    #[test]
-    fn save_backfill_cursor_updates_existing() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn save_backfill_cursor_updates_existing() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
-        db.save_backfill_cursor("film", "100", 50).unwrap();
-        db.save_backfill_cursor("film", "200", 100).unwrap();
+        db.save_backfill_cursor("film", "100", 50).await.unwrap();
+        db.save_backfill_cursor("film", "200", 100).await.unwrap();
 
-        let (id, rows) = db.get_backfill_cursor("film").unwrap().unwrap();
+        let (id, rows) = db.get_backfill_cursor("film").await.unwrap().unwrap();
         assert_eq!(id, "200");
         assert_eq!(rows, 100);
     }
 
-    #[test]
-    fn save_backfill_cursor_preserves_watermark_lsn() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn save_backfill_cursor_preserves_watermark_lsn() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         // Set initial progress with a watermark
         let mut progress = sample_backfill_progress("film");
         progress.watermark_lsn = Some(99_000);
         progress.last_id = Some("100".to_string());
         progress.processed_rows = 50;
-        db.save_backfill_progress(&progress).unwrap();
+        db.save_backfill_progress(&progress).await.unwrap();
 
         // save_backfill_cursor should NOT clear watermark_lsn
-        db.save_backfill_cursor("film", "200", 100).unwrap();
+        db.save_backfill_cursor("film", "200", 100).await.unwrap();
 
-        let p = db.get_backfill_progress("film").unwrap().unwrap();
+        let p = db.get_backfill_progress("film").await.unwrap().unwrap();
         assert_eq!(p.last_id, Some("200".to_string()));
         assert_eq!(p.processed_rows, 100);
         assert_eq!(
@@ -381,31 +390,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn watermark_lsn_above_i32_max_roundtrips() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn watermark_lsn_above_i32_max_roundtrips() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let big_lsn: u64 = (i32::MAX as u64) + 5_000;
         let mut progress = sample_backfill_progress("film");
         progress.watermark_lsn = Some(big_lsn);
-        db.save_backfill_progress(&progress).unwrap();
+        db.save_backfill_progress(&progress).await.unwrap();
 
-        let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
+        let retrieved = db.get_backfill_progress("film").await.unwrap().unwrap();
         assert_eq!(retrieved.watermark_lsn, Some(big_lsn));
     }
 
-    #[test]
-    fn watermark_lsn_defaults_to_none() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn watermark_lsn_defaults_to_none() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let progress = sample_backfill_progress("film");
-        db.save_backfill_progress(&progress).unwrap();
+        db.save_backfill_progress(&progress).await.unwrap();
 
-        let retrieved = db.get_backfill_progress("film").unwrap().unwrap();
+        let retrieved = db.get_backfill_progress("film").await.unwrap().unwrap();
         assert_eq!(retrieved.watermark_lsn, None);
     }
 }

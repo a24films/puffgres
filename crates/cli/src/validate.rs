@@ -92,10 +92,12 @@ pub async fn preflight_check(
     }
 
     // Check against state DB for namespace conflicts
-    let db =
-        StateDb::open(state_db_path).map_err(|e| format!("failed to open state database: {e}"))?;
+    let db = StateDb::open(state_db_path)
+        .await
+        .map_err(|e| format!("failed to open state database: {e}"))?;
     let applied = db
         .list_configs()
+        .await
         .map_err(|e| format!("failed to list applied configs: {e}"))?;
     let applied_namespaces: HashSet<String> = applied.iter().map(|r| r.namespace.clone()).collect();
     for (path, config) in &valid_configs {

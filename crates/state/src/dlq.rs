@@ -109,9 +109,9 @@ impl DlqEntry {
             StateError::InvalidState(format!("invalid created_at millis: {}", row.created_at))
         })?;
 
-        let last_retry_at = row.last_retry_at.map(|ms| epoch::from_millis(ms)).flatten();
+        let last_retry_at = row.last_retry_at.and_then(epoch::from_millis);
 
-        let permanent_at = row.permanent_at.map(|ms| epoch::from_millis(ms)).flatten();
+        let permanent_at = row.permanent_at.and_then(epoch::from_millis);
 
         let error_kind = ErrorKind::from_str(&row.error_kind)?;
 
@@ -135,214 +135,238 @@ impl DlqEntry {
 }
 
 impl StateDb {
-    pub fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
-        let op_str = entry.operation.as_ref().map(|o| o.to_string());
-        let new = NewDlqEntry {
-            config_name: &entry.config_name,
-            lsn: i64::from_ne_bytes(entry.lsn.to_ne_bytes()),
-            doc_id: entry.doc_id.as_deref(),
-            error_message: &entry.error_message,
-            error_kind: entry.error_kind.to_str(),
-            retry_count: i32::try_from(entry.retry_count).map_err(|_| {
-                StateError::InvalidState(format!(
-                    "retry_count {} exceeds i32::MAX",
-                    entry.retry_count
+    pub async fn insert_dlq_entry(&self, entry: &DlqEntry) -> Result<i64, StateError> {
+        let e = entry.clone();
+        self.run_blocking(move |conn| {
+            let op_str = e.operation.as_ref().map(|o| o.to_string());
+            let new = NewDlqEntry {
+                config_name: &e.config_name,
+                lsn: i64::from_ne_bytes(e.lsn.to_ne_bytes()),
+                doc_id: e.doc_id.as_deref(),
+                error_message: &e.error_message,
+                error_kind: e.error_kind.to_str(),
+                retry_count: i32::try_from(e.retry_count).map_err(|_| {
+                    StateError::InvalidState(format!(
+                        "retry_count {} exceeds i32::MAX",
+                        e.retry_count
+                    ))
+                })?,
+                created_at: epoch::to_millis(&e.created_at),
+                last_retry_at: e.last_retry_at.as_ref().map(epoch::to_millis),
+                permanent_at: e.permanent_at.as_ref().map(epoch::to_millis),
+                operation: op_str.as_deref(),
+            };
+
+            let id = conn.transaction::<i64, diesel::result::Error, _>(|conn| {
+                diesel::insert_into(dlq::table).values(&new).execute(conn)?;
+                diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "last_insert_rowid()",
                 ))
-            })?,
-            created_at: epoch::to_millis(&entry.created_at),
-            last_retry_at: entry.last_retry_at.as_ref().map(epoch::to_millis),
-            permanent_at: entry.permanent_at.as_ref().map(epoch::to_millis),
-            operation: op_str.as_deref(),
-        };
+                .get_result(conn)
+            })?;
 
-        let mut conn = self.lock()?;
-        let id = conn.transaction::<i64, diesel::result::Error, _>(|conn| {
-            diesel::insert_into(dlq::table).values(&new).execute(conn)?;
-
-            diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
-                "last_insert_rowid()",
-            ))
-            .get_result(conn)
-        })?;
-
-        Ok(id)
+            Ok(id)
+        })
+        .await
     }
 
-    pub fn get_dlq_entry(&self, id: i64) -> Result<Option<DlqEntry>, StateError> {
-        let mut conn = self.lock()?;
-        let row = dlq::table
-            .filter(dlq::id.eq(id))
-            .first::<DlqRow>(&mut *conn)
-            .optional()?;
-
-        match row {
-            Some(r) => Ok(Some(DlqEntry::from_row(&r)?)),
-            None => Ok(None),
-        }
+    pub async fn get_dlq_entry(&self, id: i64) -> Result<Option<DlqEntry>, StateError> {
+        self.run_blocking(move |conn| {
+            let row = dlq::table
+                .filter(dlq::id.eq(id))
+                .first::<DlqRow>(conn)
+                .optional()?;
+            match row {
+                Some(r) => Ok(Some(DlqEntry::from_row(&r)?)),
+                None => Ok(None),
+            }
+        })
+        .await
     }
 
-    pub fn list_dlq_entries(
+    pub async fn list_dlq_entries(
         &self,
         config_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<DlqEntry>, StateError> {
-        let mut conn = self.lock()?;
-        let rows: Vec<DlqRow> = match config_name {
-            Some(name) => dlq::table
-                .filter(dlq::config_name.eq(name))
-                .order(dlq::created_at.desc())
-                .limit(i64::try_from(limit).unwrap_or(i64::MAX))
-                .load(&mut *conn)?,
-            None => dlq::table
-                .order(dlq::created_at.desc())
-                .limit(i64::try_from(limit).unwrap_or(i64::MAX))
-                .load(&mut *conn)?,
-        };
-
-        rows.iter().map(DlqEntry::from_row).collect()
+        let name = config_name.map(|s| s.to_string());
+        self.run_blocking(move |conn| {
+            let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+            let rows: Vec<DlqRow> = match name {
+                Some(n) => dlq::table
+                    .filter(dlq::config_name.eq(&n))
+                    .order(dlq::created_at.desc())
+                    .limit(limit_i64)
+                    .load(conn)?,
+                None => dlq::table
+                    .order(dlq::created_at.desc())
+                    .limit(limit_i64)
+                    .load(conn)?,
+            };
+            rows.iter().map(DlqEntry::from_row).collect()
+        })
+        .await
     }
 
-    pub fn increment_retry(&self, id: i64) -> Result<(), StateError> {
-        let now = epoch::to_millis(&Utc::now());
-        let mut conn = self.lock()?;
-        let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
-            .set((
-                dlq::retry_count.eq(dlq::retry_count + 1),
-                dlq::last_retry_at.eq(now),
-            ))
-            .execute(&mut *conn)?;
-
-        if rows_affected == 0 {
-            return Err(StateError::NotFound(format!("dlq entry with id {}", id)));
-        }
-
-        Ok(())
-    }
-
-    pub fn delete_dlq_entry(&self, id: i64) -> Result<bool, StateError> {
-        let mut conn = self.lock()?;
-        let rows_affected =
-            diesel::delete(dlq::table.filter(dlq::id.eq(id))).execute(&mut *conn)?;
-        Ok(rows_affected > 0)
-    }
-
-    pub fn clear_dlq(&self, config_name: Option<&str>) -> Result<u64, StateError> {
-        let mut conn = self.lock()?;
-        let rows_affected = match config_name {
-            Some(name) => {
-                diesel::delete(dlq::table.filter(dlq::config_name.eq(name))).execute(&mut *conn)?
+    pub async fn increment_retry(&self, id: i64) -> Result<(), StateError> {
+        self.run_blocking(move |conn| {
+            let now = epoch::to_millis(&Utc::now());
+            let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
+                .set((
+                    dlq::retry_count.eq(dlq::retry_count + 1),
+                    dlq::last_retry_at.eq(now),
+                ))
+                .execute(conn)?;
+            if rows_affected == 0 {
+                return Err(StateError::NotFound(format!("dlq entry with id {id}")));
             }
-            None => diesel::delete(dlq::table).execute(&mut *conn)?,
-        };
-        Ok(u64::try_from(rows_affected).unwrap_or(0))
+            Ok(())
+        })
+        .await
     }
 
-    pub fn list_retryable_entries(&self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
+    pub async fn delete_dlq_entry(&self, id: i64) -> Result<bool, StateError> {
+        self.run_blocking(move |conn| {
+            let rows_affected = diesel::delete(dlq::table.filter(dlq::id.eq(id))).execute(conn)?;
+            Ok(rows_affected > 0)
+        })
+        .await
+    }
+
+    pub async fn clear_dlq(&self, config_name: Option<&str>) -> Result<u64, StateError> {
+        let name = config_name.map(|s| s.to_string());
+        self.run_blocking(move |conn| {
+            let rows_affected = match name {
+                Some(n) => {
+                    diesel::delete(dlq::table.filter(dlq::config_name.eq(&n))).execute(conn)?
+                }
+                None => diesel::delete(dlq::table).execute(conn)?,
+            };
+            Ok(u64::try_from(rows_affected).unwrap_or(0))
+        })
+        .await
+    }
+
+    pub async fn list_retryable_entries(&self, limit: usize) -> Result<Vec<DlqEntry>, StateError> {
         use crate::schema::configs;
-
-        let mut conn = self.lock()?;
-        let rows = dlq::table
-            .inner_join(configs::table)
-            .filter(dlq::error_kind.eq("retryable"))
-            .filter(configs::tombstone_applied_at.is_null())
-            .order(dlq::created_at.asc())
-            .limit(i64::try_from(limit).unwrap_or(i64::MAX))
-            .select(dlq::all_columns)
-            .load::<DlqRow>(&mut *conn)?;
-
-        rows.iter().map(DlqEntry::from_row).collect()
+        self.run_blocking(move |conn| {
+            let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+            let rows = dlq::table
+                .inner_join(configs::table)
+                .filter(dlq::error_kind.eq("retryable"))
+                .filter(configs::tombstone_applied_at.is_null())
+                .order(dlq::created_at.asc())
+                .limit(limit_i64)
+                .select(dlq::all_columns)
+                .load::<DlqRow>(conn)?;
+            rows.iter().map(DlqEntry::from_row).collect()
+        })
+        .await
     }
 
-    pub fn mark_permanent(&self, id: i64, error: &str) -> Result<(), StateError> {
-        let now = epoch::to_millis(&Utc::now());
-        let mut conn = self.lock()?;
-        let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
-            .set((
-                dlq::error_kind.eq("permanent"),
-                dlq::error_message.eq(error),
-                dlq::last_retry_at.eq(now),
-                dlq::permanent_at.eq(now),
-            ))
-            .execute(&mut *conn)?;
-
-        if rows_affected == 0 {
-            return Err(StateError::NotFound(format!("dlq entry with id {}", id)));
-        }
-
-        Ok(())
+    pub async fn mark_permanent(&self, id: i64, error: &str) -> Result<(), StateError> {
+        let error = error.to_string();
+        self.run_blocking(move |conn| {
+            let now = epoch::to_millis(&Utc::now());
+            let rows_affected = diesel::update(dlq::table.filter(dlq::id.eq(id)))
+                .set((
+                    dlq::error_kind.eq("permanent"),
+                    dlq::error_message.eq(&error),
+                    dlq::last_retry_at.eq(now),
+                    dlq::permanent_at.eq(now),
+                ))
+                .execute(conn)?;
+            if rows_affected == 0 {
+                return Err(StateError::NotFound(format!("dlq entry with id {id}")));
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Mark all retryable DLQ entries as permanent in one shot.
     /// Returns the number of entries updated.
-    pub fn mark_all_retryable_permanent(&self, error: &str) -> Result<u64, StateError> {
-        let now = epoch::to_millis(&Utc::now());
-        let mut conn = self.lock()?;
-        let rows_affected = diesel::update(dlq::table.filter(dlq::error_kind.eq("retryable")))
-            .set((
-                dlq::error_kind.eq("permanent"),
-                dlq::error_message.eq(error),
-                dlq::last_retry_at.eq(now),
-                dlq::permanent_at.eq(now),
-            ))
-            .execute(&mut *conn)?;
-
-        Ok(u64::try_from(rows_affected).unwrap_or(0))
+    pub async fn mark_all_retryable_permanent(&self, error: &str) -> Result<u64, StateError> {
+        let error = error.to_string();
+        self.run_blocking(move |conn| {
+            let now = epoch::to_millis(&Utc::now());
+            let rows_affected = diesel::update(dlq::table.filter(dlq::error_kind.eq("retryable")))
+                .set((
+                    dlq::error_kind.eq("permanent"),
+                    dlq::error_message.eq(&error),
+                    dlq::last_retry_at.eq(now),
+                    dlq::permanent_at.eq(now),
+                ))
+                .execute(conn)?;
+            Ok(u64::try_from(rows_affected).unwrap_or(0))
+        })
+        .await
     }
 
     /// Returns (retryable_count, permanent_count) for a given config or globally.
-    pub fn dlq_count_by_kind(&self, config_name: Option<&str>) -> Result<(u64, u64), StateError> {
-        let mut conn = self.lock()?;
-        let rows: Vec<(String, i64)> = match config_name {
-            Some(name) => dlq::table
-                .filter(dlq::config_name.eq(name))
-                .group_by(dlq::error_kind)
-                .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
-                .load(&mut *conn)?,
-            None => dlq::table
-                .group_by(dlq::error_kind)
-                .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
-                .load(&mut *conn)?,
-        };
+    pub async fn dlq_count_by_kind(
+        &self,
+        config_name: Option<&str>,
+    ) -> Result<(u64, u64), StateError> {
+        let name = config_name.map(|s| s.to_string());
+        self.run_blocking(move |conn| {
+            let rows: Vec<(String, i64)> = match name {
+                Some(n) => dlq::table
+                    .filter(dlq::config_name.eq(&n))
+                    .group_by(dlq::error_kind)
+                    .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
+                    .load(conn)?,
+                None => dlq::table
+                    .group_by(dlq::error_kind)
+                    .select((dlq::error_kind, diesel::dsl::count(dlq::id)))
+                    .load(conn)?,
+            };
 
-        let mut retryable = 0u64;
-        let mut permanent = 0u64;
-        for (kind, count) in rows {
-            match kind.as_str() {
-                "retryable" => retryable = u64::try_from(count).unwrap_or(0),
-                "permanent" => permanent = u64::try_from(count).unwrap_or(0),
-                _ => {}
+            let mut retryable = 0u64;
+            let mut permanent = 0u64;
+            for (kind, count) in rows {
+                match kind.as_str() {
+                    "retryable" => retryable = u64::try_from(count).unwrap_or(0),
+                    "permanent" => permanent = u64::try_from(count).unwrap_or(0),
+                    _ => {}
+                }
             }
-        }
-        Ok((retryable, permanent))
+            Ok((retryable, permanent))
+        })
+        .await
     }
 
     /// Delete permanent DLQ entries whose permanence is older than `max_age_hours` hours.
-    pub fn clear_old_permanent_entries(&self, max_age_hours: u64) -> Result<u64, StateError> {
-        let cutoff =
-            Utc::now() - chrono::Duration::hours(i64::try_from(max_age_hours).unwrap_or(i64::MAX));
-        let cutoff_millis = epoch::to_millis(&cutoff);
+    pub async fn clear_old_permanent_entries(&self, max_age_hours: u64) -> Result<u64, StateError> {
+        self.run_blocking(move |conn| {
+            let cutoff = Utc::now()
+                - chrono::Duration::hours(i64::try_from(max_age_hours).unwrap_or(i64::MAX));
+            let cutoff_millis = epoch::to_millis(&cutoff);
 
-        let mut conn = self.lock()?;
-        let rows_affected = diesel::delete(
-            dlq::table
-                .filter(dlq::error_kind.eq("permanent"))
-                .filter(dlq::permanent_at.lt(cutoff_millis)),
-        )
-        .execute(&mut *conn)?;
-
-        Ok(u64::try_from(rows_affected).unwrap_or(0))
+            let rows_affected = diesel::delete(
+                dlq::table
+                    .filter(dlq::error_kind.eq("permanent"))
+                    .filter(dlq::permanent_at.lt(cutoff_millis)),
+            )
+            .execute(conn)?;
+            Ok(u64::try_from(rows_affected).unwrap_or(0))
+        })
+        .await
     }
 
-    pub fn dlq_count(&self, config_name: Option<&str>) -> Result<u64, StateError> {
-        let mut conn = self.lock()?;
-        let count: i64 = match config_name {
-            Some(name) => dlq::table
-                .filter(dlq::config_name.eq(name))
-                .count()
-                .get_result(&mut *conn)?,
-            None => dlq::table.count().get_result(&mut *conn)?,
-        };
-        Ok(u64::try_from(count).unwrap_or(0))
+    pub async fn dlq_count(&self, config_name: Option<&str>) -> Result<u64, StateError> {
+        let name = config_name.map(|s| s.to_string());
+        self.run_blocking(move |conn| {
+            let count: i64 = match name {
+                Some(n) => dlq::table
+                    .filter(dlq::config_name.eq(&n))
+                    .count()
+                    .get_result(conn)?,
+                None => dlq::table.count().get_result(conn)?,
+            };
+            Ok(u64::try_from(count).unwrap_or(0))
+        })
+        .await
     }
 }
 
@@ -371,16 +395,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn insert_and_retrieve_entry() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn insert_and_retrieve_entry() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
-        let id = db.insert_dlq_entry(&entry).unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
 
-        let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
+        let retrieved = db.get_dlq_entry(id).await.unwrap().unwrap();
         assert_eq!(retrieved.config_name, "film");
         assert_eq!(retrieved.lsn, 1000);
         assert_eq!(retrieved.doc_id, Some(r#"{"Uint":42}"#.to_string()));
@@ -390,25 +413,23 @@ mod tests {
         assert!(retrieved.last_retry_at.is_none());
     }
 
-    #[test]
-    fn insert_and_retrieve_entry_without_doc_id() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn insert_and_retrieve_entry_without_doc_id() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
         entry.doc_id = None;
-        let id = db.insert_dlq_entry(&entry).unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
 
-        let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
+        let retrieved = db.get_dlq_entry(id).await.unwrap().unwrap();
         assert_eq!(retrieved.doc_id, None);
     }
 
-    #[test]
-    fn insert_and_retrieve_delete_operation() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn insert_and_retrieve_delete_operation() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = DlqEntry::retryable(
             "film",
@@ -417,199 +438,204 @@ mod tests {
             Some(r#"{"Uint":42}"#.to_string()),
             "network error",
         );
-        let id = db.insert_dlq_entry(&entry).unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
 
-        let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
+        let retrieved = db.get_dlq_entry(id).await.unwrap().unwrap();
         assert_eq!(retrieved.operation, Some(DlqOperation::Delete));
     }
 
-    #[test]
-    fn list_with_config_filter() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn list_with_config_filter() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("film", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 300, ErrorKind::Retryable))
+            .await
             .unwrap();
 
-        let film_entries = db.list_dlq_entries(Some("film"), 100).unwrap();
+        let film_entries = db.list_dlq_entries(Some("film"), 100).await.unwrap();
         assert_eq!(film_entries.len(), 2);
         assert!(film_entries.iter().all(|e| e.config_name == "film"));
     }
 
-    #[test]
-    fn list_without_config_filter() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn list_without_config_filter() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
 
-        let all_entries = db.list_dlq_entries(None, 100).unwrap();
+        let all_entries = db.list_dlq_entries(None, 100).await.unwrap();
         assert_eq!(all_entries.len(), 2);
     }
 
-    #[test]
-    fn increment_retry_count() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn increment_retry_count() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
-        let id = db.insert_dlq_entry(&entry).unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
 
-        db.increment_retry(id).unwrap();
+        db.increment_retry(id).await.unwrap();
 
-        let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
+        let retrieved = db.get_dlq_entry(id).await.unwrap().unwrap();
         assert_eq!(retrieved.retry_count, 1);
         assert!(retrieved.last_retry_at.is_some());
 
-        db.increment_retry(id).unwrap();
+        db.increment_retry(id).await.unwrap();
 
-        let retrieved = db.get_dlq_entry(id).unwrap().unwrap();
+        let retrieved = db.get_dlq_entry(id).await.unwrap().unwrap();
         assert_eq!(retrieved.retry_count, 2);
     }
 
-    #[test]
-    fn clear_by_config_name() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn clear_by_config_name() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("film", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 300, ErrorKind::Retryable))
+            .await
             .unwrap();
 
-        let deleted = db.clear_dlq(Some("film")).unwrap();
+        let deleted = db.clear_dlq(Some("film")).await.unwrap();
         assert_eq!(deleted, 2);
 
-        let remaining = db.list_dlq_entries(None, 100).unwrap();
+        let remaining = db.list_dlq_entries(None, 100).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].config_name, "actor");
     }
 
-    #[test]
-    fn clear_all() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn clear_all() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
 
-        let deleted = db.clear_dlq(None).unwrap();
+        let deleted = db.clear_dlq(None).await.unwrap();
         assert_eq!(deleted, 2);
 
-        let remaining = db.list_dlq_entries(None, 100).unwrap();
+        let remaining = db.list_dlq_entries(None, 100).await.unwrap();
         assert_eq!(remaining.len(), 0);
     }
 
-    #[test]
-    fn delete_dlq_entry_returns_true_when_exists() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn delete_dlq_entry_returns_true_when_exists() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
-        let id = db.insert_dlq_entry(&entry).unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
 
-        let deleted = db.delete_dlq_entry(id).unwrap();
+        let deleted = db.delete_dlq_entry(id).await.unwrap();
         assert!(deleted);
-        assert!(db.get_dlq_entry(id).unwrap().is_none());
+        assert!(db.get_dlq_entry(id).await.unwrap().is_none());
     }
 
-    #[test]
-    fn delete_dlq_entry_returns_false_when_not_exists() {
-        let (_dir, db) = setup_test_db();
-        let deleted = db.delete_dlq_entry(999).unwrap();
+    #[tokio::test]
+    async fn delete_dlq_entry_returns_false_when_not_exists() {
+        let (_dir, db) = setup_test_db().await;
+        let deleted = db.delete_dlq_entry(999).await.unwrap();
         assert!(!deleted);
     }
 
-    #[test]
-    fn dlq_count_with_config_filter() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn dlq_count_with_config_filter() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("film", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 300, ErrorKind::Retryable))
+            .await
             .unwrap();
 
-        assert_eq!(db.dlq_count(Some("film")).unwrap(), 2);
-        assert_eq!(db.dlq_count(Some("actor")).unwrap(), 1);
+        assert_eq!(db.dlq_count(Some("film")).await.unwrap(), 2);
+        assert_eq!(db.dlq_count(Some("actor")).await.unwrap(), 1);
     }
 
-    #[test]
-    fn dlq_count_without_filter() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn dlq_count_without_filter() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
 
-        assert_eq!(db.dlq_count(None).unwrap(), 2);
+        assert_eq!(db.dlq_count(None).await.unwrap(), 2);
     }
 
-    #[test]
-    fn dlq_entry_deleted_when_config_deleted() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn dlq_entry_deleted_when_config_deleted() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 1000, ErrorKind::Retryable);
-        let id = db.insert_dlq_entry(&entry).unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
 
-        assert!(db.get_dlq_entry(id).unwrap().is_some());
+        assert!(db.get_dlq_entry(id).await.unwrap().is_some());
 
-        {
-            let mut conn = db.lock().unwrap();
-            diesel::delete(
-                crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
-            )
-            .execute(&mut *conn)
-            .unwrap();
-        }
+        db.delete_config("film").await.unwrap();
 
-        assert!(db.get_dlq_entry(id).unwrap().is_none());
+        assert!(db.get_dlq_entry(id).await.unwrap().is_none());
     }
 
-    #[test]
-    fn dlq_entry_requires_valid_config() {
-        let (_dir, db) = setup_test_db();
+    #[tokio::test]
+    async fn dlq_entry_requires_valid_config() {
+        let (_dir, db) = setup_test_db().await;
         let entry = sample_dlq_entry("nonexistent_config", 1000, ErrorKind::Retryable);
 
-        let result = db.insert_dlq_entry(&entry);
+        let result = db.insert_dlq_entry(&entry).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn get_nonexistent_dlq_entry_returns_none() {
-        let (_dir, db) = setup_test_db();
-        assert!(db.get_dlq_entry(999).unwrap().is_none());
+    #[tokio::test]
+    async fn get_nonexistent_dlq_entry_returns_none() {
+        let (_dir, db) = setup_test_db().await;
+        assert!(db.get_dlq_entry(999).await.unwrap().is_none());
     }
 
-    #[test]
-    fn increment_retry_fails_for_nonexistent_entry() {
-        let (_dir, db) = setup_test_db();
-        let result = db.increment_retry(999);
+    #[tokio::test]
+    async fn increment_retry_fails_for_nonexistent_entry() {
+        let (_dir, db) = setup_test_db().await;
+        let result = db.increment_retry(999).await;
         assert!(result.is_err());
     }
 
@@ -650,19 +676,22 @@ mod tests {
         assert_eq!(entry.doc_id, Some(r#"{"Uint":2}"#.to_string()));
     }
 
-    #[test]
-    fn list_retryable_entries() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn list_retryable_entries() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("film", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("film", 300, ErrorKind::Retryable))
+            .await
             .unwrap();
 
-        let retryable = db.list_retryable_entries(100).unwrap();
+        let retryable = db.list_retryable_entries(100).await.unwrap();
         assert_eq!(retryable.len(), 2);
         assert!(
             retryable
@@ -671,102 +700,109 @@ mod tests {
         );
     }
 
-    #[test]
-    fn list_retryable_entries_excludes_tombstoned() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn list_retryable_entries_excludes_tombstoned() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 200, ErrorKind::Retryable))
+            .await
             .unwrap();
 
-        // Tombstone "actor"
-        db.tombstone_config("actor").unwrap();
+        db.tombstone_config("actor").await.unwrap();
 
-        let retryable = db.list_retryable_entries(100).unwrap();
+        let retryable = db.list_retryable_entries(100).await.unwrap();
         assert_eq!(retryable.len(), 1);
         assert_eq!(retryable[0].config_name, "film");
     }
 
-    #[test]
-    fn mark_permanent() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn mark_permanent() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
-        let id = db.insert_dlq_entry(&entry).unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
 
-        db.mark_permanent(id, "max retries exhausted").unwrap();
+        db.mark_permanent(id, "max retries exhausted")
+            .await
+            .unwrap();
 
-        let updated = db.get_dlq_entry(id).unwrap().unwrap();
+        let updated = db.get_dlq_entry(id).await.unwrap().unwrap();
         assert_eq!(updated.error_kind, ErrorKind::Permanent);
         assert_eq!(updated.error_message, "max retries exhausted");
         assert!(updated.last_retry_at.is_some());
         assert!(updated.permanent_at.is_some());
     }
 
-    #[test]
-    fn mark_permanent_nonexistent_fails() {
-        let (_dir, db) = setup_test_db();
-        assert!(db.mark_permanent(999, "error").is_err());
+    #[tokio::test]
+    async fn mark_permanent_nonexistent_fails() {
+        let (_dir, db) = setup_test_db().await;
+        assert!(db.mark_permanent(999, "error").await.is_err());
     }
 
-    #[test]
-    fn dlq_count_by_kind_empty() {
-        let (_dir, db) = setup_test_db();
-        let (r, p) = db.dlq_count_by_kind(None).unwrap();
+    #[tokio::test]
+    async fn dlq_count_by_kind_empty() {
+        let (_dir, db) = setup_test_db().await;
+        let (r, p) = db.dlq_count_by_kind(None).await.unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
     }
 
-    #[test]
-    fn dlq_count_by_kind_mixed() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
-        db.insert_config(&sample_config("actor")).unwrap();
+    #[tokio::test]
+    async fn dlq_count_by_kind_mixed() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.insert_config(&sample_config("actor")).await.unwrap();
 
         db.insert_dlq_entry(&sample_dlq_entry("film", 100, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("film", 200, ErrorKind::Permanent))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("film", 300, ErrorKind::Retryable))
+            .await
             .unwrap();
         db.insert_dlq_entry(&sample_dlq_entry("actor", 400, ErrorKind::Permanent))
+            .await
             .unwrap();
 
-        let (r, p) = db.dlq_count_by_kind(None).unwrap();
+        let (r, p) = db.dlq_count_by_kind(None).await.unwrap();
         assert_eq!(r, 2);
         assert_eq!(p, 2);
 
-        let (r, p) = db.dlq_count_by_kind(Some("film")).unwrap();
+        let (r, p) = db.dlq_count_by_kind(Some("film")).await.unwrap();
         assert_eq!(r, 2);
         assert_eq!(p, 1);
 
-        let (r, p) = db.dlq_count_by_kind(Some("actor")).unwrap();
+        let (r, p) = db.dlq_count_by_kind(Some("actor")).await.unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 1);
     }
 
-    #[test]
-    fn dlq_count_by_kind_nonexistent_config() {
-        let (_dir, db) = setup_test_db();
-        let (r, p) = db.dlq_count_by_kind(Some("nonexistent")).unwrap();
+    #[tokio::test]
+    async fn dlq_count_by_kind_nonexistent_config() {
+        let (_dir, db) = setup_test_db().await;
+        let (r, p) = db.dlq_count_by_kind(Some("nonexistent")).await.unwrap();
         assert_eq!(r, 0);
         assert_eq!(p, 0);
     }
 
-    #[test]
-    fn clear_old_permanent_entries_removes_old() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn clear_old_permanent_entries_removes_old() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let old_time = Utc::now() - chrono::Duration::hours(100);
         let mut old_entry =
             DlqEntry::permanent("film", 100, DlqOperation::Insert, None, "old error");
         old_entry.permanent_at = Some(old_time);
-        db.insert_dlq_entry(&old_entry).unwrap();
+        db.insert_dlq_entry(&old_entry).await.unwrap();
 
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
@@ -775,6 +811,7 @@ mod tests {
             None,
             "new error",
         ))
+        .await
         .unwrap();
 
         db.insert_dlq_entry(&DlqEntry::retryable(
@@ -784,18 +821,19 @@ mod tests {
             None,
             "retry error",
         ))
+        .await
         .unwrap();
 
-        let cleaned = db.clear_old_permanent_entries(72).unwrap();
+        let cleaned = db.clear_old_permanent_entries(72).await.unwrap();
         assert_eq!(cleaned, 1);
 
-        assert_eq!(db.dlq_count(None).unwrap(), 2);
+        assert_eq!(db.dlq_count(None).await.unwrap(), 2);
     }
 
-    #[test]
-    fn clear_old_permanent_entries_leaves_recent() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn clear_old_permanent_entries_leaves_recent() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
@@ -804,6 +842,7 @@ mod tests {
             None,
             "error",
         ))
+        .await
         .unwrap();
         db.insert_dlq_entry(&DlqEntry::permanent(
             "film",
@@ -812,46 +851,50 @@ mod tests {
             None,
             "error",
         ))
+        .await
         .unwrap();
 
-        let cleaned = db.clear_old_permanent_entries(72).unwrap();
+        let cleaned = db.clear_old_permanent_entries(72).await.unwrap();
         assert_eq!(cleaned, 0);
-        assert_eq!(db.dlq_count(None).unwrap(), 2);
+        assert_eq!(db.dlq_count(None).await.unwrap(), 2);
     }
 
-    #[test]
-    fn clear_old_permanent_entries_uses_permanent_at_not_created_at() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn clear_old_permanent_entries_uses_permanent_at_not_created_at() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let mut entry = sample_dlq_entry("film", 100, ErrorKind::Retryable);
         entry.created_at = Utc::now() - chrono::Duration::hours(200);
-        let id = db.insert_dlq_entry(&entry).unwrap();
-        db.mark_permanent(id, "max retries exhausted").unwrap();
+        let id = db.insert_dlq_entry(&entry).await.unwrap();
+        db.mark_permanent(id, "max retries exhausted")
+            .await
+            .unwrap();
 
-        let cleaned = db.clear_old_permanent_entries(72).unwrap();
+        let cleaned = db.clear_old_permanent_entries(72).await.unwrap();
         assert_eq!(cleaned, 0);
-        assert_eq!(db.dlq_count(None).unwrap(), 1);
+        assert_eq!(db.dlq_count(None).await.unwrap(), 1);
     }
 
-    #[test]
-    fn clear_old_permanent_entries_empty_dlq() {
-        let (_dir, db) = setup_test_db();
-        let cleaned = db.clear_old_permanent_entries(72).unwrap();
+    #[tokio::test]
+    async fn clear_old_permanent_entries_empty_dlq() {
+        let (_dir, db) = setup_test_db().await;
+        let cleaned = db.clear_old_permanent_entries(72).await.unwrap();
         assert_eq!(cleaned, 0);
     }
 
-    #[test]
-    fn list_respects_limit() {
-        let (_dir, db) = setup_test_db();
-        db.insert_config(&sample_config("film")).unwrap();
+    #[tokio::test]
+    async fn list_respects_limit() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         for i in 0..10 {
             db.insert_dlq_entry(&sample_dlq_entry("film", i, ErrorKind::Retryable))
+                .await
                 .unwrap();
         }
 
-        let entries = db.list_dlq_entries(Some("film"), 5).unwrap();
+        let entries = db.list_dlq_entries(Some("film"), 5).await.unwrap();
         assert_eq!(entries.len(), 5);
     }
 }

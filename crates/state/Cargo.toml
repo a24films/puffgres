@@ -7,16 +7,19 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 diesel.workspace = true
 diesel_migrations.workspace = true
 libsqlite3-sys.workspace = true
 strum.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

@@ -44,7 +44,7 @@ async fn setup_pg(
 
 #[tokio::test]
 async fn generate_check_lifecycle() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = setup_pg(
         &[("users", "id SERIAL PRIMARY KEY, name TEXT, email VARCHAR")],
         state_db_path,
@@ -130,7 +130,7 @@ async fn generate_check_lifecycle() {
 
 #[tokio::test]
 async fn tombstoned_config_skipped() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = setup_pg(
         &[("items", "id SERIAL PRIMARY KEY, title TEXT")],
         state_db_path,
@@ -161,7 +161,7 @@ async fn tombstoned_config_skipped() {
 
 #[tokio::test]
 async fn config_columns_filtering() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
     let (_ctx, env_config) = setup_pg(
         &[(
             "products",

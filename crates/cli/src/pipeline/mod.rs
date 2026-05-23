@@ -191,8 +191,8 @@ async fn run_cdc_inner(
             fs::create_dir_all(parent)?;
         }
     }
-    let db = state::StateDb::open(&env_config.state_db_path)?;
-    db.verify_startup_roundtrip()?;
+    let db = state::StateDb::open(&env_config.state_db_path).await?;
+    db.verify_startup_roundtrip().await?;
 
     if !state_db_existed {
         tracing::warn!(
@@ -232,7 +232,7 @@ async fn run_cdc_inner(
     let start_lsn = {
         let mut candidates: Vec<u64> = watermark_lsns;
         for (_, config) in &applied_configs {
-            if let Some(cp) = db.get_streaming_checkpoint(&config.name)? {
+            if let Some(cp) = db.get_streaming_checkpoint(&config.name).await? {
                 candidates.push(cp.lsn);
             }
         }
@@ -420,28 +420,20 @@ mod tests {
         }
     }
 
-    /// Sync wrapper for run_cdc_inner (bypasses retry loop).
-    fn run_no_retry(
+    /// Wrapper for run_cdc_inner that bypasses the retry loop.
+    async fn run_no_retry(
         paths: &ProjectPaths,
         env_config: &EnvConfig,
         project_config: &ProjectConfig,
         metrics: Option<&Metrics>,
     ) -> Result<(), CliError> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| CliError::Run(format!("failed to create async runtime: {e}")))?;
         let token = CancellationToken::new();
-        rt.block_on(run_cdc_inner(
-            paths,
-            env_config,
-            project_config,
-            metrics,
-            token,
-        ))
+        run_cdc_inner(paths, env_config, project_config, metrics, token).await
     }
 
-    #[test]
-    fn no_applied_configs_returns_ok() {
-        let (_dir, paths, state_db_path) = setup_project();
+    #[tokio::test]
+    async fn no_applied_configs_returns_ok() {
+        let (_dir, paths, state_db_path) = setup_project().await;
         // Write a config but don't apply it — no record in state db
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
@@ -451,7 +443,8 @@ mod tests {
             &dummy_env(state_db_path),
             &ProjectConfig::default(),
             None,
-        );
+        )
+        .await;
         assert!(
             result.is_ok(),
             "expected Ok(()) when no configs are applied, got: {:?}",
@@ -459,9 +452,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_auto_tombstones_configs_marked_on_disk() {
-        let (_dir, paths, state_db_path) = setup_project();
+    #[tokio::test]
+    async fn run_auto_tombstones_configs_marked_on_disk() {
+        let (_dir, paths, state_db_path) = setup_project().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -469,7 +462,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::open(&state_db_path).unwrap();
+        let db = state::StateDb::open(&state_db_path).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -479,6 +472,7 @@ mod tests {
             tombstone_applied_at: None,
             namespace_prefix: None,
         })
+        .await
         .unwrap();
 
         fs::write(
@@ -492,23 +486,24 @@ mod tests {
             &dummy_env(state_db_path.clone()),
             &ProjectConfig::default(),
             None,
-        );
+        )
+        .await;
         assert!(
             result.is_ok(),
             "expected run to skip auto-tombstoned config, got: {:?}",
             result.unwrap_err()
         );
 
-        let updated = db.get_config(&cfg.name).unwrap().unwrap();
+        let updated = db.get_config(&cfg.name).await.unwrap().unwrap();
         assert!(
             updated.tombstone_applied_at.is_some(),
             "expected tombstone marker on disk to be reconciled into state db"
         );
     }
 
-    #[test]
-    fn errors_on_unreadable_transform_for_applied_config() {
-        let (_dir, paths, state_db_path) = setup_project();
+    #[tokio::test]
+    async fn errors_on_unreadable_transform_for_applied_config() {
+        let (_dir, paths, state_db_path) = setup_project().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -516,7 +511,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::open(&state_db_path).unwrap();
+        let db = state::StateDb::open(&state_db_path).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -526,6 +521,7 @@ mod tests {
             tombstone_applied_at: None,
             namespace_prefix: None,
         })
+        .await
         .unwrap();
 
         // Delete the transform file so it can't be read
@@ -537,6 +533,7 @@ mod tests {
             &ProjectConfig::default(),
             None,
         )
+        .await
         .unwrap_err();
         assert!(
             err.to_string().contains("cannot read transform"),
@@ -544,9 +541,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn errors_on_modified_content_hash_for_applied_config() {
-        let (_dir, paths, state_db_path) = setup_project();
+    #[tokio::test]
+    async fn errors_on_modified_content_hash_for_applied_config() {
+        let (_dir, paths, state_db_path) = setup_project().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
@@ -554,7 +551,7 @@ mod tests {
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
         let transform_bytes = fs::read(config_path.parent().unwrap().join("transform.ts")).unwrap();
         let transform_hash = format!("{:x}", Sha256::digest(&transform_bytes));
-        let db = state::StateDb::open(&state_db_path).unwrap();
+        let db = state::StateDb::open(&state_db_path).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -564,6 +561,7 @@ mod tests {
             tombstone_applied_at: None,
             namespace_prefix: None,
         })
+        .await
         .unwrap();
 
         let err = run_no_retry(
@@ -572,6 +570,7 @@ mod tests {
             &ProjectConfig::default(),
             None,
         )
+        .await
         .unwrap_err();
         assert!(
             err.to_string()
@@ -584,15 +583,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn errors_on_modified_transform_for_applied_config() {
-        let (_dir, paths, state_db_path) = setup_project();
+    #[tokio::test]
+    async fn errors_on_modified_transform_for_applied_config() {
+        let (_dir, paths, state_db_path) = setup_project().await;
         let user_dir = write_config(&paths, "user", "public", "users", "id", "uint");
         write_transform(&user_dir, PASSTHROUGH_TRANSFORM);
 
         let loader = ConfigLoader::new(&paths.configs);
         let (config_path, cfg) = &loader.load_all().unwrap()[0];
-        let db = state::StateDb::open(&state_db_path).unwrap();
+        let db = state::StateDb::open(&state_db_path).await.unwrap();
         db.insert_config(&ConfigRecord {
             name: cfg.name.clone(),
             namespace: cfg.namespace.clone(),
@@ -602,6 +601,7 @@ mod tests {
             tombstone_applied_at: None,
             namespace_prefix: None,
         })
+        .await
         .unwrap();
 
         let err = run_no_retry(
@@ -610,6 +610,7 @@ mod tests {
             &ProjectConfig::default(),
             None,
         )
+        .await
         .unwrap_err();
         assert!(
             err.to_string().contains("was modified"),

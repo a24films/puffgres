@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use pg::connect::connect;
 use pg::publication::ensure_publication;
 use pg::slot::{ensure_slot, get_confirmed_flush_lsn, get_current_wal_lsn};
@@ -29,12 +30,13 @@ impl MemCheckpointer {
     }
 }
 
+#[async_trait]
 impl BackfillCheckpointer for MemCheckpointer {
-    fn load_progress(&self, _config_name: &str) -> Result<Option<(String, u64)>, StateError> {
+    async fn load_progress(&self, _config_name: &str) -> Result<Option<(String, u64)>, StateError> {
         Ok(self.progress.lock().unwrap().clone())
     }
 
-    fn save_progress(
+    async fn save_progress(
         &self,
         _config_name: &str,
         last_id: &str,

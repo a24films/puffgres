@@ -30,58 +30,64 @@ impl StreamingCheckpoint {
 }
 
 impl StateDb {
-    pub fn save_streaming_checkpoint(
+    pub async fn save_streaming_checkpoint(
         &self,
         checkpoint: &StreamingCheckpoint,
     ) -> Result<(), StateError> {
-        let new = NewStreamingCheckpoint {
-            config_name: &checkpoint.config_name,
-            lsn: i64::from_ne_bytes(checkpoint.lsn.to_ne_bytes()),
-            events_processed: i64::from_ne_bytes(checkpoint.events_processed.to_ne_bytes()),
-            updated_at: epoch::to_millis(&checkpoint.updated_at),
-        };
-
-        let mut conn = self.lock()?;
-        diesel::replace_into(streaming_checkpoints::table)
-            .values(&new)
-            .execute(&mut *conn)?;
-
-        Ok(())
+        let cp = checkpoint.clone();
+        self.run_blocking(move |conn| {
+            let new = NewStreamingCheckpoint {
+                config_name: &cp.config_name,
+                lsn: i64::from_ne_bytes(cp.lsn.to_ne_bytes()),
+                events_processed: i64::from_ne_bytes(cp.events_processed.to_ne_bytes()),
+                updated_at: epoch::to_millis(&cp.updated_at),
+            };
+            diesel::replace_into(streaming_checkpoints::table)
+                .values(&new)
+                .execute(conn)?;
+            Ok(())
+        })
+        .await
     }
 
-    pub fn get_streaming_checkpoint(
+    pub async fn get_streaming_checkpoint(
         &self,
         config_name: &str,
     ) -> Result<Option<StreamingCheckpoint>, StateError> {
-        let mut conn = self.lock()?;
-        let row = streaming_checkpoints::table
-            .filter(streaming_checkpoints::config_name.eq(config_name))
-            .first::<StreamingCheckpointRow>(&mut *conn)
-            .optional()?;
-
-        match row {
-            Some(r) => Ok(Some(StreamingCheckpoint::from_row(&r)?)),
-            None => Ok(None),
-        }
+        let name = config_name.to_string();
+        self.run_blocking(move |conn| {
+            let row = streaming_checkpoints::table
+                .filter(streaming_checkpoints::config_name.eq(&name))
+                .first::<StreamingCheckpointRow>(conn)
+                .optional()?;
+            match row {
+                Some(r) => Ok(Some(StreamingCheckpoint::from_row(&r)?)),
+                None => Ok(None),
+            }
+        })
+        .await
     }
 
-    pub fn delete_streaming_checkpoint(&self, config_name: &str) -> Result<bool, StateError> {
-        let mut conn = self.lock()?;
-        let rows_affected = diesel::delete(
-            streaming_checkpoints::table.filter(streaming_checkpoints::config_name.eq(config_name)),
-        )
-        .execute(&mut *conn)?;
-
-        Ok(rows_affected > 0)
+    pub async fn delete_streaming_checkpoint(&self, config_name: &str) -> Result<bool, StateError> {
+        let name = config_name.to_string();
+        self.run_blocking(move |conn| {
+            let rows_affected = diesel::delete(
+                streaming_checkpoints::table.filter(streaming_checkpoints::config_name.eq(&name)),
+            )
+            .execute(conn)?;
+            Ok(rows_affected > 0)
+        })
+        .await
     }
 
-    pub fn list_streaming_checkpoints(&self) -> Result<Vec<StreamingCheckpoint>, StateError> {
-        let mut conn = self.lock()?;
-        let rows = streaming_checkpoints::table
-            .order(streaming_checkpoints::config_name.asc())
-            .load::<StreamingCheckpointRow>(&mut *conn)?;
-
-        rows.iter().map(StreamingCheckpoint::from_row).collect()
+    pub async fn list_streaming_checkpoints(&self) -> Result<Vec<StreamingCheckpoint>, StateError> {
+        self.run_blocking(|conn| {
+            let rows = streaming_checkpoints::table
+                .order(streaming_checkpoints::config_name.asc())
+                .load::<StreamingCheckpointRow>(conn)?;
+            rows.iter().map(StreamingCheckpoint::from_row).collect()
+        })
+        .await
     }
 }
 
@@ -103,101 +109,91 @@ mod tests {
         }
     }
 
-    #[test]
-    fn save_and_retrieve_streaming_checkpoint() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn save_and_retrieve_streaming_checkpoint() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let checkpoint = sample_streaming_checkpoint("film", 1000, 50);
-        db.save_streaming_checkpoint(&checkpoint).unwrap();
+        db.save_streaming_checkpoint(&checkpoint).await.unwrap();
 
-        let retrieved = db.get_streaming_checkpoint("film").unwrap().unwrap();
+        let retrieved = db.get_streaming_checkpoint("film").await.unwrap().unwrap();
         assert_eq!(retrieved.config_name, "film");
         assert_eq!(retrieved.lsn, 1000);
         assert_eq!(retrieved.events_processed, 50);
     }
 
-    #[test]
-    fn update_existing_streaming_checkpoint() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn update_existing_streaming_checkpoint() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
-        let checkpoint1 = sample_streaming_checkpoint("film", 1000, 50);
-        db.save_streaming_checkpoint(&checkpoint1).unwrap();
+        db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", 1000, 50))
+            .await
+            .unwrap();
+        db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", 2000, 100))
+            .await
+            .unwrap();
 
-        let checkpoint2 = sample_streaming_checkpoint("film", 2000, 100);
-        db.save_streaming_checkpoint(&checkpoint2).unwrap();
-
-        let retrieved = db.get_streaming_checkpoint("film").unwrap().unwrap();
+        let retrieved = db.get_streaming_checkpoint("film").await.unwrap().unwrap();
         assert_eq!(retrieved.lsn, 2000);
         assert_eq!(retrieved.events_processed, 100);
 
-        let all = db.list_streaming_checkpoints().unwrap();
+        let all = db.list_streaming_checkpoints().await.unwrap();
         assert_eq!(all.len(), 1);
     }
 
-    #[test]
-    fn streaming_checkpoint_deleted_when_config_deleted() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
-
-        let checkpoint = sample_streaming_checkpoint("film", 1000, 50);
-        db.save_streaming_checkpoint(&checkpoint).unwrap();
-
-        assert!(db.get_streaming_checkpoint("film").unwrap().is_some());
-
-        {
-            let mut conn = db.lock().unwrap();
-            diesel::delete(
-                crate::schema::configs::table.filter(crate::schema::configs::name.eq("film")),
-            )
-            .execute(&mut *conn)
+    #[tokio::test]
+    async fn streaming_checkpoint_deleted_when_config_deleted() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", 1000, 50))
+            .await
             .unwrap();
-        }
 
-        assert!(db.get_streaming_checkpoint("film").unwrap().is_none());
+        assert!(db.get_streaming_checkpoint("film").await.unwrap().is_some());
+        db.delete_config("film").await.unwrap();
+        assert!(db.get_streaming_checkpoint("film").await.unwrap().is_none());
     }
 
-    #[test]
-    fn delete_streaming_checkpoint_returns_true_when_exists() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn delete_streaming_checkpoint_returns_true_when_exists() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", 1000, 50))
+            .await
+            .unwrap();
 
-        let checkpoint = sample_streaming_checkpoint("film", 1000, 50);
-        db.save_streaming_checkpoint(&checkpoint).unwrap();
-
-        let deleted = db.delete_streaming_checkpoint("film").unwrap();
+        let deleted = db.delete_streaming_checkpoint("film").await.unwrap();
         assert!(deleted);
-        assert!(db.get_streaming_checkpoint("film").unwrap().is_none());
+        assert!(db.get_streaming_checkpoint("film").await.unwrap().is_none());
     }
 
-    #[test]
-    fn delete_streaming_checkpoint_returns_false_when_not_exists() {
-        let (_dir, db) = setup_test_db();
-        let deleted = db.delete_streaming_checkpoint("nonexistent").unwrap();
+    #[tokio::test]
+    async fn delete_streaming_checkpoint_returns_false_when_not_exists() {
+        let (_dir, db) = setup_test_db().await;
+        let deleted = db.delete_streaming_checkpoint("nonexistent").await.unwrap();
         assert!(!deleted);
     }
 
-    #[test]
-    fn list_multiple_streaming_checkpoints() {
-        let (_dir, db) = setup_test_db();
-
-        db.insert_config(&sample_config("alpha")).unwrap();
-        db.insert_config(&sample_config("beta")).unwrap();
-        db.insert_config(&sample_config("gamma")).unwrap();
+    #[tokio::test]
+    async fn list_multiple_streaming_checkpoints() {
+        let (_dir, db) = setup_test_db().await;
+        for n in ["alpha", "beta", "gamma"] {
+            db.insert_config(&sample_config(n)).await.unwrap();
+        }
 
         db.save_streaming_checkpoint(&sample_streaming_checkpoint("alpha", 100, 10))
+            .await
             .unwrap();
         db.save_streaming_checkpoint(&sample_streaming_checkpoint("beta", 200, 20))
+            .await
             .unwrap();
         db.save_streaming_checkpoint(&sample_streaming_checkpoint("gamma", 300, 30))
+            .await
             .unwrap();
 
-        let checkpoints = db.list_streaming_checkpoints().unwrap();
+        let checkpoints = db.list_streaming_checkpoints().await.unwrap();
         assert_eq!(checkpoints.len(), 3);
         assert_eq!(checkpoints[0].config_name, "alpha");
         assert_eq!(checkpoints[0].lsn, 100);
@@ -207,38 +203,39 @@ mod tests {
         assert_eq!(checkpoints[2].lsn, 300);
     }
 
-    #[test]
-    fn get_nonexistent_streaming_checkpoint_returns_none() {
-        let (_dir, db) = setup_test_db();
+    #[tokio::test]
+    async fn get_nonexistent_streaming_checkpoint_returns_none() {
+        let (_dir, db) = setup_test_db().await;
         assert!(
             db.get_streaming_checkpoint("nonexistent")
+                .await
                 .unwrap()
                 .is_none()
         );
     }
 
-    #[test]
-    fn lsn_above_i32_max_roundtrips() {
-        let (_dir, db) = setup_test_db();
-        let config = sample_config("film");
-        db.insert_config(&config).unwrap();
+    #[tokio::test]
+    async fn lsn_above_i32_max_roundtrips() {
+        let (_dir, db) = setup_test_db().await;
+        db.insert_config(&sample_config("film")).await.unwrap();
 
         let big_lsn: u64 = (i32::MAX as u64) + 1_000;
         let big_events: u64 = (i32::MAX as u64) + 500;
-        let checkpoint = sample_streaming_checkpoint("film", big_lsn, big_events);
-        db.save_streaming_checkpoint(&checkpoint).unwrap();
+        db.save_streaming_checkpoint(&sample_streaming_checkpoint("film", big_lsn, big_events))
+            .await
+            .unwrap();
 
-        let retrieved = db.get_streaming_checkpoint("film").unwrap().unwrap();
+        let retrieved = db.get_streaming_checkpoint("film").await.unwrap().unwrap();
         assert_eq!(retrieved.lsn, big_lsn);
         assert_eq!(retrieved.events_processed, big_events);
     }
 
-    #[test]
-    fn streaming_checkpoint_requires_valid_config() {
-        let (_dir, db) = setup_test_db();
+    #[tokio::test]
+    async fn streaming_checkpoint_requires_valid_config() {
+        let (_dir, db) = setup_test_db().await;
         let checkpoint = sample_streaming_checkpoint("nonexistent_config", 1000, 50);
 
-        let result = db.save_streaming_checkpoint(&checkpoint);
+        let result = db.save_streaming_checkpoint(&checkpoint).await;
         assert!(result.is_err());
     }
 }

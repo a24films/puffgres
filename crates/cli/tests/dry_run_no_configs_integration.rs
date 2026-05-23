@@ -4,7 +4,7 @@ use puffgres_cli::test_utils::setup_project;
 
 #[tokio::test]
 async fn named_dry_run_fails_with_no_configs() {
-    let (_dir, paths, state_db_path) = setup_project();
+    let (_dir, paths, state_db_path) = setup_project().await;
 
     // Use a dummy env_config; the error fires before any Postgres connection.
     let env_config = EnvConfig {

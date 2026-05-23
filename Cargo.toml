@@ -49,6 +49,7 @@ opentelemetry-appender-tracing = "0.31"
 diesel = { version = "2.3", features = ["sqlite"] }
 diesel_migrations = "2.3"
 libsqlite3-sys = { version = "0.35.0", features = ["bundled"] }
+async-trait = "0.1"
 backon = "1.6.0"
 rand = "0.10.0"
 derive_more = { version = "2.1.1", features = ["display"] }

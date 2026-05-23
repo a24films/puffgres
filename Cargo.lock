@@ -2331,6 +2331,7 @@ dependencies = [
 name = "puffgres-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "backon",
  "bytes",
  "chrono",
@@ -3081,6 +3082,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "state"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "criterion",
  "diesel",
@@ -3089,6 +3091,7 @@ dependencies = [
  "strum",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
