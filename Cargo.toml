@@ -36,6 +36,7 @@ uuid = { version = "1.22.0" }
 url = "2.5.8"
 strum = { version = "0.27.2", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
+dialoguer = { version = "0.12", default-features = false }
 dotenvy = "0.15"
 axum = "0.8"
 reqwest = "0.12"

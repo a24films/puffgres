@@ -172,6 +172,10 @@ fn ensure_utils(paths: &ProjectPaths) -> Result<(), CliError> {
             include_str!("../templates/utils/embed-baseten.ts"),
         ),
         (
+            "embed-cloudflare.ts",
+            include_str!("../templates/utils/embed-cloudflare.ts"),
+        ),
+        (
             "tokenize.ts",
             include_str!("../templates/utils/tokenize.ts"),
         ),
@@ -466,6 +470,7 @@ mod tests {
         assert!(sub.join("utils/embed.ts").exists());
         assert!(sub.join("utils/embed-zeroentropy.ts").exists());
         assert!(sub.join("utils/embed-baseten.ts").exists());
+        assert!(sub.join("utils/embed-cloudflare.ts").exists());
         assert!(sub.join("utils/tokenize.ts").exists());
         assert!(sub.join("utils/puffgres.ts").exists());
     }
