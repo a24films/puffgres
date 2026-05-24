@@ -14,7 +14,7 @@ A bit of Puffgres' design philosophy:
 - **Sync is maintained through "configs" which link Postgres tables to turbopuffer namespaces.** Each defines a mapping, and a TypeScript-based "transform," which lets us easily do operations like tokenization, embedding, and other manipulation. 
 - **Configs and transforms are immutable**. We avoid an abundance of thorny cases that come from letting us change a mapping (i.e. rows produced with two different set of transforms.). If we want to make a change, we should "tombstone" the old one and create a new one. 
 
-Read our [docs](TK) to get started.
+Read our [docs](https://a24films.github.io/puffgres/) to get started.
 
 ## Install
 
