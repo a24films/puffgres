@@ -16,6 +16,14 @@ A bit of Puffgres' design philosophy:
 
 Read our [docs](TK) to get started.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/a24films/puffgres/main/install.sh | sh
+```
+
+Installs the Rust toolchain (if missing), clones the repo into a temp dir, and builds `puffgres` into `~/.cargo/bin`.
+
 ## Performance
 
 Measured on GitHub Actions `ubuntu-latest` (4-core x86, 16 GB RAM) with `--release` builds (LTO, single codegen unit).
