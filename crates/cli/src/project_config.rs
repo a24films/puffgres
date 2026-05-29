@@ -129,9 +129,9 @@ impl ProjectConfig {
 
     pub fn tls_unclean_close_level(&self) -> &str {
         match self.tls_unclean_close_level.as_deref() {
-            Some("warn") => "warn",
+            Some("error") => "error",
             Some("silent") => "silent",
-            _ => "error",
+            _ => "warn",
         }
     }
 
