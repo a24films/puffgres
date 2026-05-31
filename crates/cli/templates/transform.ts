@@ -44,8 +44,7 @@ void (async () => {
         type: "upsert",
         id: event.id,
         document: {
-          {{ID_DOC_FIELD}}// TODO: map row fields to document fields
-          // e.g. name: row.name,
+{{DOCUMENT_FIELDS}}
         },
         // Build schema from columns for just the fields in your document.
         // Each column has .name and .type (PrimitiveType). Add overrides as needed.

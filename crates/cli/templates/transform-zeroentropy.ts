@@ -54,7 +54,7 @@ void (async () => {
         type: "upsert",
         id: event.id,
         document: {
-          {{ID_DOC_FIELD}}// TODO: map row fields to document fields
+{{DOCUMENT_FIELDS}}
         },
         vector: vectorById.get(event.id),
         distance_metric: "cosine_distance",

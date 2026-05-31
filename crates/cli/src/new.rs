@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use config::ConfigLoader;
-use dialoguer::{Input, Select, theme::ColorfulTheme};
+use dialoguer::{Input, MultiSelect, Select, theme::ColorfulTheme};
 
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
@@ -72,6 +72,11 @@ pub struct NewOptions {
     /// when the provider is `None` (no embedding) — the transform then has no
     /// embedding step to fill in.
     pub embed_column: Option<String>,
+    /// The columns to store in the upserted turbopuffer document (the
+    /// not-embedded attributes). Chosen from a checkbox prompt when the table's
+    /// columns are known; empty when they aren't, leaving the document body as a
+    /// hand-fillable TODO.
+    pub document_columns: Vec<String>,
 }
 
 fn render_config(opts: &NewOptions) -> String {
@@ -131,25 +136,53 @@ fn render_transform(opts: &NewOptions) -> String {
         .transform_template()
         .replace("{{NAME}}", &opts.name)
         .replace("{{EMBED_EXPR}}", &embed_expr(opts.embed_column.as_deref()))
-        .replace("{{ID_DOC_FIELD}}", &id_document_field(&opts.id_column))
+        .replace("{{DOCUMENT_FIELDS}}", &document_fields(opts))
 }
 
-/// Build the leading `document` field that mirrors the id column so it's stored
-/// as a queryable attribute (e.g. `circuit_name: row.circuit_name,`).
+/// Build the inner field lines of the upserted `document`, each indented to sit
+/// inside the `document: { ... }` block.
 ///
-/// Returns an empty string when the id column is literally `id` — turbopuffer
-/// reserves `id` for the top-level document id, so re-adding it as an attribute
-/// would conflict.
-fn id_document_field(col: &str) -> String {
-    if col == "id" {
-        return String::new();
+/// Mirrors the id column first (skipped when it's literally `id` — turbopuffer
+/// reserves that for the top-level document id), then one line per column the
+/// user chose to store. When nothing is selected — e.g. the columns weren't
+/// known so there was no checkbox prompt — it leaves a TODO placeholder so the
+/// file is obviously incomplete.
+fn document_fields(opts: &NewOptions) -> String {
+    // 10 spaces: `document: {` sits at 8, its fields one level deeper.
+    const INDENT: &str = "          ";
+    let mut lines: Vec<String> = Vec::new();
+
+    // Mirror the id column as a queryable attribute (skip the reserved `id`).
+    if opts.id_column != "id" {
+        lines.push(format!("{INDENT}{}", document_field_line(&opts.id_column)));
     }
+
+    // The columns the user picked to store — skip the id column so we don't
+    // duplicate the mirrored field above.
+    for col in &opts.document_columns {
+        if *col == opts.id_column {
+            continue;
+        }
+        lines.push(format!("{INDENT}{}", document_field_line(col)));
+    }
+
+    if lines.is_empty() {
+        return format!(
+            "{INDENT}// TODO: map row fields to document fields\n{INDENT}// e.g. name: row.name,"
+        );
+    }
+    lines.join("\n")
+}
+
+/// One `key: row.access,` document field line (no indentation). Quotes the key
+/// and uses bracket access for column names that aren't valid JS identifiers.
+fn document_field_line(col: &str) -> String {
     let key = if is_js_identifier(col) {
         col.to_string()
     } else {
         format!("\"{}\"", crate::generate::ts_escape(col))
     };
-    format!("{key}: {},\n          ", row_access(col))
+    format!("{key}: {},", row_access(col))
 }
 
 /// Build the TS expression the transform returns as the text to embed for a row.
@@ -279,6 +312,8 @@ async fn prompt_options(
         Some(prompt_embed_column(&theme, columns.as_deref())?)
     };
 
+    let document_columns = prompt_document_columns(&theme, columns.as_deref())?;
+
     Ok(NewOptions {
         name: name.trim().to_string(),
         table,
@@ -287,6 +322,7 @@ async fn prompt_options(
         id_column,
         id_type,
         embed_column,
+        document_columns,
     })
 }
 
@@ -347,6 +383,30 @@ fn prompt_embed_column(
             Ok(col.trim().to_string())
         }
     }
+}
+
+/// Ask which columns to store in the upserted document — the attributes that
+/// are persisted but not embedded. Presents a checkbox list (all columns
+/// unselected) when the table's columns are known; returns an empty list
+/// otherwise, which leaves the document body as a hand-fillable TODO.
+fn prompt_document_columns(
+    theme: &ColorfulTheme,
+    columns: Option<&[pg::column::ColumnInfo]>,
+) -> Result<Vec<String>, CliError> {
+    let Some(cols) = columns.filter(|c| !c.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    let defaults = vec![false; names.len()];
+    let chosen = MultiSelect::with_theme(theme)
+        .with_prompt(
+            "Which columns should be stored in the document? (space toggles, enter confirms)",
+        )
+        .items(&names)
+        .defaults(&defaults)
+        .interact()
+        .map_err(|e| CliError::Generate(format!("prompt failed: {e}")))?;
+    Ok(chosen.into_iter().map(|i| names[i].to_string()).collect())
 }
 
 /// Write the config + transform for an already-resolved set of options.
@@ -428,6 +488,7 @@ mod tests {
             id_column: "id".to_string(),
             id_type: "uint".to_string(),
             embed_column: None,
+            document_columns: Vec::new(),
         }
     }
 
@@ -504,6 +565,7 @@ mod tests {
             id_column: "id".to_string(),
             id_type: "uint".to_string(),
             embed_column: None,
+            document_columns: Vec::new(),
         };
         create(&paths, &options).unwrap();
 
@@ -637,24 +699,49 @@ mod tests {
     }
 
     #[test]
-    fn id_document_field_skips_literal_id() {
-        assert_eq!(id_document_field("id"), "");
+    fn document_fields_skips_literal_id_with_no_columns() {
+        // id is "id" and nothing else chosen -> just the TODO placeholder.
+        let fields = document_fields(&opts("films"));
+        assert!(!fields.contains("id: row.id"));
+        assert!(fields.contains("// TODO: map row fields to document fields"));
     }
 
     #[test]
-    fn id_document_field_mirrors_chosen_column() {
+    fn document_fields_mirrors_chosen_id_column() {
+        let mut o = opts("circuits");
+        o.id_column = "circuit_name".to_string();
+        let fields = document_fields(&o);
+        assert!(fields.contains("circuit_name: row.circuit_name,"));
+    }
+
+    #[test]
+    fn document_field_line_quotes_non_identifier_keys() {
         assert_eq!(
-            id_document_field("circuit_name"),
-            "circuit_name: row.circuit_name,\n          "
+            document_field_line("circuit-name"),
+            "\"circuit-name\": row[\"circuit-name\"],"
         );
     }
 
     #[test]
-    fn id_document_field_quotes_non_identifier_keys() {
-        assert_eq!(
-            id_document_field("circuit-name"),
-            "\"circuit-name\": row[\"circuit-name\"],\n          "
-        );
+    fn document_fields_renders_chosen_columns() {
+        let mut o = opts("films");
+        o.document_columns = vec!["title".to_string(), "year".to_string()];
+        let fields = document_fields(&o);
+        assert!(fields.contains("title: row.title,"));
+        assert!(fields.contains("year: row.year,"));
+        // No TODO placeholder once real fields are present.
+        assert!(!fields.contains("TODO"));
+    }
+
+    #[test]
+    fn document_fields_does_not_duplicate_id_column() {
+        let mut o = opts("circuits");
+        o.id_column = "circuit_name".to_string();
+        o.document_columns = vec!["circuit_name".to_string(), "laps".to_string()];
+        let fields = document_fields(&o);
+        // The id column is mirrored once, not twice.
+        assert_eq!(fields.matches("circuit_name: row.circuit_name,").count(), 1);
+        assert!(fields.contains("laps: row.laps,"));
     }
 
     #[tokio::test]
@@ -694,7 +781,7 @@ mod tests {
             .collect();
         let transform = fs::read_to_string(entries[0].path().join("transform.ts")).unwrap();
         assert!(transform.contains("circuit_name: row.circuit_name,"));
-        assert!(!transform.contains("{{ID_DOC_FIELD}}"));
+        assert!(!transform.contains("{{DOCUMENT_FIELDS}}"));
     }
 
     #[tokio::test]
@@ -710,7 +797,7 @@ mod tests {
             .filter(|e| e.path().is_dir())
             .collect();
         let transform = fs::read_to_string(entries[0].path().join("transform.ts")).unwrap();
-        assert!(!transform.contains("{{ID_DOC_FIELD}}"));
+        assert!(!transform.contains("{{DOCUMENT_FIELDS}}"));
         assert!(!transform.contains("id: row.id"));
     }
 
@@ -751,6 +838,27 @@ mod tests {
         // The TODO placeholder should be gone.
         assert!(!transform.contains("{{EMBED_EXPR}}"));
         assert!(!transform.contains("return the text you want embedded"));
+    }
+
+    #[tokio::test]
+    async fn transform_stores_chosen_document_columns() {
+        let (_dir, paths) = setup_project();
+
+        let mut options = opts("films");
+        options.document_columns = vec!["title".to_string(), "year".to_string()];
+        create(&paths, &options).unwrap();
+
+        let entries: Vec<_> = fs::read_dir(&paths.configs)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+        let transform = fs::read_to_string(entries[0].path().join("transform.ts")).unwrap();
+        assert!(transform.contains("          title: row.title,"));
+        assert!(transform.contains("          year: row.year,"));
+        assert!(!transform.contains("{{DOCUMENT_FIELDS}}"));
+        // Real fields replace the TODO scaffold.
+        assert!(!transform.contains("TODO: map row fields"));
     }
 
     #[tokio::test]
