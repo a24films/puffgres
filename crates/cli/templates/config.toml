@@ -6,8 +6,8 @@ schema = "public"
 table = "{{TABLE}}"
 
 [id]
-column = "id"
+column = "{{ID_COLUMN}}"
 # The turbopuffer data type for the id.
 # Options: string, int, uint, uuid.
 # See https://turbopuffer.com/docs/write#schema for all turbopuffer types.
-type = "uint"
+type = "{{ID_TYPE}}"
