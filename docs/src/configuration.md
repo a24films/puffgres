@@ -4,7 +4,7 @@ All configuration lives in `puffgres.toml` at the root of your puffgres project.
 
 ```toml
 environment_files = ["./.env", "../.env", "../.env.development"]
-batch_size = 1000
+batch_size = 500
 max_retries = 5
 dlq_replay_interval = 10
 dlq_replay_batch_size = 50
@@ -17,6 +17,9 @@ dlq_permanent_max_age_hours = 72
 ```
 
 ## Reference
+
+
+### Dead Letter Queue
 
 ### `environment_files`
 

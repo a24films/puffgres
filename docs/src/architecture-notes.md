@@ -4,19 +4,21 @@
 
 puffgres is a Rust workspace divided into several crates under `crates/`:
 
-- **`cli`** — the `puffgres` binary. Handles all subcommands (`init`, `new`, `apply`, `run`, etc.), config loading, environment setup, and orchestration.
-- **`config`** — parsing and validation of `config.toml` files. Defines the `Config`, `SourceConfig`, and `IdConfig` types, and computes content hashes for immutability checking.
-- **`core`** — the replication pipeline. Routes change events to their respective configs, runs transforms via a TypeScript subprocess, upserts/deletes in turbopuffer, and manages retry logic and the dead letter queue.
-- **`debug`** — the `puffgres debug` web UI. Serves a local web server for inspecting turbopuffer namespace contents and viewing the live Postgres replication stream.
-- **`pg`** — Postgres setup. Creates and manages the logical replication publication and slot, runs backfill queries, and generates `schema.ts` files from table definitions.
-- **`puff`** — turbopuffer API client. Handles upserts, deletes, and namespace operations.
-- **`replication`** — the change data capture stream. Decodes the Postgres logical replication protocol (pgoutput), manages relation caching, schema change detection, transaction batching, and sub-batch streaming for large transactions.
-- **`state`** — puffgres' own state, stored in a dedicated Postgres schema (default `puffgres`) inside the source database, managed via Diesel. Tracks applied configs, replication checkpoints, backfill progress, and dead letter queue entries. Co-locating state with the source means PITR restores naturally roll the two together.
+- **`pg`** — Postgres setup, creates / manages publication and slot, generates schema files from table definitions, and runs backfill queries to bring in data
+- **`replication`** — the change data capture stream. Decodes Postgres logical replication protocol, manages caching relations, schema changes + in-transaction batching.
+- **`core`** — routes change events to their respective configs, runs transforms via a TypeScript subprocess, manages retry logic / dead letter queue, and calls to the puff client
+- **`puff`** — turbopuffer API client, light wrapper around `rs-puff`
+- **`state`** — stores persistent information (i.e. streaming replication checkpoints, backfill progress, failed entry queue) in a dedicated Postgres schema (by default: `puffgres`).
+- **`cli`** — the `puffgres` binary, handles subcommands, environment setup, orchestration, and default / template files. 
+- **`config`** — definitions, parsing, validation, and hashing of config files. 
+- **`debug`** — light server / web UI to inspect turbopuffer / WAL contents, just easier than the turbopuffer dashboard / making a bunch of cURLs
 
 Documentation lives in `docs/` and is built with [mdbook](https://rust-lang.github.io/mdBook/).
 
 ## Meta-notes
 
-This originally came about to replace a hacky system we built internally, that kept a `turbopuffer_updated_at` column in Snowflake for some of our vector based tables. This meant a full table scan everytime our data pipeline ran (inefficient!), that it missed deletes, and that additions were quite slow. It also meant lots of duplicate code whenever we wrote a new transform, and easy regressions if we changed old code.
+We built this because we needed vector embeddings internally and had read compelling evidence [pgvector was a bad solution](TK) because of performance hits to maintain indexes, poor filtered queries, etc. Our naive / base solution was very hacky; we kept a separate table everytime we kept something in turbopuffer that kept an `id`, `turbopuffer_updated_at`, and `updated_at` and would simply embed / upsert whenever `updated_at` was more recent. This meant a full table scan whenever our pipeline ran (very inefficient) and effectively polling for changes in turbopuffer. It didn't handle deletes, required tons of duplicative code, and meant all updates only happened when the pipeline ran.
 
-I built a [very hacky](https://github.com/lucasgelfond/puffgres) version of this over a weekend, starting with a detailed spec and working through it with Claude. I then properly broke it up into PRs, we took it through code review (you can see the PRs / merge history on this repo!) and added testing, traditional CI, etc, plus lots of testing before we deployed and felt it was ready. We've been running puffgres in production internally for a little while now, without issue; I figured this was a generic enough problem it would be useful to release, in the Bryan Cantrill [primacy of toolmaking](https://www.youtube.com/watch?v=_GpBkplsGus) tradition.
+This was inspired by two tech talks: Martin Kleppman's [Turning the database inside outTK with Apache Samza](TK), that argues strongly for making changes in one place and having derived data act like a materializedd view, and Bryan Cantrill's [The primacy of toolmaking: sharpening the axe TK](TK), which suggests companies are well-suietd investing in (and releasing) generic tools when they find themselves doing repeated work. 
+
+I built a [very hacky](https://github.com/lucasgelfond/puffgres) version of this over a weekend, starting with a detailed spec and working through it with Claude. When we decided to use it in-house, I broke it up into PRs, and, especially at the beginning, ran each through code review + traditional testing, CI, etc. We're been running puffgres internally for a bit now without issue, and after talking with the turbopuffer team figured others might find use in it as well. 
