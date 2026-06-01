@@ -1,12 +1,39 @@
 # Getting Started
 
-We will eventually create a persistent install script / Docker image.
+## Install
 
-In the interim, or if you want to contribute to the Source, you should:
-- install [Rust](https://rust-lang.org/tools/install/)
-- install [Just](https://github.com/casey/just)
-- clone the repo
-- run `just install` on the repo.
+Pull the prebuilt image — it ships the `puffgres` binary plus the Node runtime its transforms need:
+
+```bash
+docker pull ghcr.io/a24films/puffgres:latest
+```
+
+If you'd rather build the binary from source:
+
+1. Install [Just](https://github.com/casey/just#installation).
+2. Install the [Rust toolchain](https://rust-lang.org/tools/install/).
+3. Build and install `puffgres` into `~/.cargo/bin`:
+
+```bash
+just install
+
+# To overwrite an existing install
+just reinstall
+```
+
+## Use with coding agents
+
+The docs are published as one file at <https://a24films.github.io/puffgres/AGENTS.md>. Install it as a skill — paste one of these:
+
+```bash
+# Claude Code
+mkdir -p ~/.claude/skills/puffgres && curl -fsSL https://a24films.github.io/puffgres/AGENTS.md -o ~/.claude/skills/puffgres/SKILL.md
+```
+
+```bash
+# Codex
+mkdir -p ~/.codex/skills/puffgres && curl -fsSL https://a24films.github.io/puffgres/AGENTS.md -o ~/.codex/skills/puffgres/SKILL.md
+```
 
 ## Setting Up a Project
 
