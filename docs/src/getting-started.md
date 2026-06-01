@@ -2,23 +2,10 @@
 
 ## Install
 
-Pull the prebuilt image — it ships the `puffgres` binary plus the Node runtime its transforms need:
+Install the CLI as a native binary — under the hood verifies you have the Rust toolchain and builds from source + adds `puffgres` to your PATH.
 
 ```bash
-docker pull ghcr.io/a24films/puffgres:latest
-```
-
-If you'd rather build the binary from source:
-
-1. Install [Just](https://github.com/casey/just#installation).
-2. Install the [Rust toolchain](https://rust-lang.org/tools/install/).
-3. Build and install `puffgres` into `~/.cargo/bin`:
-
-```bash
-just install
-
-# To overwrite an existing install
-just reinstall
+curl -fsSL https://raw.githubusercontent.com/a24films/puffgres/main/install.sh | sh
 ```
 
 ## Use with coding agents

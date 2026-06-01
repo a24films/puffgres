@@ -14,10 +14,10 @@ Read our [docs](https://a24films.github.io/puffgres/) to get started.
 
 ## Install
 
-Pull the prebuilt image — it ships the `puffgres` binary plus the Node runtime its transforms need:
+Install the CLI as a native binary — under the hood verifies you have the Rust toolchain and builds from source + adds `puffgres` to your PATH.
 
 ```bash
-docker pull ghcr.io/a24films/puffgres:latest
+curl -fsSL https://raw.githubusercontent.com/a24films/puffgres/main/install.sh | sh
 ```
 
 ## Use with coding agents
