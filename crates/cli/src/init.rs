@@ -286,9 +286,9 @@ mod tests {
 
         let dockerfile =
             fs::read_to_string(dir.path().join("puffgres").join("Dockerfile")).unwrap();
-        assert!(dockerfile.contains("GITHUB_TOKEN"));
-        assert!(dockerfile.contains("PUFFGRES_BRANCH_NAME"));
-        assert!(dockerfile.contains("cargo install --path crates/cli"));
+        assert!(dockerfile.contains("FROM ghcr.io/a24films/puffgres"));
+        assert!(dockerfile.contains("pnpm install"));
+        assert!(dockerfile.contains("puffgres run"));
     }
 
     #[test]

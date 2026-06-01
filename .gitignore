@@ -1,6 +1,7 @@
 /target
 SPEC.md
 /node_modules
+/docs/book
 /fuzz/corpus/fuzz_relation_cache
 /fuzz/target
 /fuzz/corpus/fuzz_document_id

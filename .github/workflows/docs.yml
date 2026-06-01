@@ -31,6 +31,9 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+      - name: Generate AGENTS.md
+        run: sh docs/generate-agents.sh
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
