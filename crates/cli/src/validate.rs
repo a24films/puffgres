@@ -20,9 +20,10 @@ use state::Store;
 /// When `pg_client` is `Some`, the provided connection is reused instead of
 /// opening a new one.  Pass `None` to have the function connect on its own.
 ///
-/// When `show_transform` is set, each passing config also prints the faker row
-/// it dry-ran and the actions the transform produced. `check` and `apply`
-/// enable this; the `run` path keeps the output to one line per config.
+/// When `should_run_transform` is set, each passing config also dry-runs its
+/// transform on a faker row and prints the input and resulting actions. `apply`
+/// enables this; `check` only enables it when narrowed to a single `--name`, so
+/// a bare `check` stays fast and validates schema/columns/id type/index only.
 ///
 /// Returns `Ok(())` if all configs pass, or `Err(message)` on failure.
 pub async fn preflight_check(
@@ -31,7 +32,7 @@ pub async fn preflight_check(
     configs: &[(PathBuf, Config)],
     pg_client: Option<&Client>,
     transform_timeout: Duration,
-    show_transform: bool,
+    should_run_transform: bool,
 ) -> Result<(), String> {
     if configs.is_empty() {
         return Ok(());
@@ -227,60 +228,68 @@ pub async fn preflight_check(
 
         // Dry-run the transform on generated faker data, then show the result.
         // Faker (rather than a real sample row) means check works on empty
-        // tables and never echoes production data back to the terminal.
-        let columns = match pg::column::resolve_column_info(
-            pg_client,
-            &config.source.schema,
-            &config.source.table,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
-                failed += 1;
-                continue;
-            }
-        };
+        // tables and never echoes production data back to the terminal. Skipped
+        // unless `should_run_transform` is set, so a bare `check` validates
+        // schema only.
+        let dry_run = if should_run_transform {
+            let columns = match pg::column::resolve_column_info(
+                pg_client,
+                &config.source.schema,
+                &config.source.table,
+            )
+            .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
+                    failed += 1;
+                    continue;
+                }
+            };
 
-        let column_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-        let values: Vec<Option<String>> = columns
-            .iter()
-            .map(|c| {
-                Some(if c.name == config.id.column {
-                    faker::fake_id(&config.id.id_type, &c.name)
-                } else {
-                    faker::fake_value(&c.name, &c.udt_name)
+            let column_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+            let values: Vec<Option<String>> = columns
+                .iter()
+                .map(|c| {
+                    Some(if c.name == config.id.column {
+                        faker::fake_id(&config.id.id_type, &c.name)
+                    } else {
+                        faker::fake_value(&c.name, &c.udt_name)
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        let actions = match dry_run_transform(
-            path,
-            config,
-            &column_names,
-            &values,
-            transform_timeout,
-        )
-        .await
-        {
-            Ok(a) => a,
-            Err(e) => {
-                println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
-                failed += 1;
-                continue;
-            }
+            let actions =
+                match dry_run_transform(path, config, &column_names, &values, transform_timeout)
+                    .await
+                {
+                    Ok(a) => a,
+                    Err(e) => {
+                        println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
+                        failed += 1;
+                        continue;
+                    }
+                };
+
+            Some((columns, values, actions))
+        } else {
+            None
         };
 
         // All checks passed for this config
         let id_type_label = id_type_display(&config.id.id_type);
         let ns = &config.namespace;
+        let transform_note = if should_run_transform {
+            ", transform ok"
+        } else {
+            ""
+        };
         println!(
-            "  {:<12} ok {qualified} -> {ns} (id: {id_type_label}, unique index ok, transform ok)",
+            "  {:<12} ok {qualified} -> {ns} (id: {id_type_label}, unique index ok{transform_note})",
             config.name,
         );
-        if show_transform {
-            print_dry_run(&config.name, &columns, &values, &actions);
+        if let Some((columns, values, actions)) = &dry_run {
+            print_dry_run(&config.name, columns, values, actions);
         }
         passed += 1;
     }
