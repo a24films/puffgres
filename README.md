@@ -31,7 +31,7 @@ mkdir -p ~/.claude/skills/puffgres && curl -fsSL https://a24films.github.io/puff
 
 ```bash
 # Codex
-mkdir -p ~/.codex/prompts && curl -fsSL https://a24films.github.io/puffgres/AGENTS.md -o ~/.codex/prompts/puffgres.md
+mkdir -p ~/.codex/skills/puffgres && curl -fsSL https://a24films.github.io/puffgres/AGENTS.md -o ~/.codex/skills/puffgres/SKILL.md
 ```
 
 ## Why puffgres?
