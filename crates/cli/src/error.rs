@@ -42,16 +42,10 @@ pub enum CliError {
     Check(String),
 
     #[error("{0}")]
-    DryRun(String),
-
-    #[error("{0}")]
     Run(String),
 
     #[error("{0}")]
     RunValidation(String),
-
-    #[error("{0}")]
-    Reset(String),
 
     #[error("{0}")]
     Tombstone(String),

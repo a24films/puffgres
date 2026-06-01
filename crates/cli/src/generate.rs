@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use pg::column::ColumnInfo;
 
 use crate::error::CliError;
@@ -154,35 +152,7 @@ pub async fn run_async(paths: &ProjectPaths, database_url: &str) -> Result<(), C
     let mut generated = 0;
 
     for (config_path, config) in &active_configs {
-        let config_dir = config_path.parent().unwrap();
-        let qualified = format!("{}.{}", config.source.schema, config.source.table);
-
-        let all_columns = pg::column::resolve_column_info(
-            &pg_client,
-            &config.source.schema,
-            &config.source.table,
-        )
-        .await
-        .map_err(|e| CliError::Generate(format!("{qualified}: {e}")))?;
-
-        let columns =
-            resolve_schema_columns(&all_columns, config.columns.as_deref()).map_err(|e| {
-                CliError::Generate(format!("{qualified} (config {}): {e}", config.name))
-            })?;
-
-        let input = SchemaInput {
-            schema: config.source.schema.clone(),
-            table: config.source.table.clone(),
-            columns,
-        };
-
-        let content = generate_schema_content(&input);
-        let schema_path = config_dir.join("schema.ts");
-        std::fs::write(&schema_path, &content).map_err(|e| {
-            CliError::Generate(format!("failed to write {}: {e}", schema_path.display()))
-        })?;
-
-        println!("  {:<12} wrote {}", config.name, schema_path.display());
+        write_schema_file(&pg_client, config, config_path.parent().unwrap()).await?;
         generated += 1;
     }
 
@@ -190,72 +160,36 @@ pub async fn run_async(paths: &ProjectPaths, database_url: &str) -> Result<(), C
     Ok(())
 }
 
-/// Verify all non-tombstoned configs have up-to-date schema.ts files.
-///
-/// Returns a list of config names with problems (missing or outdated schema).
-pub async fn verify_schemas(
-    configs: &[(PathBuf, config::Config)],
-    database_url: &str,
-) -> Result<Vec<String>, CliError> {
-    let active_configs: Vec<_> = configs
-        .iter()
-        .filter(|(path, _)| !has_on_disk_tombstone(path))
-        .collect();
+/// Introspect a config's table and write its `schema.ts` into `config_dir`.
+async fn write_schema_file(
+    pg_client: &pg::Client,
+    config: &config::Config,
+    config_dir: &std::path::Path,
+) -> Result<(), CliError> {
+    let qualified = format!("{}.{}", config.source.schema, config.source.table);
 
-    if active_configs.is_empty() {
-        return Ok(Vec::new());
-    }
+    let all_columns =
+        pg::column::resolve_column_info(pg_client, &config.source.schema, &config.source.table)
+            .await
+            .map_err(|e| CliError::Generate(format!("{qualified}: {e}")))?;
 
-    let pg_client = pg::connect::connect(database_url)
-        .await
-        .map_err(|e| CliError::Generate(format!("failed to connect to postgres: {e}")))?;
+    let columns = resolve_schema_columns(&all_columns, config.columns.as_deref())
+        .map_err(|e| CliError::Generate(format!("{qualified} (config {}): {e}", config.name)))?;
 
-    let mut errors = Vec::new();
+    let input = SchemaInput {
+        schema: config.source.schema.clone(),
+        table: config.source.table.clone(),
+        columns,
+    };
 
-    for (config_path, config) in &active_configs {
-        let config_dir = config_path.parent().unwrap();
-        let schema_path = config_dir.join("schema.ts");
-        let qualified = format!("{}.{}", config.source.schema, config.source.table);
+    let content = generate_schema_content(&input);
+    let schema_path = config_dir.join("schema.ts");
+    std::fs::write(&schema_path, &content).map_err(|e| {
+        CliError::Generate(format!("failed to write {}: {e}", schema_path.display()))
+    })?;
 
-        let all_columns = pg::column::resolve_column_info(
-            &pg_client,
-            &config.source.schema,
-            &config.source.table,
-        )
-        .await
-        .map_err(|e| CliError::Generate(format!("{qualified}: {e}")))?;
-
-        let columns =
-            resolve_schema_columns(&all_columns, config.columns.as_deref()).map_err(|e| {
-                CliError::Generate(format!("{qualified} (config {}): {e}", config.name))
-            })?;
-
-        let input = SchemaInput {
-            schema: config.source.schema.clone(),
-            table: config.source.table.clone(),
-            columns,
-        };
-
-        let expected = generate_schema_content(&input);
-
-        match std::fs::read_to_string(&schema_path) {
-            Ok(actual) if actual == expected => {}
-            Ok(_) => {
-                errors.push(format!(
-                    "{}: schema.ts is outdated. Run `puffgres generate`",
-                    config.name
-                ));
-            }
-            Err(_) => {
-                errors.push(format!(
-                    "{}: schema.ts is missing. Run `puffgres generate`",
-                    config.name
-                ));
-            }
-        }
-    }
-
-    Ok(errors)
+    println!("  {:<12} wrote {}", config.name, schema_path.display());
+    Ok(())
 }
 
 #[cfg(test)]

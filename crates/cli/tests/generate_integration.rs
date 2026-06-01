@@ -16,7 +16,6 @@ async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
         otel_endpoint: None,
         otel_headers: None,
         state_schema: "puffgres".to_string(),
-        dlq_max_age_hours: None,
     };
     (ctx, env_config)
 }
@@ -66,11 +65,12 @@ async fn generate_check_lifecycle() {
         &env_config.database_url,
         &env_config.state_schema,
         &puffgres_cli::ProjectConfig::default(),
+        None,
     )
     .await
     .unwrap();
 
-    // 3. ALTER TABLE to add a column → check should fail (schema drift)
+    // 3. ALTER TABLE to add a column → check regenerates schema.ts and succeeds
     let pg_client = pg::connect::connect(&env_config.database_url)
         .await
         .unwrap();
@@ -80,43 +80,22 @@ async fn generate_check_lifecycle() {
         .unwrap();
     drop(pg_client);
 
-    let check_result = check_async(
-        &paths,
-        &env_config.database_url,
-        &env_config.state_schema,
-        &puffgres_cli::ProjectConfig::default(),
-    )
-    .await;
-    assert!(
-        check_result.is_err(),
-        "check should fail after ALTER TABLE: {check_result:?}"
-    );
-    let err = check_result.unwrap_err().to_string();
-    assert!(
-        err.contains("puffgres generate"),
-        "error should suggest running generate: {err}"
-    );
-
-    // 4. Re-generate → schema.ts should be updated with new column
-    generate_async(&paths, &env_config.database_url)
-        .await
-        .unwrap();
-
-    let updated = std::fs::read_to_string(&schema_path).unwrap();
-    assert!(
-        updated.contains(r#""age""#),
-        "updated schema should contain 'age' column"
-    );
-
-    // 5. Check should succeed again
     check_async(
         &paths,
         &env_config.database_url,
         &env_config.state_schema,
         &puffgres_cli::ProjectConfig::default(),
+        None,
     )
     .await
     .unwrap();
+
+    // 4. schema.ts should now include the new column (check regenerated it)
+    let updated = std::fs::read_to_string(&schema_path).unwrap();
+    assert!(
+        updated.contains(r#""age""#),
+        "check should have regenerated schema.ts with the 'age' column"
+    );
 }
 
 #[tokio::test]

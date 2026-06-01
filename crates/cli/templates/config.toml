@@ -2,7 +2,6 @@ name = "{{NAME}}"
 namespace = "{{NAMESPACE}}"
 
 [source]
-schema = "public"
 table = "{{TABLE}}"
 
 [id]
