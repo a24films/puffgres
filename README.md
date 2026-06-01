@@ -1,15 +1,11 @@
-**NOTE:** Puffgres is in **alpha release** for a select set of design partners. We will announce a more public general release in the future. For now: **use at your own risk**. 
+If you have feedback about puffgres, or are interested in building tools for the future of film and TV production, A24 Labs is hiring software engineers — email [lgelfond@a24films.com](mailto:lgelfond@a24films.com) for more. 
 
-If you have feedback about Puffgres, or are interested in building tools for the future of film and TV production, A24 Labs is hiring software engineers — email [lgelfond@a24films.com](mailto:lgelfond@a24films.com) for more. 
-
-
-
-Puffgres is a logical replication service that keeps Postgres entities mirrored in turbopuffer. Rather than duplicating application code every time you modify a vector (and risking partial successes that keep data out of sync), your Postgres changes automatically update.
+puffgres (beta) is a logical replication service that keeps Postgres entities mirrored in turbopuffer. Rather than duplicating application code every time you modify a vector (and risking partial successes that keep data out of sync), your Postgres changes automatically update.
 
 
-A bit of Puffgres' design philosophy:
+A bit of puffgres' design philosophy:
 
-- **You should not need extra database calls to keep vectors up to date**. Upserting rows in your primary database and a secondary vector database is bound to produce drift (forgetting to add parallel / compensating calls) and hard-to-detect failures (i.e. just one of the two calls succeeds). Puffgres lets us "derive" state, making Postgres the source of truth and keeping Turbopuffer in sync. 
+- **You should not need extra database calls to keep vectors up to date**. Upserting rows in your primary database and a secondary vector database is bound to produce drift (forgetting to add parallel / compensating calls) and hard-to-detect failures (i.e. just one of the two calls succeeds). puffgres lets us "derive" state, making Postgres the source of truth and keeping Turbopuffer in sync. 
 - **The service handles at-least once delivery**. Developers should not need to consider batching, retry logic, backfills, or change data capture in any of the code that they write. The service maintains its own state in a dedicated `puffgres` schema inside your source Postgres, and can stop/start/resume at any time without losing changes (even if they are slightly out of date). Co-locating state with the source means PITR restores naturally roll the two together.
 - **Sync is maintained through "configs" which link Postgres tables to turbopuffer namespaces.** Each defines a mapping, and a TypeScript-based "transform," which lets us easily do operations like tokenization, embedding, and other manipulation. 
 - **Configs and transforms are immutable**. We avoid an abundance of thorny cases that come from letting us change a mapping (i.e. rows produced with two different set of transforms.). If we want to make a change, we should "tombstone" the old one and create a new one. 
@@ -48,9 +44,7 @@ I built a [very hacky](https://github.com/lucasgelfond/puffgres) version of this
 
 ## Performance
 
-Measured on GitHub Actions `ubuntu-latest` (4-core x86, 16 GB RAM) with `--release` builds (LTO, single codegen unit).
-
-We’ve tested puffgres in production on tables with a few million rows, and it should scale well beyond that. If you implement this at large scale or hit bumps, feel free to shoot me an [email](mailto:lgelfond@a24films.com). Initial benchmarking on GitHub Actions runners shows:
+These benchmarks are a bit artificial, in isolation on a GitHub action (`ubuntu-latest`, the 4-core x86 / 16GB RAM runner). In practice, we've used `puffgres` on tables of a few hundred thousand rows, although it should scale much beyond this. If you implement this at large scale or hit bumps, feel free to shoot me an [email](mailto:lgelfond@a24films.com). Initial benchmarking on GitHub Actions runners shows:
 
 - **Throughput**: >600K events/sec sustained over 100M events
 - **Batch latency**: p50 <10&micro;s, p99 <100&micro;s across 100K transactions
