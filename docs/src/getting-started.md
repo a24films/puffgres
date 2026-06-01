@@ -3,7 +3,7 @@
 We will eventually create a persistent install script / Docker image.
 
 In the interim, or if you want to contribute to the Source, you should:
-- insall [Rust](https://rust-lang.org/tools/install/)
+- install [Rust](https://rust-lang.org/tools/install/)
 - install [Just](https://github.com/casey/just)
 - clone the repo
 - run `just install` on the repo.
