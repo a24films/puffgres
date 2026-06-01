@@ -160,6 +160,7 @@ pub async fn run_async(
             &new_config_refs,
             None,
             transform_timeout,
+            true,
         )
         .await
         .map_err(CliError::Apply)?;

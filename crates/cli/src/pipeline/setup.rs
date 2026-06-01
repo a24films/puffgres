@@ -218,6 +218,7 @@ pub(crate) async fn setup_pipeline(
         &applied_configs,
         Some(&pg_client),
         transform_timeout,
+        false,
     )
     .await
     .map_err(|msg| CliError::Run(format!("pre-flight check failed: {msg}")))?;

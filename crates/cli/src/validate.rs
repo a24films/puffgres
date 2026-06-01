@@ -4,8 +4,11 @@ use std::time::Duration;
 
 use config::{Config, IdType};
 use pg::Client;
+use pg::column::ColumnInfo;
+use puffgres_core::Action;
 
 use crate::dry_transform::dry_run_transform;
+use crate::faker;
 use state::Store;
 
 /// Run all pre-flight validation checks on configs.
@@ -17,6 +20,10 @@ use state::Store;
 /// When `pg_client` is `Some`, the provided connection is reused instead of
 /// opening a new one.  Pass `None` to have the function connect on its own.
 ///
+/// When `show_transform` is set, each passing config also prints the faker row
+/// it dry-ran and the actions the transform produced. `check` and `apply`
+/// enable this; the `run` path keeps the output to one line per config.
+///
 /// Returns `Ok(())` if all configs pass, or `Err(message)` on failure.
 pub async fn preflight_check(
     database_url: &str,
@@ -24,6 +31,7 @@ pub async fn preflight_check(
     configs: &[(PathBuf, Config)],
     pg_client: Option<&Client>,
     transform_timeout: Duration,
+    show_transform: bool,
 ) -> Result<(), String> {
     if configs.is_empty() {
         return Ok(());
@@ -217,46 +225,63 @@ pub async fn preflight_check(
             continue;
         }
 
-        // Dry-run transform with a sample row
-        let mut transform_status = "no sample row";
-        let sample = match pg::sample::fetch_sample_row(
+        // Dry-run the transform on generated faker data, then show the result.
+        // Faker (rather than a real sample row) means check works on empty
+        // tables and never echoes production data back to the terminal.
+        let columns = match pg::column::resolve_column_info(
             pg_client,
             &config.source.schema,
             &config.source.table,
         )
         .await
         {
-            Ok(s) => s,
+            Ok(c) => c,
             Err(e) => {
-                println!(
-                    "  {:<12} FAIL {} -- failed to fetch sample row: {}",
-                    config.name, qualified, e
-                );
+                println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
                 failed += 1;
                 continue;
             }
         };
 
-        if let Some((column_names, values)) = sample {
-            match dry_run_transform(path, config, &column_names, &values, transform_timeout).await {
-                Ok(_) => {
-                    transform_status = "transform ok";
-                }
-                Err(e) => {
-                    println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
-                    failed += 1;
-                    continue;
-                }
+        let column_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+        let values: Vec<Option<String>> = columns
+            .iter()
+            .map(|c| {
+                Some(if c.name == config.id.column {
+                    faker::fake_id(&config.id.id_type, &c.name)
+                } else {
+                    faker::fake_value(&c.name, &c.udt_name)
+                })
+            })
+            .collect();
+
+        let actions = match dry_run_transform(
+            path,
+            config,
+            &column_names,
+            &values,
+            transform_timeout,
+        )
+        .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                println!("  {:<12} FAIL {} -- {}", config.name, qualified, e);
+                failed += 1;
+                continue;
             }
-        }
+        };
 
         // All checks passed for this config
         let id_type_label = id_type_display(&config.id.id_type);
         let ns = &config.namespace;
         println!(
-            "  {:<12} ok {qualified} -> {ns} (id: {id_type_label}, unique index ok, {transform_status})",
+            "  {:<12} ok {qualified} -> {ns} (id: {id_type_label}, unique index ok, transform ok)",
             config.name,
         );
+        if show_transform {
+            print_dry_run(&config.name, &columns, &values, &actions);
+        }
         passed += 1;
     }
 
@@ -267,6 +292,68 @@ pub async fn preflight_check(
     } else {
         println!("{passed} passed, {failed} failed");
         Ok(())
+    }
+}
+
+/// Print the faker input row and the actions the transform produced as two
+/// separate blocks, so `check` shows what a row turns into rather than just
+/// asserting "transform ok".
+fn print_dry_run(
+    name: &str,
+    columns: &[ColumnInfo],
+    values: &[Option<String>],
+    actions: &[Action],
+) {
+    let name_w = columns.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    let type_w = columns
+        .iter()
+        .map(|c| c.udt_name.len() + 2)
+        .max()
+        .unwrap_or(0);
+
+    println!();
+    println!("  faker input ({name}):");
+    for (col, val) in columns.iter().zip(values) {
+        let ty = format!("({})", col.udt_name);
+        let rendered = match val {
+            Some(v) => format!("\"{v}\""),
+            None => "NULL".to_string(),
+        };
+        println!("    {:<name_w$}  {ty:<type_w$}  = {rendered}", col.name);
+    }
+
+    println!();
+    println!("  transform output ({name}):");
+    if actions.is_empty() {
+        println!("    (transform returned no actions)");
+    }
+    for action in actions {
+        match action {
+            Action::Upsert {
+                id,
+                document,
+                vector,
+                distance_metric,
+                schema,
+            } => {
+                println!("    upsert id={id}");
+                let doc = serde_json::to_string(document)
+                    .unwrap_or_else(|_| "<unserializable>".to_string());
+                println!("      document        = {doc}");
+                if let Some(v) = vector {
+                    println!("      vector          = <{} dims>", v.len());
+                }
+                if let Some(m) = distance_metric {
+                    println!("      distance_metric = {m}");
+                }
+                if let Some(s) = schema {
+                    let sj = serde_json::to_string(s).unwrap_or_default();
+                    println!("      schema          = {sj}");
+                }
+            }
+            Action::Delete { id } => println!("    delete id={id}"),
+            Action::Skip => println!("    skip"),
+        }
     }
 }
 

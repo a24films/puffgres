@@ -80,20 +80,9 @@ pub struct NewArgs {
     pub table: Option<String>,
     pub namespace: Option<String>,
     pub id_column: Option<String>,
-    pub id_type: Option<String>,
     pub provider: Option<String>,
     pub embed_column: Option<String>,
     pub non_interactive: bool,
-}
-
-/// Validate a `--id-type` flag value against the supported turbopuffer id types.
-fn validate_id_type(s: &str) -> Result<String, CliError> {
-    match s.trim().to_lowercase().as_str() {
-        t @ ("uint" | "int" | "uuid" | "string") => Ok(t.to_string()),
-        other => Err(CliError::Generate(format!(
-            "unknown id type '{other}' (expected: uint, int, uuid, string)"
-        ))),
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -330,8 +319,8 @@ async fn build_options(args: &NewArgs, database_url: Option<&str>) -> Result<New
         None => Provider::None,
     };
 
-    // Best-effort introspection so we can auto-detect the id type when it isn't
-    // given. A missing connection or table just means we fall back to defaults.
+    // Best-effort introspection so we can auto-detect the id type. A missing
+    // connection or table just means we fall back to defaults.
     let columns = introspect_columns(database_url, &table).await.ok();
 
     let id_column = args
@@ -341,10 +330,7 @@ async fn build_options(args: &NewArgs, database_url: Option<&str>) -> Result<New
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "id".to_string());
 
-    let id_type = match args.id_type.as_deref() {
-        Some(t) => validate_id_type(t)?,
-        None => id_type_from_columns(columns.as_deref(), &id_column),
-    };
+    let id_type = id_type_from_columns(columns.as_deref(), &id_column);
 
     let embed_column = args
         .embed_column
@@ -655,7 +641,6 @@ mod tests {
             table: Some("smart_buyer".to_string()),
             namespace: Some("buyers_v2".to_string()),
             id_column: Some("buyer_id".to_string()),
-            id_type: Some("string".to_string()),
             provider: Some("zeroentropy".to_string()),
             embed_column: Some("buyer_name".to_string()),
             non_interactive: true,
@@ -664,7 +649,8 @@ mod tests {
         assert_eq!(opts.table, "smart_buyer");
         assert_eq!(opts.namespace, "buyers_v2");
         assert_eq!(opts.id_column, "buyer_id");
-        assert_eq!(opts.id_type, "string");
+        // No DB connection → id type falls back to the historical default.
+        assert_eq!(opts.id_type, "uint");
         assert_eq!(opts.provider, Provider::ZeroEntropy);
         assert_eq!(opts.embed_column.as_deref(), Some("buyer_name"));
     }

@@ -165,8 +165,8 @@ Before `puffgres run` will pick up a config, you need to apply it with `puffgres
 Before applying, validate your config and transform with:
 
 ```sh
-puffgres check          # all configs
-puffgres check film     # just one
+puffgres check              # all configs
+puffgres check --name film  # just one
 ```
 
 `check` regenerates `schema.ts` from the live database, then verifies the referenced table exists, the id column has a unique index, the id type is compatible, and the transform runs successfully on a sample row from the table — pulling a real row through your transform so you catch bugs early. It never writes to the state database, so it's safe to run before `apply` and good to run in CI.

@@ -19,6 +19,7 @@ enum Command {
     /// Create a new table config (interactive, or non-interactive with flags)
     New {
         /// Config name. Also the default for the table and namespace.
+        #[arg(long)]
         name: Option<String>,
         /// Postgres table to replicate (defaults to the config name)
         #[arg(long)]
@@ -29,9 +30,6 @@ enum Command {
         /// Column to use as the document id (defaults to "id")
         #[arg(long)]
         id_column: Option<String>,
-        /// Turbopuffer id type: uint, int, uuid, or string (auto-detected when omitted)
-        #[arg(long)]
-        id_type: Option<String>,
         /// Embedding provider: none, together, zeroentropy, baseten, cloudflare
         #[arg(long)]
         provider: Option<String>,
@@ -45,6 +43,7 @@ enum Command {
     /// Validate configs against the live database (regenerates schema.ts)
     Check {
         /// Optional config name to check (defaults to all configs)
+        #[arg(long)]
         name: Option<String>,
     },
     /// Apply pending config changes
@@ -60,6 +59,7 @@ enum Command {
     /// Remove config(s): deletes turbopuffer namespace(s), state, and files
     Remove {
         /// Name of the config to remove
+        #[arg(long)]
         name: Option<String>,
         /// Remove the most recently applied config
         #[arg(long)]
@@ -117,7 +117,6 @@ async fn run() -> (
         ref table,
         ref namespace,
         ref id_column,
-        ref id_type,
         ref provider,
         ref embed_column,
         non_interactive,
@@ -138,7 +137,6 @@ async fn run() -> (
             table: table.clone(),
             namespace: namespace.clone(),
             id_column: id_column.clone(),
-            id_type: id_type.clone(),
             provider: provider.clone(),
             embed_column: embed_column.clone(),
             non_interactive,

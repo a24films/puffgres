@@ -194,6 +194,7 @@ async fn preflight_applied(
         &configs,
         None,
         transform_timeout,
+        false,
     )
     .await
     .map_err(CliError::RunValidation)
