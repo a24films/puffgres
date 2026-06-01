@@ -18,11 +18,31 @@ Read our [docs](https://a24films.github.io/puffgres/) to get started.
 
 ## Install
 
+Pull the prebuilt image — it ships the `puffgres` binary plus the Node runtime its transforms need:
+
+```bash
+docker pull ghcr.io/a24films/puffgres:latest
+```
+
+Or build from source, which installs the Rust toolchain (if missing), clones the repo into a temp dir, and builds `puffgres` into `~/.cargo/bin`:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/a24films/puffgres/main/install.sh | sh
 ```
 
-Installs the Rust toolchain (if missing), clones the repo into a temp dir, and builds `puffgres` into `~/.cargo/bin`.
+## Use with coding agents
+
+The docs are published as one file at <https://a24films.github.io/puffgres/AGENTS.md>. Install it as a skill — paste one of these:
+
+```bash
+# Claude Code
+mkdir -p ~/.claude/skills/puffgres && curl -fsSL https://a24films.github.io/puffgres/AGENTS.md -o ~/.claude/skills/puffgres/SKILL.md
+```
+
+```bash
+# Codex
+mkdir -p ~/.codex/prompts && curl -fsSL https://a24films.github.io/puffgres/AGENTS.md -o ~/.codex/prompts/puffgres.md
+```
 
 ## Performance
 
