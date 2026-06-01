@@ -18,6 +18,7 @@ clap.workspace = true
 config.workspace = true
 dialoguer.workspace = true
 dotenvy.workspace = true
+fake.workspace = true
 pg.workspace = true
 puff.workspace = true
 puffgres-debug.workspace = true

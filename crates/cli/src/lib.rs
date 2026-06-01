@@ -3,6 +3,7 @@ pub mod check;
 pub mod dry_transform;
 pub mod env;
 pub mod error;
+pub mod faker;
 pub mod generate;
 pub mod init;
 pub mod new;

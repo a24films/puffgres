@@ -41,7 +41,7 @@ pub fn resolve_schema_columns(
 }
 
 /// Map a Postgres scalar `udt_name` to its turbopuffer PrimitiveType.
-fn tpuf_scalar_type(udt_name: &str) -> &'static str {
+pub(crate) fn tpuf_scalar_type(udt_name: &str) -> &'static str {
     match udt_name {
         "int2" | "int4" | "int8" => "int",
         "float4" | "float8" | "numeric" => "float",

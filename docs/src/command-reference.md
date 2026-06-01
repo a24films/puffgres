@@ -4,14 +4,14 @@
 
 Create directory structure (in `puffgres/` folder) with everything needed for initial setup.
 
-## `puffgres new [name]`
+## `puffgres new --name <name>`
 
 Create a new config / transform. Runs an interactive wizard by default.
 
 Pass `--non-interactive` to build the config from flags instead — the codepath scripts and agents should use:
 
 ```sh
-puffgres new film \
+puffgres new --name film \
   --table internal_film \
   --namespace internal_film_title \
   --id-column id \
@@ -21,19 +21,28 @@ puffgres new film \
   --non-interactive
 ```
 
-Flags: `--table` and `--namespace` default to the config name; `--id-column` defaults to `id`; `--id-type` (`uint`, `int`, `uuid`, `string`) is auto-detected from the table when omitted; `--provider` is one of `none`, `together`, `zeroentropy`, `baseten`, `cloudflare`; `--embed-column` sets the column the generated transform embeds.
+Flags:
+
+- `--name` — what to call the config and name the folder
+- `--table` — which Postgres table we reference (defaults to name)
+- `--namespace` — which turbopuffer namespace this will land in (defaults to name)
+- `--id-column` — which column represents our id (defaults to `id`)
+- `--provider` — the embedding provider we'd use (`none`, `together`, `zeroentropy`, `baseten`, `cloudflare`)
+- `--embed-column` — which column to embed
+
+The id type is always auto-detected from the table.
 
 ## `puffgres apply`
 
 Apply configs on the file system into state, so that replication will begin for a new config/transform pair. Once you do this, configs / transforms are set (+ their hashes are stored in state) and will throw an error if you try to change them.
 
-## `puffgres check [name]`
+## `puffgres check [--name <name>]`
 
-Regenerate `schema.ts` from the live database and validate configs against it — referenced tables exist, the id column has a unique index, id types are compatible, and each transform runs successfully on a sample row. Pass a config `name` to validate just one. Never writes to the state database, so it's safe to run before `apply` and good to run in CI.
+Regenerate `schema.ts` from the live database and validate configs against it — referenced tables exist, the id column has a unique index, id types are compatible, and each transform runs successfully on a sample row. Pass `--name <name>` to validate just one config. Never writes to the state database, so it's safe to run before `apply` and good to run in CI.
 
 ## `puffgres remove`
 
-Permanently remove config(s): deletes the turbopuffer namespace, the on-disk config directory, and all state (checkpoints, backfill progress, DLQ). Use a positional `name` to remove a specific config, `--last` to remove the most recently applied one, or `--all` to remove every applied config. `--force` skips the confirmation prompt (use with `--all`).
+Permanently remove config(s): deletes the turbopuffer namespace, the on-disk config directory, and all state (checkpoints, backfill progress, DLQ). Use `--name <name>` to remove a specific config, `--last` to remove the most recently applied one, or `--all` to remove every applied config. `--force` skips the confirmation prompt (use with `--all`).
 
 ## `puffgres tombstone --name <name>`
 

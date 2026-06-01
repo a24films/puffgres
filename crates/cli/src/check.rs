@@ -44,6 +44,7 @@ pub async fn run_async(
         &configs,
         None,
         transform_timeout,
+        true,
     )
     .await
     .map_err(CliError::Check)?;

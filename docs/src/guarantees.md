@@ -1,34 +1,32 @@
 # Delivery Guarantees
 
-puffgres aims for **at-least-once delivery with idempotent writes**, which gives the destination namespace an effectively exactly-once *final state*. The pieces that make this work:
+puffgres delivers **at least once, and writes are idempotent** — so a namespace ends up in the same final state it would have with exactly-once delivery. Here's what backs that up.
 
-## Checkpoints and replay
+## Nothing is skipped
 
-Streaming replication advances a checkpoint LSN only **after** a batch has been applied to turbopuffer. If puffgres crashes or the connection drops, it resumes from the last acknowledged LSN — so some events may be re-delivered, but none are skipped.
+A replication checkpoint only advances *after* a batch lands in turbopuffer. If puffgres crashes, it resumes from the last saved point — some events may be re-sent, but none are lost. Backfill works the same way: it remembers the last id it processed and picks up from there.
 
-Backfill is cursor-based: it records the last id it processed (a watermark), so an interrupted backfill resumes where it left off rather than starting over.
+## Re-sends don't create duplicates
 
-## Idempotency
+Every write is keyed by document id, so applying the same event twice has no effect. That's why your config must point at a column with a unique index — `check` enforces it.
 
-Every write to turbopuffer is keyed by the document id (`upsert` and `delete` both target an id). Re-applying the same event is therefore a no-op against the final state — the redelivery implied by at-least-once doesn't produce duplicates or drift. This is why your config must point at a column with a unique index (`check` enforces this).
+## Failures don't block the stream
 
-## Dead letter queue
-
-A batch that fails after `max_retries` is moved to the dead letter queue rather than blocking the stream. Retryable entries are replayed on an interval; entries that exhaust `dlq_max_retries` are marked permanent and retained (for inspection) until `dlq_permanent_max_age_hours` passes. See [Configuration](./configuration.md) for the knobs.
+A batch that keeps failing is moved to the dead letter queue instead of stalling everything. Retryable entries are replayed automatically; the rest are kept for inspection. See [Configuration](./configuration.md) for the retry and retention knobs.
 
 ## Large transactions
 
-By default a transaction is buffered and applied atomically. With `sub_batch_size` set, large transactions stream in chunks — the chunks are applied as they arrive and the commit finalizes the group. A crash mid-transaction is safe because re-streaming re-applies the same idempotent events.
+Big transactions are applied atomically by default. Set `sub_batch_size` to stream them in chunks instead — still safe on a crash, since re-streaming just re-applies the same idempotent events.
 
 ## Schema changes
 
-When a tracked table's schema changes (e.g. `ALTER TABLE ADD COLUMN`), puffgres detects it from the replication stream, tears down, and reconnects with fresh schema metadata instead of misinterpreting rows. Your `schema.ts` must still be regenerated to match — run `puffgres check` (which regenerates and validates) after a migration.
+When a tracked table's schema changes (e.g. `ALTER TABLE ADD COLUMN`), puffgres notices, reconnects with fresh metadata, and keeps going. Regenerate your `schema.ts` afterward by running `puffgres check`.
 
-## State and rollbacks
+## Rollbacks stay consistent
 
-puffgres state (checkpoints, backfill cursors, applied configs, DLQ) lives in the **source Postgres database** under `PUFFGRES_STATE_SCHEMA`. A source rollback (e.g. a PITR restore) rolls puffgres' state back in lockstep, so cursors and registrations stay consistent with the data they describe.
+puffgres keeps its state (checkpoints, cursors, applied configs, DLQ) in the source Postgres database under `PUFFGRES_STATE_SCHEMA`. If the source is rolled back (e.g. a PITR restore), puffgres' state rolls back with it — cursors and the data they track never drift apart.
 
-## What is *not* guaranteed
+## Not guaranteed
 
-- **No cross-config ordering.** Each config is an independent stream.
-- **No exactly-once side effects inside transforms.** If your transform calls an external API (e.g. an embedding provider), redelivery can call it more than once. Keep transforms idempotent or tolerant of repeats.
+- **Ordering across configs.** Each config is its own independent stream.
+- **Exactly-once side effects in transforms.** If a transform calls an external API (say, an embedding provider), a re-send can call it again. Keep transforms idempotent.
