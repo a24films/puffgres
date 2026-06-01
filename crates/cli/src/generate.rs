@@ -72,7 +72,7 @@ fn tpuf_type(udt_name: &str) -> &'static str {
 }
 
 /// Escape a string for use inside a TS double-quoted string literal.
-fn ts_escape(s: &str) -> String {
+pub(crate) fn ts_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

@@ -38,9 +38,7 @@ void (async () => {
     const upsertEvents = input.filter((e) => e.operation !== "delete");
     const texts = upsertEvents.map((e) => {
       const row = parseRow(e.columns);
-      // TODO: return the text you want embedded for this row
-      // e.g. return row.name ?? "";
-      return "";
+      return {{EMBED_EXPR}};
     });
     const vectors = await embedBatchZeroEntropy(texts);
     const vectorById = new Map(upsertEvents.map((e, i) => [e.id, vectors[i]]));
@@ -56,7 +54,7 @@ void (async () => {
         type: "upsert",
         id: event.id,
         document: {
-          // TODO: map row fields to document fields
+          {{ID_DOC_FIELD}}// TODO: map row fields to document fields
         },
         vector: vectorById.get(event.id),
         distance_metric: "cosine_distance",

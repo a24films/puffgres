@@ -91,13 +91,23 @@ async fn run() -> (
         return (puffgres_cli::init::run(), None);
     }
 
-    // Tier 2: ProjectPaths only
+    // Tier 2: ProjectPaths only. We additionally try (best-effort) to resolve
+    // DATABASE_URL so `new` can auto-detect the id type; failure is fine.
     if let Command::New { ref name } = cli.command {
         let paths = match ProjectPaths::from_current_dir() {
             Ok(p) => p,
             Err(e) => return (Err(e), None),
         };
-        return (puffgres_cli::new::run(&paths, name.as_deref()), None);
+        let database_url = ProjectConfig::load_unvalidated(&paths.project_config)
+            .ok()
+            .and_then(|pc| {
+                let env_paths = pc.resolve_env_paths(&paths.root);
+                puffgres_cli::env::resolve_database_url(&env_paths).ok()
+            });
+        return (
+            puffgres_cli::new::run(&paths, name.as_deref(), database_url.as_deref()).await,
+            None,
+        );
     }
 
     // All remaining commands need at least ProjectPaths
