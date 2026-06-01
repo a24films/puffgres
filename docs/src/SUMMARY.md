@@ -3,7 +3,6 @@
 - [Introduction](./introduction.md)
 - [Getting Started](./getting-started.md)
 - [Configuration](./configuration.md)
-- [Environment](./environment.md)
 - [Creating Your First Config](./creating-your-first-config.md)
 - [Deploying](./deploying.md)
 - [Delivery Guarantees](./guarantees.md)

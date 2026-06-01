@@ -225,7 +225,6 @@ mod tests {
             otel_endpoint: None,
             otel_headers: None,
             state_schema,
-            dlq_max_age_hours: None,
         }
     }
 

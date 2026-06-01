@@ -54,6 +54,46 @@ impl Provider {
             Provider::Cloudflare,
         ]
     }
+
+    /// Parse a `--provider` flag value. Accepts case-insensitive names with
+    /// optional separators (e.g. `zero-entropy`, `cloudflare_workers_ai`).
+    fn parse(s: &str) -> Result<Provider, CliError> {
+        let normalized = s.trim().to_lowercase().replace(['-', '_', ' '], "");
+        match normalized.as_str() {
+            "none" => Ok(Provider::None),
+            "together" | "togetherai" => Ok(Provider::Together),
+            "zeroentropy" => Ok(Provider::ZeroEntropy),
+            "baseten" => Ok(Provider::Baseten),
+            "cloudflare" | "cloudflareworkersai" => Ok(Provider::Cloudflare),
+            other => Err(CliError::Generate(format!(
+                "unknown embedding provider '{other}' (expected: none, together, zeroentropy, baseten, cloudflare)"
+            ))),
+        }
+    }
+}
+
+/// Inputs for `puffgres new`. With `non_interactive` set, these build the config
+/// directly (the path for scripts and agents); otherwise they seed the wizard.
+#[derive(Debug, Default, Clone)]
+pub struct NewArgs {
+    pub name: Option<String>,
+    pub table: Option<String>,
+    pub namespace: Option<String>,
+    pub id_column: Option<String>,
+    pub id_type: Option<String>,
+    pub provider: Option<String>,
+    pub embed_column: Option<String>,
+    pub non_interactive: bool,
+}
+
+/// Validate a `--id-type` flag value against the supported turbopuffer id types.
+fn validate_id_type(s: &str) -> Result<String, CliError> {
+    match s.trim().to_lowercase().as_str() {
+        t @ ("uint" | "int" | "uuid" | "string") => Ok(t.to_string()),
+        other => Err(CliError::Generate(format!(
+            "unknown id type '{other}' (expected: uint, int, uuid, string)"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -225,10 +265,14 @@ fn is_js_identifier(s: &str) -> bool {
 /// to `id` / "uint".
 pub async fn run(
     paths: &ProjectPaths,
-    name_hint: Option<&str>,
+    args: NewArgs,
     database_url: Option<&str>,
 ) -> Result<(), CliError> {
-    let opts = prompt_options(paths, name_hint, database_url).await?;
+    let opts = if args.non_interactive {
+        build_options(&args, database_url).await?
+    } else {
+        prompt_options(paths, args.name.as_deref(), database_url).await?
+    };
     create(paths, &opts)?;
 
     // Generate the typed schema.ts so the new transform's `./schema` import
@@ -247,6 +291,79 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Build `NewOptions` from CLI flags without prompting.
+///
+/// `name` is required; `table` and `namespace` default to it. The id type is
+/// taken from `--id-type` when given, otherwise auto-detected from the table
+/// (best-effort introspection), falling back to `uint`.
+async fn build_options(args: &NewArgs, database_url: Option<&str>) -> Result<NewOptions, CliError> {
+    let name = args
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            CliError::Generate(
+                "a config name is required in non-interactive mode (pass it as the first argument)"
+                    .to_string(),
+            )
+        })?
+        .to_string();
+
+    let table = args
+        .table
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| name.clone());
+    let namespace = args
+        .namespace
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| name.clone());
+
+    let provider = match args.provider.as_deref() {
+        Some(p) => Provider::parse(p)?,
+        None => Provider::None,
+    };
+
+    // Best-effort introspection so we can auto-detect the id type when it isn't
+    // given. A missing connection or table just means we fall back to defaults.
+    let columns = introspect_columns(database_url, &table).await.ok();
+
+    let id_column = args
+        .id_column
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "id".to_string());
+
+    let id_type = match args.id_type.as_deref() {
+        Some(t) => validate_id_type(t)?,
+        None => id_type_from_columns(columns.as_deref(), &id_column),
+    };
+
+    let embed_column = args
+        .embed_column
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Ok(NewOptions {
+        name,
+        table,
+        namespace,
+        provider,
+        id_column,
+        id_type,
+        embed_column,
+        // Non-interactive mode doesn't prompt for stored columns; leaving this
+        // empty keeps the generated document body as a passthrough.
+        document_columns: Vec::new(),
+    })
 }
 
 async fn prompt_options(
@@ -490,6 +607,76 @@ mod tests {
             embed_column: None,
             document_columns: Vec::new(),
         }
+    }
+
+    #[test]
+    fn parses_provider_names() {
+        assert_eq!(Provider::parse("none").unwrap(), Provider::None);
+        assert_eq!(Provider::parse("Together").unwrap(), Provider::Together);
+        assert_eq!(Provider::parse("together-ai").unwrap(), Provider::Together);
+        assert_eq!(
+            Provider::parse("zeroentropy").unwrap(),
+            Provider::ZeroEntropy
+        );
+        assert_eq!(
+            Provider::parse("ZERO_ENTROPY").unwrap(),
+            Provider::ZeroEntropy
+        );
+        assert_eq!(Provider::parse("baseten").unwrap(), Provider::Baseten);
+        assert_eq!(
+            Provider::parse("Cloudflare Workers AI").unwrap(),
+            Provider::Cloudflare
+        );
+        assert!(Provider::parse("openai").is_err());
+    }
+
+    #[tokio::test]
+    async fn build_options_defaults_table_and_namespace_to_name() {
+        let args = NewArgs {
+            name: Some("film".to_string()),
+            non_interactive: true,
+            ..Default::default()
+        };
+        let opts = build_options(&args, None).await.unwrap();
+        assert_eq!(opts.name, "film");
+        assert_eq!(opts.table, "film");
+        assert_eq!(opts.namespace, "film");
+        assert_eq!(opts.id_column, "id");
+        // No DB connection → falls back to the historical default.
+        assert_eq!(opts.id_type, "uint");
+        assert_eq!(opts.provider, Provider::None);
+        assert_eq!(opts.embed_column, None);
+    }
+
+    #[tokio::test]
+    async fn build_options_honors_explicit_flags() {
+        let args = NewArgs {
+            name: Some("buyer".to_string()),
+            table: Some("smart_buyer".to_string()),
+            namespace: Some("buyers_v2".to_string()),
+            id_column: Some("buyer_id".to_string()),
+            id_type: Some("string".to_string()),
+            provider: Some("zeroentropy".to_string()),
+            embed_column: Some("buyer_name".to_string()),
+            non_interactive: true,
+        };
+        let opts = build_options(&args, None).await.unwrap();
+        assert_eq!(opts.table, "smart_buyer");
+        assert_eq!(opts.namespace, "buyers_v2");
+        assert_eq!(opts.id_column, "buyer_id");
+        assert_eq!(opts.id_type, "string");
+        assert_eq!(opts.provider, Provider::ZeroEntropy);
+        assert_eq!(opts.embed_column.as_deref(), Some("buyer_name"));
+    }
+
+    #[tokio::test]
+    async fn build_options_requires_a_name() {
+        let args = NewArgs {
+            non_interactive: true,
+            ..Default::default()
+        };
+        let err = build_options(&args, None).await.unwrap_err();
+        assert!(err.to_string().contains("name is required"));
     }
 
     #[test]

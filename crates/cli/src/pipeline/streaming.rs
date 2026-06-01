@@ -201,9 +201,7 @@ pub(crate) async fn run_streaming_loop(
     }
 
     // Auto-clean stale permanent DLQ entries
-    let dlq_max_age_hours = env_config
-        .dlq_max_age_hours
-        .unwrap_or_else(|| project_config.dlq_permanent_max_age_hours());
+    let dlq_max_age_hours = project_config.dlq_permanent_max_age_hours();
     let cleaned = db.clear_old_permanent_entries(dlq_max_age_hours).await?;
     if cleaned > 0 {
         tracing::info!(

@@ -12,7 +12,6 @@ pub struct EnvConfig {
     pub otel_endpoint: Option<String>,
     pub otel_headers: Option<String>,
     pub state_schema: String,
-    pub dlq_max_age_hours: Option<u64>,
 }
 
 /// Load all key-value pairs from a list of `.env` file paths.
@@ -102,14 +101,6 @@ impl EnvConfig {
         let otel_endpoint = resolve("OTEL_EXPORTER_OTLP_ENDPOINT");
         let otel_headers = resolve("OTEL_EXPORTER_OTLP_HEADERS");
         let state_schema = resolve_state_schema_from(resolve("PUFFGRES_STATE_SCHEMA"))?;
-        let dlq_max_age_hours = match resolve("PUFFGRES_DLQ_MAX_AGE_HOURS") {
-            Some(v) => Some(v.parse::<u64>().map_err(|_| {
-                CliError::MissingEnvVar(format!(
-                    "PUFFGRES_DLQ_MAX_AGE_HOURS={v:?} is not a valid integer"
-                ))
-            })?),
-            None => None,
-        };
         Ok(Self {
             database_url,
             turbopuffer_api_key,
@@ -118,7 +109,6 @@ impl EnvConfig {
             otel_endpoint,
             otel_headers,
             state_schema,
-            dlq_max_age_hours,
         })
     }
 }
@@ -131,7 +121,7 @@ mod tests {
 
     /// All env vars that EnvConfig::load reads. Each test clears these via
     /// temp_env so that real env vars don't leak between tests.
-    const ENV_KEYS: [&str; 8] = [
+    const ENV_KEYS: [&str; 7] = [
         "DATABASE_URL",
         "TURBOPUFFER_API_KEY",
         "TURBOPUFFER_REGION",
@@ -139,7 +129,6 @@ mod tests {
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_EXPORTER_OTLP_HEADERS",
         "PUFFGRES_STATE_SCHEMA",
-        "PUFFGRES_DLQ_MAX_AGE_HOURS",
     ];
 
     /// Returns (key, None) pairs for every env var EnvConfig reads,
@@ -328,51 +317,6 @@ mod tests {
         temp_env::with_vars([("PUFFGRES_STATE_SCHEMA", None::<&str>)], || {
             let err = resolve_state_schema(&[&p]).unwrap_err();
             assert!(err.to_string().contains("PUFFGRES_STATE_SCHEMA"));
-        });
-    }
-
-    #[test]
-    fn dlq_max_age_hours_valid() {
-        let dir = TempDir::new().unwrap();
-        let p = write_env(
-            dir.path(),
-            ".env",
-            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\nPUFFGRES_DLQ_MAX_AGE_HOURS=72\n",
-        );
-
-        temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p]).unwrap();
-            assert_eq!(cfg.dlq_max_age_hours, Some(72));
-        });
-    }
-
-    #[test]
-    fn dlq_max_age_hours_invalid_errors() {
-        let dir = TempDir::new().unwrap();
-        let p = write_env(
-            dir.path(),
-            ".env",
-            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\nPUFFGRES_DLQ_MAX_AGE_HOURS=24h\n",
-        );
-
-        temp_env::with_vars(cleared(), || {
-            let err = EnvConfig::load(&[&p]).unwrap_err();
-            assert!(err.to_string().contains("PUFFGRES_DLQ_MAX_AGE_HOURS"));
-        });
-    }
-
-    #[test]
-    fn dlq_max_age_hours_omitted_is_none() {
-        let dir = TempDir::new().unwrap();
-        let p = write_env(
-            dir.path(),
-            ".env",
-            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\n",
-        );
-
-        temp_env::with_vars(cleared(), || {
-            let cfg = EnvConfig::load(&[&p]).unwrap();
-            assert!(cfg.dlq_max_age_hours.is_none());
         });
     }
 

@@ -153,12 +153,61 @@ fn is_connection_failure(error: &CliError) -> bool {
     )
 }
 
+/// Preflight the applied configs (same checks as `puffgres check`) once before
+/// opening the slot, so misconfiguration fails fast. Returns a non-retryable
+/// error so `run` exits instead of looping.
+async fn preflight_applied(
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    project_config: &ProjectConfig,
+) -> Result<(), CliError> {
+    let db = state::Store::connect(&env_config.database_url, &env_config.state_schema).await?;
+    let applied: std::collections::HashSet<String> = db
+        .list_configs()
+        .await?
+        .into_iter()
+        .map(|r| r.name)
+        .collect();
+    drop(db);
+
+    if applied.is_empty() {
+        return Ok(());
+    }
+
+    let loader = config::ConfigLoader::new(&paths.configs);
+    let configs: Vec<_> = loader
+        .load_all()?
+        .into_iter()
+        .filter(|(path, c)| {
+            applied.contains(&c.name) && !crate::tombstones::has_on_disk_tombstone(path)
+        })
+        .collect();
+
+    if configs.is_empty() {
+        return Ok(());
+    }
+
+    let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
+    crate::validate::preflight_check(
+        &env_config.database_url,
+        &env_config.state_schema,
+        &configs,
+        None,
+        transform_timeout,
+    )
+    .await
+    .map_err(CliError::RunValidation)
+}
+
 pub async fn run_async(
     paths: &ProjectPaths,
     env_config: &EnvConfig,
     project_config: &ProjectConfig,
     metrics: Option<&Metrics>,
 ) -> Result<(), CliError> {
+    // Fail fast on misconfiguration before holding any replication slot.
+    preflight_applied(paths, env_config, project_config).await?;
+
     let shutdown = ShutdownController::new();
     let token = shutdown.token();
 
@@ -400,7 +449,6 @@ mod tests {
             otel_endpoint: None,
             otel_headers: None,
             state_schema,
-            dlq_max_age_hours: None,
         }
     }
 

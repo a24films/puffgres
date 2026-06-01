@@ -12,8 +12,19 @@ pub async fn run_async(
     env_config: &EnvConfig,
     name: Option<&str>,
     last: bool,
+    all: bool,
+    force: bool,
 ) -> Result<(), CliError> {
     let db = Store::connect(&env_config.database_url, &env_config.state_schema).await?;
+
+    if all {
+        if name.is_some() || last {
+            return Err(CliError::Remove(
+                "--all cannot be combined with a config name or --last".to_string(),
+            ));
+        }
+        return run_remove_all(&db, paths, env_config, force).await;
+    }
 
     let config_name = resolve_config_name(&db, name, last).await?;
 
@@ -21,17 +32,7 @@ pub async fn run_async(
 
     match config {
         Some(config) => {
-            let full_namespace = match config.namespace_prefix.as_deref() {
-                Some(prefix) if !prefix.is_empty() => {
-                    format!("{}_{}", prefix, config.namespace)
-                }
-                _ => match &env_config.turbopuffer_namespace_prefix {
-                    Some(prefix) if !prefix.is_empty() => {
-                        format!("{}_{}", prefix, config.namespace)
-                    }
-                    _ => config.namespace.clone(),
-                },
-            };
+            let full_namespace = full_namespace_for(&config, env_config);
 
             println!("Removing config '{}'...", config_name);
             println!("  Namespace: {}", full_namespace);
@@ -66,6 +67,65 @@ pub async fn run_async(
             }
         }
     }
+}
+
+/// Prefixed turbopuffer namespace for a config: the prefix stored at apply time
+/// wins, else the current `TURBOPUFFER_NAMESPACE_PREFIX`.
+fn full_namespace_for(config: &state::ConfigRecord, env_config: &EnvConfig) -> String {
+    match config.namespace_prefix.as_deref() {
+        Some(prefix) if !prefix.is_empty() => format!("{}_{}", prefix, config.namespace),
+        _ => match &env_config.turbopuffer_namespace_prefix {
+            Some(prefix) if !prefix.is_empty() => format!("{}_{}", prefix, config.namespace),
+            _ => config.namespace.clone(),
+        },
+    }
+}
+
+/// Remove every applied config — the full-reset path (replaces the old `reset`
+/// command). Runs the same idempotent saga per config, so it clears turbopuffer
+/// namespaces, on-disk config dirs, and all state (checkpoints, backfill, DLQ),
+/// leaving nothing dangling.
+async fn run_remove_all(
+    db: &Store,
+    paths: &ProjectPaths,
+    env_config: &EnvConfig,
+    force: bool,
+) -> Result<(), CliError> {
+    let configs = db.list_configs().await?;
+
+    if configs.is_empty() {
+        println!("No applied configs to remove.");
+        return Ok(());
+    }
+
+    if !force {
+        println!(
+            "This will permanently remove {} config(s) — turbopuffer namespaces, files, and all state:",
+            configs.len()
+        );
+        for c in &configs {
+            println!("  - {}", c.name);
+        }
+        print!("Continue? [y/N] ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+        if input != "y" && input != "yes" {
+            return Err(CliError::Remove("aborted".to_string()));
+        }
+    }
+
+    for config in &configs {
+        let full_namespace = full_namespace_for(config, env_config);
+        println!("Removing config '{}'...", config.name);
+        println!("  Namespace: {}", full_namespace);
+        run_remove_saga(db, paths, env_config, &config.name, &full_namespace).await?;
+    }
+
+    println!("Removed {} config(s)", configs.len());
+    Ok(())
 }
 
 /// Idempotent saga: each step tolerates the resource already being gone.

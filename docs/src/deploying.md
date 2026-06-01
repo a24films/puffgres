@@ -12,4 +12,4 @@ We run `puffgres check` to make sure schemas are up to date. You need to do this
 
 ## Observability
 
-We support OpenTelemetry for tracing and metrics, and we've had good luck using Sentry. You just need to set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` to use this, see the [Environment](./environment.md) section for example values.
+We support OpenTelemetry for tracing and metrics, and we've had good luck using Sentry. You just need to set `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` to use this, see the [Configuration](./configuration.md#environment-variables) section for example values.

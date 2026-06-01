@@ -13,7 +13,6 @@ name = "film"
 namespace = "internal_film_title"
 
 [source]
-schema = "public"
 table = "internal_film"
 
 [id]
@@ -25,8 +24,7 @@ type = "string"
 
 - **`name`** — identifier for this config.
 - **`namespace`** — the destination turbopuffer namespace. Must be unique across all configs; puffgres will error if two configs target the same namespace.
-- **`source.schema`** — the Postgres schema. Right now, only `public` is supported.
-- **`source.table`** — the Postgres table to replicate.
+- **`source.table`** — the Postgres table to replicate. (Only the `public` schema is supported today, so there's no schema to set.)
 - **`id.column`** — the column used as the primary identifier. Must be a single column — composite keys are not supported.
 - **`id.type`** — the type of the id column. One of: `uint`, `int`, `uuid`, `string`.
 
@@ -162,20 +160,13 @@ There's a full working version of this in `examples/buyer_name/`.
 
 Before `puffgres run` will pick up a config, you need to apply it with `puffgres apply`. The run command only loads configs that have already been applied to the state database.
 
-### Testing locally
-
-Before applying, you can validate your config and transform with:
-
-```sh
-puffgres dry-run
-```
-
-This pulls a row from the database as defined in the config, pushes it through your transform, and logs the output. This is nice for catching bugs early.
-
 ### Checking
 
+Before applying, validate your config and transform with:
+
 ```sh
-puffgres check
+puffgres check          # all configs
+puffgres check film     # just one
 ```
 
-Validates all configs against the live database without applying. This verifies that `schema.ts` files are up to date (run `puffgres generate` if they aren't), that the referenced tables exist, and that transforms run successfully. Good to run in CI.
+`check` regenerates `schema.ts` from the live database, then verifies the referenced table exists, the id column has a unique index, the id type is compatible, and the transform runs successfully on a sample row from the table — pulling a real row through your transform so you catch bugs early. It never writes to the state database, so it's safe to run before `apply` and good to run in CI.

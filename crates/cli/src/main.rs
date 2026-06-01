@@ -16,41 +16,60 @@ struct Cli {
 enum Command {
     /// Initialize a puffgres project
     Init,
-    /// Create a new table config
+    /// Create a new table config (interactive, or non-interactive with flags)
     New {
-        /// Optional name to seed the interactive prompt (e.g. "user", "film")
+        /// Config name. Also the default for the table and namespace.
         name: Option<String>,
+        /// Postgres table to replicate (defaults to the config name)
+        #[arg(long)]
+        table: Option<String>,
+        /// Destination turbopuffer namespace (defaults to the config name)
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Column to use as the document id (defaults to "id")
+        #[arg(long)]
+        id_column: Option<String>,
+        /// Turbopuffer id type: uint, int, uuid, or string (auto-detected when omitted)
+        #[arg(long)]
+        id_type: Option<String>,
+        /// Embedding provider: none, together, zeroentropy, baseten, cloudflare
+        #[arg(long)]
+        provider: Option<String>,
+        /// Column to embed in the generated transform
+        #[arg(long)]
+        embed_column: Option<String>,
+        /// Build the config from flags without prompting (for scripts and agents)
+        #[arg(long)]
+        non_interactive: bool,
     },
-    /// Validate all configs against the live database without applying
-    Check,
-    /// Run transforms on sample data without writing state
-    DryRun {
-        /// Optional config name to dry-run
+    /// Validate configs against the live database (regenerates schema.ts)
+    Check {
+        /// Optional config name to check (defaults to all configs)
         name: Option<String>,
     },
     /// Apply pending config changes
     Apply,
     /// Start the replication pipeline
     Run,
-    /// Clear all state (configs and checkpoints)
-    Reset {
-        /// Skip confirmation prompt
-        #[arg(long)]
-        force: bool,
-    },
     /// Tombstone a config (exclude from CDC, backfill, and DLQ replay)
     Tombstone {
         /// Name of the config to tombstone
         #[arg(long)]
         name: String,
     },
-    /// Remove a config entirely (deletes namespace, state, and files)
+    /// Remove config(s): deletes turbopuffer namespace(s), state, and files
     Remove {
         /// Name of the config to remove
         name: Option<String>,
         /// Remove the most recently applied config
         #[arg(long)]
         last: bool,
+        /// Remove every applied config (full reset)
+        #[arg(long)]
+        all: bool,
+        /// Skip the confirmation prompt (only meaningful with --all)
+        #[arg(long)]
+        force: bool,
     },
     /// Generate typed schema.ts files for each config
     Generate,
@@ -93,7 +112,17 @@ async fn run() -> (
 
     // Tier 2: ProjectPaths only. We additionally try (best-effort) to resolve
     // DATABASE_URL so `new` can auto-detect the id type; failure is fine.
-    if let Command::New { ref name } = cli.command {
+    if let Command::New {
+        ref name,
+        ref table,
+        ref namespace,
+        ref id_column,
+        ref id_type,
+        ref provider,
+        ref embed_column,
+        non_interactive,
+    } = cli.command
+    {
         let paths = match ProjectPaths::from_current_dir() {
             Ok(p) => p,
             Err(e) => return (Err(e), None),
@@ -104,8 +133,18 @@ async fn run() -> (
                 let env_paths = pc.resolve_env_paths(&paths.root);
                 puffgres_cli::env::resolve_database_url(&env_paths).ok()
             });
+        let args = puffgres_cli::new::NewArgs {
+            name: name.clone(),
+            table: table.clone(),
+            namespace: namespace.clone(),
+            id_column: id_column.clone(),
+            id_type: id_type.clone(),
+            provider: provider.clone(),
+            embed_column: embed_column.clone(),
+            non_interactive,
+        };
         return (
-            puffgres_cli::new::run(&paths, name.as_deref(), database_url.as_deref()).await,
+            puffgres_cli::new::run(&paths, args, database_url.as_deref()).await,
             None,
         );
     }
@@ -209,41 +248,31 @@ async fn run() -> (
     }
 
     // Tier 4: ProjectPaths + database_url + state_schema (no full ProjectConfig validation needed).
-    // These recovery/status commands only read environment_files from puffgres.toml
-    // so they still work when runtime config fields (e.g. batch_size) are invalid.
-    match cli.command {
-        Command::Reset { .. } | Command::Tombstone { .. } => {
-            let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
-                Ok(c) => c,
-                Err(e) => return (Err(e), None),
-            };
-            let env_paths = project_config.resolve_env_paths(&paths.root);
-            let database_url = match puffgres_cli::env::resolve_database_url(&env_paths) {
-                Ok(u) => u,
-                Err(e) => return (Err(e), None),
-            };
-            let state_schema = match puffgres_cli::env::resolve_state_schema(&env_paths) {
-                Ok(s) => s,
-                Err(e) => return (Err(e), None),
-            };
+    // This recovery command only reads environment_files from puffgres.toml so it
+    // still works when runtime config fields (e.g. batch_size) are invalid.
+    if let Command::Tombstone { ref name } = cli.command {
+        let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
+            Ok(c) => c,
+            Err(e) => return (Err(e), None),
+        };
+        let env_paths = project_config.resolve_env_paths(&paths.root);
+        let database_url = match puffgres_cli::env::resolve_database_url(&env_paths) {
+            Ok(u) => u,
+            Err(e) => return (Err(e), None),
+        };
+        let state_schema = match puffgres_cli::env::resolve_state_schema(&env_paths) {
+            Ok(s) => s,
+            Err(e) => return (Err(e), None),
+        };
 
-            let result = match cli.command {
-                Command::Reset { force } => {
-                    puffgres_cli::reset::run(&database_url, &state_schema, force).await
-                }
-                Command::Tombstone { ref name } => {
-                    puffgres_cli::tombstone::run(&paths, &database_url, &state_schema, name).await
-                }
-                _ => unreachable!(),
-            };
-
-            return (result, None);
-        }
-        _ => {}
+        return (
+            puffgres_cli::tombstone::run(&paths, &database_url, &state_schema, name).await,
+            None,
+        );
     }
 
     // Tier 5: Check only needs DATABASE_URL + state_schema (no TURBOPUFFER_API_KEY)
-    if let Command::Check = cli.command {
+    if let Command::Check { ref name } = cli.command {
         let project_config = match ProjectConfig::load(&paths.project_config) {
             Ok(c) => c,
             Err(e) => return (Err(e), None),
@@ -268,8 +297,14 @@ async fn run() -> (
         };
 
         return (
-            puffgres_cli::check::run_async(&paths, &database_url, &state_schema, &project_config)
-                .await,
+            puffgres_cli::check::run_async(
+                &paths,
+                &database_url,
+                &state_schema,
+                &project_config,
+                name.as_deref(),
+            )
+            .await,
             None,
         );
     }
@@ -302,16 +337,17 @@ async fn run() -> (
     let result = match cli.command {
         Command::Init
         | Command::New { .. }
-        | Command::Reset { .. }
         | Command::Tombstone { .. }
-        | Command::Check
+        | Command::Check { .. }
         | Command::Generate
         | Command::Debug { .. } => unreachable!(),
-        Command::Remove { ref name, last } => {
-            puffgres_cli::remove::run_async(&paths, &env_config, name.as_deref(), last).await
-        }
-        Command::DryRun { name } => {
-            puffgres_cli::dry_run::run_async(&paths, &env_config, name.as_deref(), &project_config)
+        Command::Remove {
+            ref name,
+            last,
+            all,
+            force,
+        } => {
+            puffgres_cli::remove::run_async(&paths, &env_config, name.as_deref(), last, all, force)
                 .await
         }
         Command::Apply => {

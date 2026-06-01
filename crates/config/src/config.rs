@@ -13,8 +13,17 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
+    /// The Postgres schema. Only `public` is supported today, so it is no longer
+    /// surfaced in generated configs or docs — it defaults to `public` and is
+    /// kept here only so the query layer has a schema to qualify with (and so a
+    /// future multi-schema feature is a non-breaking addition).
+    #[serde(default = "default_schema")]
     pub schema: String,
     pub table: String,
+}
+
+fn default_schema() -> String {
+    "public".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
