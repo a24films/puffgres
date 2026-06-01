@@ -154,8 +154,6 @@ for await (const line of rl) {
 }
 ```
 
-There's a full working version of this in `examples/buyer_name/`.
-
 ## Applying
 
 Before `puffgres run` will pick up a config, you need to apply it with `puffgres apply`. The run command only loads configs that have already been applied to the state database.
