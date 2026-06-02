@@ -38,13 +38,16 @@ pub async fn run_async(
     // before preflight dry-runs the transforms.
     generate::run_async(paths, database_url).await?;
 
+    // Only dry-run the transform when narrowed to a single `--name`; a bare
+    // `check` validates schema, columns, id type, and index without running the
+    // transform.
     preflight_check(
         database_url,
         state_schema,
         &configs,
         None,
         transform_timeout,
-        true,
+        name.is_some(),
     )
     .await
     .map_err(CliError::Check)?;
