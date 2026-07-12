@@ -14,7 +14,10 @@ use tokio_postgres::Client;
 use crate::connect::quote_identifier;
 use crate::{PgError, Result};
 
-const CURSOR_ALIAS: &str = "_puffgres_cursor_id";
+/// Every row in a `BatchResult` carries the id projected to text under this
+/// alias. `BatchResult::last_id` reads it, and it is what `$1` is compared
+/// against on the next page — the native `id` column keeps its own type.
+pub const CURSOR_ALIAS: &str = "_puffgres_cursor_id";
 
 // Cursor/id values are carried as Rust strings, so `$1` must arrive on the
 // wire as `text`. A bare `$1::uuid` makes PG infer the *parameter itself* as

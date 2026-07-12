@@ -2,6 +2,7 @@ use std::fs;
 
 use chrono::Utc;
 use config::ConfigLoader;
+use dialoguer::{Select, theme::ColorfulTheme};
 use state::Store;
 
 use crate::error::CliError;
@@ -11,9 +12,15 @@ pub async fn run(
     paths: &ProjectPaths,
     database_url: &str,
     state_schema: &str,
-    name: &str,
+    name: Option<&str>,
 ) -> Result<(), CliError> {
     let db = Store::connect(database_url, state_schema).await?;
+
+    let name = match name {
+        Some(name) => name.to_string(),
+        None => prompt_for_config(&db).await?,
+    };
+    let name = name.as_str();
 
     let config = db.get_config(name).await?.ok_or_else(|| {
         CliError::Tombstone(format!("config '{name}' not found in state database"))
@@ -49,6 +56,41 @@ pub async fn run(
     Ok(())
 }
 
+/// Pick a config to tombstone from the applied configs that aren't tombstoned
+/// yet. Already-tombstoned configs are left out — re-tombstoning them is a no-op.
+async fn prompt_for_config(db: &Store) -> Result<String, CliError> {
+    let active = db.list_active_configs().await?;
+
+    if active.is_empty() {
+        let tombstoned = db.list_tombstoned_configs().await?;
+        return Err(CliError::Tombstone(if tombstoned.is_empty() {
+            "no applied configs to tombstone — run `puffgres apply` first".to_string()
+        } else {
+            "every applied config is already tombstoned".to_string()
+        }));
+    }
+
+    let labels: Vec<String> = active
+        .iter()
+        .map(|c| format!("{} → {}", c.name, c.namespace))
+        .collect();
+
+    let idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(
+            "Which config should be tombstoned? (excluded from CDC, backfill, and DLQ replay)",
+        )
+        .items(&labels)
+        .default(0)
+        .interact()
+        .map_err(|e| {
+            CliError::Tombstone(format!(
+                "prompt failed: {e} — pass --name <config> to tombstone without prompting"
+            ))
+        })?;
+
+    Ok(active[idx].name.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,7 +119,7 @@ mod tests {
         let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&sample_config("film")).await.unwrap();
 
-        run(&paths, &url, &schema, "film").await.unwrap();
+        run(&paths, &url, &schema, Some("film")).await.unwrap();
 
         let config = db.get_config("film").await.unwrap().unwrap();
         assert!(config.tombstone_applied_at.is_some());
@@ -86,8 +128,30 @@ mod tests {
     #[tokio::test]
     async fn tombstone_nonexistent_errors() {
         let (_dir, paths, url, schema) = setup_project_with_state().await;
-        let err = run(&paths, &url, &schema, "nonexistent").await.unwrap_err();
+        let err = run(&paths, &url, &schema, Some("nonexistent"))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn prompt_errors_when_no_configs_applied() {
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = Store::connect(&url, &schema).await.unwrap();
+
+        let err = prompt_for_config(&db).await.unwrap_err();
+        assert!(err.to_string().contains("no applied configs"));
+    }
+
+    #[tokio::test]
+    async fn prompt_errors_when_every_config_is_tombstoned() {
+        let (_dir, _paths, url, schema) = setup_project_with_state().await;
+        let db = Store::connect(&url, &schema).await.unwrap();
+        db.insert_config(&sample_config("film")).await.unwrap();
+        db.tombstone_config("film").await.unwrap();
+
+        let err = prompt_for_config(&db).await.unwrap_err();
+        assert!(err.to_string().contains("already tombstoned"));
     }
 
     #[tokio::test]
@@ -96,9 +160,9 @@ mod tests {
         let db = Store::connect(&url, &schema).await.unwrap();
         db.insert_config(&sample_config("film")).await.unwrap();
 
-        run(&paths, &url, &schema, "film").await.unwrap();
+        run(&paths, &url, &schema, Some("film")).await.unwrap();
         // Second call should succeed (skip with message)
-        run(&paths, &url, &schema, "film").await.unwrap();
+        run(&paths, &url, &schema, Some("film")).await.unwrap();
     }
 
     #[tokio::test]
@@ -125,7 +189,7 @@ mod tests {
         .await
         .unwrap();
 
-        run(&paths, &url, &schema, "film").await.unwrap();
+        run(&paths, &url, &schema, Some("film")).await.unwrap();
 
         let tombstone_path = config_dir.join("tombstone.toml");
         assert!(tombstone_path.exists());
