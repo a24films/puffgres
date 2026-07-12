@@ -32,7 +32,17 @@ impl ProjectPaths {
 
     pub fn from_current_dir() -> Result<Self, CliError> {
         let cwd = std::env::current_dir()?;
-        Self::new(Self::detect_root(cwd))
+        let root = Self::detect_root(cwd.clone());
+        // `detect_root` falls back to the cwd when no project is found, which
+        // would otherwise surface later as an opaque "No such file or directory"
+        // when a command tries to read configs/puffgres.toml. Fail early with a
+        // message that tells the user where they are and what to do.
+        if !root.join("puffgres.toml").exists() {
+            return Err(CliError::NotAProject {
+                dir: cwd.display().to_string(),
+            });
+        }
+        Self::new(root)
     }
 
     /// Detect the project root from a given directory.
@@ -73,9 +83,11 @@ mod tests {
     }
 
     #[test]
-    fn from_current_dir_succeeds() {
-        let paths = ProjectPaths::from_current_dir().unwrap();
-        assert!(paths.root.is_absolute());
+    fn from_current_dir_errors_without_project() {
+        // The crate dir has no puffgres.toml, so this reports a missing project
+        // rather than silently succeeding with a bogus root.
+        let err = ProjectPaths::from_current_dir().unwrap_err();
+        assert!(matches!(err, CliError::NotAProject { .. }));
     }
 
     #[test]

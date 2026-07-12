@@ -45,8 +45,7 @@ pub async fn run_async(
     let configs = loader.load_all()?;
 
     if configs.is_empty() {
-        println!("No config files found in configs/");
-        return Ok(());
+        return Err(CliError::NoConfigs);
     }
 
     // Immutability check — filter to only new configs
@@ -230,11 +229,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_configs_succeeds() {
+    async fn no_configs_errors() {
         let (_dir, paths, url, schema) = setup_project_with_state().await;
-        run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
+        let err = run_async(&paths, &dummy_env(url, schema), &ProjectConfig::default())
             .await
-            .unwrap();
+            .unwrap_err();
+        assert!(
+            matches!(err, CliError::NoConfigs),
+            "expected NoConfigs, got: {err}"
+        );
     }
 
     #[tokio::test]

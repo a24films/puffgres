@@ -68,6 +68,16 @@ pub enum CliError {
     #[error("{0} not found. Run `puffgres init` first.")]
     NotInitialized(String),
 
+    #[error("No config files found in configs/\nRun `puffgres new` to create a config")]
+    NoConfigs,
+
+    #[error(
+        "no puffgres project found in {dir}.\n\
+         Run `puffgres init` here to set one up, or cd into a directory that \
+         contains a `puffgres.toml` (or a `puffgres/` folder next to it)."
+    )]
+    NotAProject { dir: String },
+
     #[error("OTLP exporter error: {0}")]
     Otel(String),
 

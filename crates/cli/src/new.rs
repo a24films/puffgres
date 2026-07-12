@@ -236,6 +236,38 @@ fn row_access(col: &str) -> String {
     }
 }
 
+/// Suggest a valid identifier by replacing disallowed characters with `_`
+/// (e.g. `partisan-review-ocr-test` -> `partisan_review_ocr_test`).
+fn suggest_identifier(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.chars().next().is_some_and(|c| c.is_numeric()) {
+        out.insert(0, '_');
+    }
+    out
+}
+
+/// Reject config names `apply` would reject, suggesting a valid form. Trims
+/// first so trailing whitespace (stripped after the prompt) isn't flagged.
+fn validate_config_name(input: &str) -> Result<(), String> {
+    let name = input.trim();
+    if config::is_valid_identifier(name) {
+        return Ok(());
+    }
+    Err(format!(
+        "'{name}' isn't a valid name — use letters, numbers, and underscores only (try '{}')",
+        suggest_identifier(name)
+    ))
+}
+
 fn is_js_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
@@ -301,6 +333,10 @@ async fn build_options(args: &NewArgs, database_url: Option<&str>) -> Result<New
         })?
         .to_string();
 
+    if let Err(msg) = validate_config_name(&name) {
+        return Err(CliError::Generate(msg));
+    }
+
     let table = args
         .table
         .as_deref()
@@ -363,7 +399,9 @@ async fn prompt_options(
 
     let theme = ColorfulTheme::default();
 
-    let mut name_input = Input::<String>::with_theme(&theme).with_prompt("Config name");
+    let mut name_input = Input::<String>::with_theme(&theme)
+        .with_prompt("Config name")
+        .validate_with(|input: &String| validate_config_name(input));
     if let Some(hint) = name_hint {
         name_input = name_input.default(hint.to_string());
     }
@@ -972,6 +1010,34 @@ mod tests {
         let transform = fs::read_to_string(entries[0].path().join("transform.ts")).unwrap();
         assert!(!transform.contains("{{DOCUMENT_FIELDS}}"));
         assert!(!transform.contains("id: row.id"));
+    }
+
+    #[test]
+    fn validate_config_name_accepts_valid_and_rejects_dashes() {
+        assert!(validate_config_name("partisan_review").is_ok());
+        // Surrounding whitespace is trimmed, not flagged.
+        assert!(validate_config_name("  film  ").is_ok());
+
+        let err = validate_config_name("partisan-review-ocr-test").unwrap_err();
+        assert!(err.contains("partisan_review_ocr_test"));
+    }
+
+    #[test]
+    fn suggest_identifier_replaces_invalid_chars() {
+        assert_eq!(suggest_identifier("a-b c"), "a_b_c");
+        // A leading digit gets an underscore prefix so the result is valid.
+        assert_eq!(suggest_identifier("1col"), "_1col");
+    }
+
+    #[tokio::test]
+    async fn build_options_rejects_invalid_name() {
+        let args = NewArgs {
+            name: Some("foo-bar".to_string()),
+            non_interactive: true,
+            ..Default::default()
+        };
+        let err = build_options(&args, None).await.unwrap_err();
+        assert!(err.to_string().contains("foo_bar"));
     }
 
     #[test]

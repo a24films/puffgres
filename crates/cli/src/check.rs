@@ -21,8 +21,7 @@ pub async fn run_async(
     let mut configs = loader.load_all()?;
 
     if configs.is_empty() {
-        println!("No config files found in configs/");
-        return Ok(());
+        return Err(CliError::NoConfigs);
     }
 
     if let Some(name) = name {

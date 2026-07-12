@@ -6,4 +6,4 @@ mod validation;
 pub use config::{Config, IdConfig, IdType, SourceConfig};
 pub use error::ConfigError;
 pub use loader::ConfigLoader;
-pub use validation::ValidationError;
+pub use validation::{ValidationError, is_valid_identifier};
