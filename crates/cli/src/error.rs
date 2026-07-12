@@ -36,6 +36,9 @@ pub enum CliError {
     Puff(#[from] puff::PuffError),
 
     #[error("{0}")]
+    Setup(String),
+
+    #[error("{0}")]
     Apply(String),
 
     #[error("{0}")]

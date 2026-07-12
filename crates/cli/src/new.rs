@@ -311,6 +311,8 @@ pub async fn run(
         }
     }
 
+    println!("\nRun `puffgres apply` to begin subscribing to changes on this table.");
+
     Ok(())
 }
 

@@ -44,11 +44,17 @@ pub(crate) async fn setup_pipeline(
 
     let mut applied_configs = Vec::new();
     let mut config_raw_bytes: HashMap<String, Vec<u8>> = HashMap::new();
+    // On-disk configs that were never applied (no state record). Tombstoned
+    // configs are intentionally removed, so they don't count.
+    let mut unapplied: Vec<String> = Vec::new();
     for (path, config, bytes) in all_configs_with_bytes {
-        let record = db.get_config(&config.name).await?;
-        if record.is_some_and(|r| r.tombstone_applied_at.is_none()) {
-            config_raw_bytes.insert(config.name.clone(), bytes);
-            applied_configs.push((path, config));
+        match db.get_config(&config.name).await? {
+            Some(record) if record.tombstone_applied_at.is_none() => {
+                config_raw_bytes.insert(config.name.clone(), bytes);
+                applied_configs.push((path, config));
+            }
+            None => unapplied.push(config.name),
+            Some(_) => {}
         }
     }
 
@@ -61,7 +67,22 @@ pub(crate) async fn setup_pipeline(
     }
 
     if applied_configs.is_empty() {
-        tracing::warn!("no applied configs \u{2014} run `puffgres apply` first");
+        if unapplied.is_empty() {
+            tracing::warn!(
+                "no configs found \u{2014} create one with `puffgres new`, then run `puffgres apply`"
+            );
+        } else {
+            // Configs exist on disk but none are applied — nothing will sync
+            // until the user runs `puffgres apply`.
+            unapplied.sort();
+            tracing::warn!(
+                configs = unapplied.len(),
+                unapplied = %unapplied.join(", "),
+                "found {} config(s) on disk but none are applied \u{2014} run `puffgres apply` to \
+                 start syncing them (nothing will replicate until you do)",
+                unapplied.len(),
+            );
+        }
         return Ok(None);
     }
 

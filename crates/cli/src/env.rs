@@ -16,7 +16,7 @@ pub struct EnvConfig {
 
 /// Load all key-value pairs from a list of `.env` file paths.
 ///
-/// Files are loaded in order — later files override earlier ones.
+/// Files are loaded in order — earlier files take priority over later ones.
 /// Missing files are skipped silently.
 pub fn load_env_files(paths: &[impl AsRef<Path>]) -> Result<HashMap<String, String>, CliError> {
     let mut vars: HashMap<String, String> = HashMap::new();
@@ -25,8 +25,15 @@ pub fn load_env_files(paths: &[impl AsRef<Path>]) -> Result<HashMap<String, Stri
         let path = path.as_ref();
         match dotenvy::from_path_iter(path) {
             Ok(iter) => {
+                // Collect this file's vars first so a later line overrides an
+                // earlier one within the same file (standard dotenv), then merge
+                // with `or_insert` so an earlier file wins over a later one.
+                let mut file_vars: HashMap<String, String> = HashMap::new();
                 for item in iter.flatten() {
-                    vars.insert(item.0, item.1);
+                    file_vars.insert(item.0, item.1);
+                }
+                for (key, value) in file_vars {
+                    vars.entry(key).or_insert(value);
                 }
             }
             Err(e) if e.not_found() => {
@@ -84,7 +91,7 @@ pub fn resolve_database_url(env_file_paths: &[impl AsRef<Path>]) -> Result<Strin
 impl EnvConfig {
     /// Load environment config from multiple `.env` file paths.
     ///
-    /// Files are loaded in order — later files override earlier ones.
+    /// Files are loaded in order — earlier files take priority over later ones.
     /// Actual environment variables take highest precedence over all files.
     pub fn load(paths: &[impl AsRef<Path>]) -> Result<Self, CliError> {
         let mut vars = load_env_files(paths)?;
@@ -162,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn later_file_overrides_earlier() {
+    fn earlier_file_overrides_later() {
         let dir = TempDir::new().unwrap();
         let base = write_env(
             dir.path(),
@@ -172,14 +179,20 @@ mod tests {
         let local = write_env(
             dir.path(),
             ".env.local",
-            "DATABASE_URL=postgres://local\nTURBOPUFFER_API_KEY=local-key\n",
+            "DATABASE_URL=postgres://local\nTURBOPUFFER_API_KEY=local-key\nTURBOPUFFER_NAMESPACE_PREFIX=local-prefix\n",
         );
 
         temp_env::with_vars(cleared(), || {
+            // Earlier file (base) wins on shared keys; keys only in the later
+            // file (namespace prefix) still come through.
             let cfg = EnvConfig::load(&[&base, &local]).unwrap();
-            assert_eq!(cfg.database_url, "postgres://local");
-            assert_eq!(cfg.turbopuffer_api_key, "local-key");
+            assert_eq!(cfg.database_url, "postgres://base");
+            assert_eq!(cfg.turbopuffer_api_key, "base-key");
             assert_eq!(cfg.turbopuffer_region.as_deref(), Some("us-east-1"));
+            assert_eq!(
+                cfg.turbopuffer_namespace_prefix.as_deref(),
+                Some("local-prefix")
+            );
         });
     }
 
