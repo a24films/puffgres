@@ -54,12 +54,32 @@ async fn create_slot(client: &Client, slot_name: &str) -> Result<()> {
     }
 }
 
+/// Fail fast if `wal_level` isn't `logical` (only changes on server restart, so
+/// retrying slot creation would loop forever on an opaque `db error`).
+pub async fn check_logical_replication(client: &Client) -> Result<()> {
+    let row = client
+        .query_one("SELECT current_setting('wal_level')", &[])
+        .await
+        .map_err(|e| PgError::from_replication_err("Failed to read wal_level".to_string(), &e))?;
+    let wal_level: String = row.get(0);
+    if wal_level != "logical" {
+        return Err(PgError::Prerequisite(format!(
+            "Postgres wal_level is '{wal_level}', but logical replication requires 'logical'. \
+             Run `ALTER SYSTEM SET wal_level = 'logical';` then restart the Postgres server \
+             (wal_level only takes effect on restart; on managed Postgres, restart the \
+             database service)."
+        )));
+    }
+    Ok(())
+}
+
 /// Ensure a logical replication slot exists with the `pgoutput` plugin.
 ///
 /// Uses create-and-catch-duplicate instead of check-then-create to avoid a
 /// TOCTOU race where another process creates the slot between our check and
 /// our create call.
 pub async fn ensure_slot(client: &Client, slot_name: &str) -> Result<()> {
+    check_logical_replication(client).await?;
     create_slot(client, slot_name).await
 }
 

@@ -30,7 +30,7 @@ enum Command {
         /// Column to use as the document id (defaults to "id")
         #[arg(long)]
         id_column: Option<String>,
-        /// Embedding provider: none, together, zeroentropy, baseten, cloudflare
+        /// Embedding provider: none, zeroentropy, baseten, cloudflare
         #[arg(long)]
         provider: Option<String>,
         /// Column to embed in the generated transform
@@ -68,6 +68,13 @@ enum Command {
         #[arg(long)]
         all: bool,
         /// Skip the confirmation prompt (only meaningful with --all)
+        #[arg(long)]
+        force: bool,
+    },
+    /// Reset everything: drop the replication slot(s), publication, and state
+    /// schema, then delete the project directory (leaves turbopuffer untouched)
+    Reset {
+        /// Skip the confirmation prompt
         #[arg(long)]
         force: bool,
     },
@@ -269,6 +276,38 @@ async fn run() -> (
         );
     }
 
+    // Reset is a recovery command (like Tombstone): loads env unvalidated so it
+    // works even when the runtime config or state DB is broken.
+    if let Command::Reset { force } = cli.command {
+        let project_config = match ProjectConfig::load_unvalidated(&paths.project_config) {
+            Ok(c) => c,
+            Err(e) => return (Err(e), None),
+        };
+        let env_paths = project_config.resolve_env_paths(&paths.root);
+        let file_vars = match puffgres_cli::env::load_env_files(&env_paths) {
+            Ok(v) => v,
+            Err(e) => return (Err(e), None),
+        };
+        let database_url = match puffgres_cli::env::resolve_env_var("DATABASE_URL", &file_vars) {
+            Some(v) => v,
+            None => {
+                return (
+                    Err(puffgres_cli::CliError::MissingEnvVar("DATABASE_URL".into())),
+                    None,
+                );
+            }
+        };
+        let state_schema = match puffgres_cli::env::resolve_state_schema(&env_paths) {
+            Ok(s) => s,
+            Err(e) => return (Err(e), None),
+        };
+
+        return (
+            puffgres_cli::reset::run(&paths, &database_url, &state_schema, force).await,
+            None,
+        );
+    }
+
     // Tier 5: Check only needs DATABASE_URL + state_schema (no TURBOPUFFER_API_KEY)
     if let Command::Check { ref name } = cli.command {
         let project_config = match ProjectConfig::load(&paths.project_config) {
@@ -336,6 +375,7 @@ async fn run() -> (
         Command::Init
         | Command::New { .. }
         | Command::Tombstone { .. }
+        | Command::Reset { .. }
         | Command::Check { .. }
         | Command::Generate
         | Command::Debug { .. } => unreachable!(),

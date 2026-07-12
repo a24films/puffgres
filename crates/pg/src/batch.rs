@@ -16,6 +16,16 @@ use crate::{PgError, Result};
 
 const CURSOR_ALIAS: &str = "_puffgres_cursor_id";
 
+// Cursor/id values are carried as Rust strings, so `$1` must arrive on the
+// wire as `text`. A bare `$1::uuid` makes PG infer the *parameter itself* as
+// uuid, and tokio-postgres then refuses to serialize a &str into it
+// ("error serializing parameter 0"). Casting through text first pins the
+// parameter to text and converts server-side; the cast is immutable, so it is
+// still constant-folded and the id index remains usable.
+pub const CURSOR_CAST_INT: &str = "::text::int8";
+pub const CURSOR_CAST_UUID: &str = "::text::uuid";
+pub const CURSOR_CAST_NONE: &str = "";
+
 #[derive(Clone)]
 pub struct BatchQueryConfig {
     pub schema: String,
@@ -139,7 +149,8 @@ pub async fn validate_id_column_uniqueness(
 }
 
 /// Query the actual PG column type and return the SQL cast expression needed
-/// for cursor comparisons. Returns e.g. `"::int8"`, `"::uuid"`, or `""` (no cast).
+/// for cursor comparisons. Returns [`CURSOR_CAST_INT`], [`CURSOR_CAST_UUID`],
+/// or [`CURSOR_CAST_NONE`].
 ///
 /// Resolves domain types to their base type via `pg_type.typbasetype` so that
 /// e.g. `CREATE DOMAIN pos_int AS INTEGER` is treated as `integer`.
@@ -187,11 +198,11 @@ pub async fn resolve_cursor_cast(client: &Client, config: &BatchQueryConfig) -> 
     // Map the PG type name to the cast suffix needed for text→type conversion.
     // The cursor value is always stored as text; we cast it back for comparison.
     let cast = match type_name.as_str() {
-        "smallint" | "integer" | "bigint" => "::int8",
-        "uuid" => "::uuid",
-        "text" | "character varying" => "",
-        t if t.starts_with("character varying") => "", // varchar(n)
-        t if t.starts_with("character") => "",         // char(n)
+        "smallint" | "integer" | "bigint" => CURSOR_CAST_INT,
+        "uuid" => CURSOR_CAST_UUID,
+        "text" | "character varying" => CURSOR_CAST_NONE,
+        t if t.starts_with("character varying") => CURSOR_CAST_NONE, // varchar(n)
+        t if t.starts_with("character") => CURSOR_CAST_NONE,         // char(n)
         _ => {
             return Err(PgError::QueryError(format!(
                 "unsupported id column type '{}' for cursor pagination on {}.{}.{}; \
@@ -325,8 +336,8 @@ pub async fn fetch_batch(
 ///
 /// `id_cast` is the SQL cast suffix applied to the `$1` text parameter so
 /// the comparison matches the column's native type and the PK index remains
-/// usable (e.g. `"::int8"`, `"::uuid"`, or `""` for text columns).  This
-/// follows the same convention as `fetch_batch`'s `cursor_cast` parameter.
+/// usable ([`CURSOR_CAST_INT`], [`CURSOR_CAST_UUID`], or [`CURSOR_CAST_NONE`]).
+/// This follows the same convention as `fetch_batch`'s `cursor_cast` parameter.
 /// Returns `None` if the row doesn't exist.
 pub async fn fetch_row_by_id(
     client: &Client,

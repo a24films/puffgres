@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use pg::batch::{BatchQueryConfig, fetch_row_by_id, resolve_column_names};
+use pg::batch::{
+    BatchQueryConfig, CURSOR_CAST_INT, CURSOR_CAST_NONE, CURSOR_CAST_UUID, fetch_row_by_id,
+    resolve_column_names,
+};
 use puff::TurbopufferClient;
 use puffgres_core::{DocumentId, Transformer, row_convert::pg_rows_to_events};
 use replication::{Operation, RowEvent};
@@ -268,9 +271,9 @@ async fn replay_upsert(
     };
 
     let id_cast = match config.id.id_type {
-        config::IdType::Uint | config::IdType::Int => "::int8",
-        config::IdType::Uuid => "::uuid",
-        config::IdType::String => "",
+        config::IdType::Uint | config::IdType::Int => CURSOR_CAST_INT,
+        config::IdType::Uuid => CURSOR_CAST_UUID,
+        config::IdType::String => CURSOR_CAST_NONE,
     };
 
     let row = fetch_row_by_id(pg_client, &query_config, &doc_id.to_string(), id_cast)

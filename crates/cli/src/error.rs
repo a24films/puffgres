@@ -57,6 +57,9 @@ pub enum CliError {
     Remove(String),
 
     #[error("{0}")]
+    Reset(String),
+
+    #[error("{0}")]
     Generate(String),
 
     #[error("{0}")]

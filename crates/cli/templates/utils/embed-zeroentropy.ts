@@ -1,9 +1,12 @@
 import OpenAI from "openai";
+import { requireEnv } from "./load-env";
 
 /**
  * Generate vector embeddings for an array of texts using ZeroEntropy.
  * Deduplicates inputs so each unique text is only embedded once,
  * then maps results back to the original positions.
+ *
+ * Requires the ZEROENTROPY_API_KEY environment variable.
  */
 export async function embedBatchZeroEntropy(
   texts: string[],
@@ -14,7 +17,7 @@ export async function embedBatchZeroEntropy(
 
   const client = new OpenAI({
     baseURL: "https://api.zeroentropy.dev/v1/models/openai",
-    apiKey: process.env.ZEROENTROPY_API_KEY,
+    apiKey: requireEnv("ZEROENTROPY_API_KEY"),
   });
 
   const response = await client.embeddings.create({

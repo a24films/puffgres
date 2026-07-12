@@ -148,6 +148,15 @@ pub async fn preflight_check(
         }
     };
 
+    // wal_level=logical is a hard prerequisite for the replication slot that
+    // `run` creates later. Surface it here in the preflight rather than deep in
+    // slot creation, so `check`/`apply`/`run` all fail loudly and early with an
+    // actionable message instead of after configs report "passed".
+    if let Err(e) = pg::slot::check_logical_replication(pg_client).await {
+        println!("Error: {e}");
+        return Err(e.to_string());
+    }
+
     let mut passed = 0;
     let mut failed = 0;
 

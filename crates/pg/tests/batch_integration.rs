@@ -2,7 +2,8 @@ mod common;
 
 use common::setup_postgres;
 use pg::batch::{
-    BatchQueryConfig, count_rows, fetch_batch, resolve_cursor_cast, validate_id_column_uniqueness,
+    BatchQueryConfig, CURSOR_CAST_INT, CURSOR_CAST_NONE, CURSOR_CAST_UUID, count_rows, fetch_batch,
+    fetch_row_by_id, resolve_cursor_cast, validate_id_column_uniqueness,
 };
 use pg::connect::connect;
 
@@ -296,7 +297,7 @@ async fn resolve_cursor_cast_text() {
     let cast = resolve_cursor_cast(&client, &default_config())
         .await
         .expect("text column should resolve");
-    assert_eq!(cast, "");
+    assert_eq!(cast, CURSOR_CAST_NONE);
 }
 
 #[tokio::test]
@@ -318,7 +319,7 @@ async fn resolve_cursor_cast_int() {
     let cast = resolve_cursor_cast(&client, &config)
         .await
         .expect("int8 column should resolve");
-    assert_eq!(cast, "::int8");
+    assert_eq!(cast, CURSOR_CAST_INT);
 }
 
 #[tokio::test]
@@ -340,7 +341,7 @@ async fn resolve_cursor_cast_uuid() {
     let cast = resolve_cursor_cast(&client, &config)
         .await
         .expect("uuid column should resolve");
-    assert_eq!(cast, "::uuid");
+    assert_eq!(cast, CURSOR_CAST_UUID);
 }
 
 #[tokio::test]
@@ -362,7 +363,7 @@ async fn resolve_cursor_cast_bpchar() {
     let cast = resolve_cursor_cast(&client, &config)
         .await
         .expect("bpchar column should resolve");
-    assert_eq!(cast, "");
+    assert_eq!(cast, CURSOR_CAST_NONE);
 }
 
 #[tokio::test]
@@ -388,7 +389,7 @@ async fn resolve_cursor_cast_domain_over_uuid() {
     let cast = resolve_cursor_cast(&client, &config)
         .await
         .expect("domain over uuid should unwrap to uuid");
-    assert_eq!(cast, "::uuid");
+    assert_eq!(cast, CURSOR_CAST_UUID);
 }
 
 #[tokio::test]
@@ -414,7 +415,7 @@ async fn resolve_cursor_cast_domain_over_int() {
     let cast = resolve_cursor_cast(&client, &config)
         .await
         .expect("domain over int should unwrap to int8");
-    assert_eq!(cast, "::int8");
+    assert_eq!(cast, CURSOR_CAST_INT);
 }
 
 #[tokio::test]
@@ -444,5 +445,141 @@ async fn resolve_cursor_cast_nested_domain() {
     let cast = resolve_cursor_cast(&client, &config)
         .await
         .expect("nested domain over text should unwrap to text");
-    assert_eq!(cast, "");
+    assert_eq!(cast, CURSOR_CAST_NONE);
+}
+
+// The cast returned by `resolve_cursor_cast` has to survive an actual round
+// trip: the cursor is a Rust String, so `$1` must land on the wire as text.
+// A bare `$1::uuid` type-infers the parameter as uuid and tokio-postgres fails
+// with "error serializing parameter 0" on the *second* batch — the first batch
+// has no cursor and passes, which is why asserting the cast string alone
+// missed this.
+#[tokio::test]
+async fn fetch_batch_paginates_uuid_ids() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE uuid_ids (id UUID PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    for i in 1..=5 {
+        client
+            .execute(
+                "INSERT INTO uuid_ids (id, value) VALUES ($1::text::uuid, $2)",
+                &[
+                    &format!("00000000-0000-0000-0000-00000000000{}", i),
+                    &format!("value_{}", i),
+                ],
+            )
+            .await
+            .unwrap();
+    }
+
+    let config = BatchQueryConfig {
+        table: "uuid_ids".to_string(),
+        batch_size: 2,
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config).await.unwrap();
+
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let batch = fetch_batch(&client, &config, cursor.as_deref(), &cast)
+            .await
+            .expect("uuid cursor must serialize as text");
+        seen.extend(batch.rows.iter().map(|r| r.get::<_, String>("id")));
+        if !batch.has_more {
+            break;
+        }
+        cursor = batch.last_id;
+    }
+
+    assert_eq!(seen.len(), 5, "should walk every row across batches");
+    assert_eq!(seen[0], "00000000-0000-0000-0000-000000000001");
+    assert_eq!(seen[4], "00000000-0000-0000-0000-000000000005");
+}
+
+#[tokio::test]
+async fn fetch_batch_paginates_int_ids() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE int_ids (id BIGINT PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    for i in 1..=5i64 {
+        client
+            .execute(
+                "INSERT INTO int_ids (id, value) VALUES ($1, $2)",
+                &[&i, &format!("value_{}", i)],
+            )
+            .await
+            .unwrap();
+    }
+
+    let config = BatchQueryConfig {
+        table: "int_ids".to_string(),
+        batch_size: 2,
+        ..default_config()
+    };
+    let cast = resolve_cursor_cast(&client, &config).await.unwrap();
+
+    let first = fetch_batch(&client, &config, None, &cast).await.unwrap();
+    assert!(first.has_more);
+    let second = fetch_batch(&client, &config, first.last_id.as_deref(), &cast)
+        .await
+        .expect("int cursor must serialize as text");
+    assert_eq!(second.rows.len(), 2);
+    assert_eq!(second.rows[0].get::<_, String>("id"), "3");
+}
+
+// DLQ replay re-queries a single row by id and hits the same `$1{cast}` binding.
+#[tokio::test]
+async fn fetch_row_by_id_uuid() {
+    let ctx = setup_postgres().await;
+    let client = connect(&ctx.connection_string).await.unwrap();
+    client
+        .execute(
+            "CREATE TABLE uuid_ids (id UUID PRIMARY KEY, value TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+    let id = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    client
+        .execute(
+            "INSERT INTO uuid_ids (id, value) VALUES ($1::text::uuid, 'hit')",
+            &[&id],
+        )
+        .await
+        .unwrap();
+
+    let config = BatchQueryConfig {
+        table: "uuid_ids".to_string(),
+        columns: Some(vec!["id".to_string(), "value".to_string()]),
+        ..default_config()
+    };
+
+    let row = fetch_row_by_id(&client, &config, id, CURSOR_CAST_UUID)
+        .await
+        .expect("uuid id must serialize as text")
+        .expect("row exists");
+    assert_eq!(row.get::<_, String>("value"), "hit");
+
+    let missing = fetch_row_by_id(
+        &client,
+        &config,
+        "3f2504e0-4f89-11d3-9a0c-0305e82c3399",
+        CURSOR_CAST_UUID,
+    )
+    .await
+    .unwrap();
+    assert!(missing.is_none());
 }

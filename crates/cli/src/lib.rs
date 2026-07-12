@@ -13,6 +13,7 @@ pub mod paths;
 pub mod pipeline;
 pub mod project_config;
 pub mod remove;
+pub mod reset;
 pub mod shutdown;
 pub mod tombstone;
 pub mod tombstones;

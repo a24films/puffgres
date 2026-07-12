@@ -1,7 +1,16 @@
+import { requireEnv } from "./load-env";
+import { tokenizeBatch } from "./tokenize";
+
+const TOKENIZER = "Xenova/bge-base-en-v1.5";
+const MAX_INPUT_TOKENS = 512;
+
 /**
  * Generate vector embeddings for an array of texts using Cloudflare Workers AI.
- * Deduplicates inputs so each unique text is only embedded once,
- * then maps results back to the original positions.
+ * Each text is trimmed to the model's input limit, which is also what keeps a
+ * batch inside the model's context window. Deduplicates inputs so each unique
+ * text is only embedded once, then maps results back to the original positions.
+ *
+ * Requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN environment variables.
  */
 export async function embedBatchCloudflare(
   texts: string[],
@@ -9,10 +18,11 @@ export async function embedBatchCloudflare(
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
 
-  const uniqueTexts = [...new Set(texts)];
+  const trimmed = await tokenizeBatch(texts, TOKENIZER, MAX_INPUT_TOKENS);
+  const uniqueTexts = [...new Set(trimmed)];
 
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  const accountId = requireEnv("CLOUDFLARE_ACCOUNT_ID");
+  const apiToken = requireEnv("CLOUDFLARE_API_TOKEN");
 
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`,
@@ -42,5 +52,5 @@ export async function embedBatchCloudflare(
     uniqueTexts.map((text, i) => [text, json.result.data[i]]),
   );
 
-  return texts.map((text) => uniqueResults.get(text)!);
+  return trimmed.map((text) => uniqueResults.get(text)!);
 }

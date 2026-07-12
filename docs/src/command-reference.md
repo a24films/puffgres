@@ -27,7 +27,7 @@ Flags:
 - `--table` — which Postgres table we reference (defaults to name)
 - `--namespace` — which turbopuffer namespace this will land in (defaults to name)
 - `--id-column` — which column represents our id (defaults to `id`)
-- `--provider` — the embedding provider we'd use (`none`, `together`, `zeroentropy`, `baseten`, `cloudflare`)
+- `--provider` — the embedding provider we'd use (`none`, `zeroentropy`, `baseten`, `cloudflare`)
 - `--embed-column` — which column to embed
 
 The id type is always auto-detected from the table.
@@ -43,6 +43,12 @@ Regenerate `schema.ts` from the live database and validate configs against it �
 ## `puffgres remove`
 
 Permanently remove config(s): deletes the turbopuffer namespace, the on-disk config directory, and all state (checkpoints, backfill progress, DLQ). Use `--name <name>` to remove a specific config, `--last` to remove the most recently applied one, or `--all` to remove every applied config. `--force` skips the confirmation prompt (use with `--all`).
+
+## `puffgres reset`
+
+Nuke the whole project back to a clean slate. Drops the `puffgres` replication slot (and the `puffgres_debug` debug slot), drops the `puffgres` publication, drops the state schema, and deletes the local project directory. Turbopuffer namespaces are left untouched — use `puffgres remove --all` first if you also want those gone. Prompts for confirmation; pass `--force` to skip it.
+
+Unlike `remove`, `reset` is a recovery command: it works even when the state database is broken (for example a half-applied migration that makes `run` fail with `relation "configs" already exists`) — dropping the state schema is what clears that up. After a reset, run `puffgres init` to start over.
 
 ## `puffgres tombstone --name <name>`
 

@@ -1,3 +1,5 @@
+import { requireEnv } from "./load-env";
+
 /**
  * Generate vector embeddings for an array of texts using a Baseten-deployed model.
  * Deduplicates inputs so each unique text is only embedded once,
@@ -10,11 +12,8 @@ export async function embedBatchBaseten(
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
 
-  const apiKey = process.env.BASETEN_API_KEY;
-  if (!apiKey) throw new Error("BASETEN_API_KEY is not set");
-
-  const modelId = process.env.BASETEN_MODEL_ID;
-  if (!modelId) throw new Error("BASETEN_MODEL_ID is not set");
+  const apiKey = requireEnv("BASETEN_API_KEY");
+  const modelId = requireEnv("BASETEN_MODEL_ID");
 
   const uniqueTexts = [...new Set(texts)];
 

@@ -10,7 +10,6 @@ use crate::paths::ProjectPaths;
 
 const CONFIG_TEMPLATE: &str = include_str!("../templates/config.toml");
 const TRANSFORM_NONE: &str = include_str!("../templates/transform.ts");
-const TRANSFORM_TOGETHER: &str = include_str!("../templates/transform-together.ts");
 const TRANSFORM_ZEROENTROPY: &str = include_str!("../templates/transform-zeroentropy.ts");
 const TRANSFORM_BASETEN: &str = include_str!("../templates/transform-baseten.ts");
 const TRANSFORM_CLOUDFLARE: &str = include_str!("../templates/transform-cloudflare.ts");
@@ -18,7 +17,6 @@ const TRANSFORM_CLOUDFLARE: &str = include_str!("../templates/transform-cloudfla
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     None,
-    Together,
     ZeroEntropy,
     Baseten,
     Cloudflare,
@@ -28,7 +26,6 @@ impl Provider {
     fn label(self) -> &'static str {
         match self {
             Provider::None => "None (no embedding)",
-            Provider::Together => "Together AI",
             Provider::ZeroEntropy => "ZeroEntropy",
             Provider::Baseten => "Baseten",
             Provider::Cloudflare => "Cloudflare Workers AI",
@@ -38,17 +35,15 @@ impl Provider {
     fn transform_template(self) -> &'static str {
         match self {
             Provider::None => TRANSFORM_NONE,
-            Provider::Together => TRANSFORM_TOGETHER,
             Provider::ZeroEntropy => TRANSFORM_ZEROENTROPY,
             Provider::Baseten => TRANSFORM_BASETEN,
             Provider::Cloudflare => TRANSFORM_CLOUDFLARE,
         }
     }
 
-    fn all() -> [Provider; 5] {
+    fn all() -> [Provider; 4] {
         [
             Provider::None,
-            Provider::Together,
             Provider::ZeroEntropy,
             Provider::Baseten,
             Provider::Cloudflare,
@@ -61,12 +56,11 @@ impl Provider {
         let normalized = s.trim().to_lowercase().replace(['-', '_', ' '], "");
         match normalized.as_str() {
             "none" => Ok(Provider::None),
-            "together" | "togetherai" => Ok(Provider::Together),
             "zeroentropy" => Ok(Provider::ZeroEntropy),
             "baseten" => Ok(Provider::Baseten),
             "cloudflare" | "cloudflareworkersai" => Ok(Provider::Cloudflare),
             other => Err(CliError::Generate(format!(
-                "unknown embedding provider '{other}' (expected: none, together, zeroentropy, baseten, cloudflare)"
+                "unknown embedding provider '{other}' (expected: none, zeroentropy, baseten, cloudflare)"
             ))),
         }
     }
@@ -638,8 +632,6 @@ mod tests {
     #[test]
     fn parses_provider_names() {
         assert_eq!(Provider::parse("none").unwrap(), Provider::None);
-        assert_eq!(Provider::parse("Together").unwrap(), Provider::Together);
-        assert_eq!(Provider::parse("together-ai").unwrap(), Provider::Together);
         assert_eq!(
             Provider::parse("zeroentropy").unwrap(),
             Provider::ZeroEntropy
@@ -1065,7 +1057,7 @@ mod tests {
         let (_dir, paths) = setup_project();
 
         let mut options = opts("films");
-        options.provider = Provider::Together;
+        options.provider = Provider::Cloudflare;
         options.embed_column = Some("title".to_string());
         create(&paths, &options).unwrap();
 
@@ -1100,24 +1092,6 @@ mod tests {
         assert!(!transform.contains("{{DOCUMENT_FIELDS}}"));
         // Real fields replace the TODO scaffold.
         assert!(!transform.contains("TODO: map row fields"));
-    }
-
-    #[tokio::test]
-    async fn provider_together_imports_embed_batch() {
-        let (_dir, paths) = setup_project();
-
-        let mut options = opts("films");
-        options.provider = Provider::Together;
-        create(&paths, &options).unwrap();
-
-        let entries: Vec<_> = fs::read_dir(&paths.configs)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .collect();
-        let transform = fs::read_to_string(entries[0].path().join("transform.ts")).unwrap();
-        assert!(transform.contains("import { embedBatch }"));
-        assert!(transform.contains("../../utils/embed"));
     }
 
     #[tokio::test]

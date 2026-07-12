@@ -11,7 +11,7 @@ All runtime configuration lives in `puffgres.toml` at the root of your puffgres 
 
 ```toml
 environment_files = ["./.env", "../.env", "../.env.development"]
-batch_size = 1000
+batch_size = 100
 max_retries = 5
 
 # Dead letter queue
@@ -34,7 +34,7 @@ dlq_permanent_max_age_hours = 72
 
 ### `batch_size`
 
-Number of replication events to collect before flushing a batch to turbopuffer. Default: **1000**.
+Number of replication events to collect before flushing a batch to turbopuffer. Default: **100**. This is a deliberately low cap to get around rate limits of some of the included providers by default.
 
 ### `max_retries`
 

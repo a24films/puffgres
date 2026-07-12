@@ -96,7 +96,7 @@ impl ProjectConfig {
     }
 
     pub fn batch_size(&self) -> u32 {
-        self.batch_size.unwrap_or(1000)
+        self.batch_size.unwrap_or(100)
     }
 
     pub fn max_retries(&self) -> u32 {
@@ -155,7 +155,7 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             environment_files: vec![".env".to_string()],
-            batch_size: Some(1000),
+            batch_size: Some(100),
             max_retries: Some(5),
             dlq_replay_interval: Some(10),
             dlq_replay_batch_size: Some(50),
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn batch_size_default() {
         let config = ProjectConfig::default();
-        assert_eq!(config.batch_size(), 1000);
+        assert_eq!(config.batch_size(), 100);
     }
 
     #[test]

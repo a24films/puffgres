@@ -381,7 +381,6 @@ fn ensure_utils(paths: &ProjectPaths) -> Result<(), CliError> {
             "load-env.ts",
             include_str!("../templates/utils/load-env.ts"),
         ),
-        ("embed.ts", include_str!("../templates/utils/embed.ts")),
         (
             "embed-zeroentropy.ts",
             include_str!("../templates/utils/embed-zeroentropy.ts"),
@@ -652,7 +651,6 @@ mod tests {
 
         let package_json =
             fs::read_to_string(dir.path().join("puffgres").join("package.json")).unwrap();
-        assert!(package_json.contains("together-ai"));
         assert!(package_json.contains("openai"));
         assert!(package_json.contains("@huggingface/transformers"));
         assert!(package_json.contains("vitest"));
@@ -705,7 +703,6 @@ mod tests {
         let sub = dir.path().join("puffgres");
         assert!(sub.join("utils").is_dir());
         assert!(sub.join("utils/load-env.ts").exists());
-        assert!(sub.join("utils/embed.ts").exists());
         assert!(sub.join("utils/embed-zeroentropy.ts").exists());
         assert!(sub.join("utils/embed-baseten.ts").exists());
         assert!(sub.join("utils/embed-cloudflare.ts").exists());
@@ -724,9 +721,9 @@ mod tests {
         assert!(load_env.contains("dotenv"));
         assert!(load_env.contains("smol-toml"));
 
-        let embed = fs::read_to_string(sub.join("utils/embed.ts")).unwrap();
-        assert!(embed.contains("together-ai"));
-        assert!(embed.contains("embedBatch"));
+        let embed = fs::read_to_string(sub.join("utils/embed-cloudflare.ts")).unwrap();
+        assert!(embed.contains("embedBatchCloudflare"));
+        assert!(embed.contains("tokenizeBatch"));
 
         let tokenize = fs::read_to_string(sub.join("utils/tokenize.ts")).unwrap();
         assert!(tokenize.contains("@huggingface/transformers"));
@@ -843,7 +840,7 @@ mod tests {
         let content = fs::read_to_string(utils.join("tokenize.ts")).unwrap();
         assert_eq!(content, "custom");
         // But the other files should still be created
-        assert!(utils.join("embed.ts").exists());
+        assert!(utils.join("embed-cloudflare.ts").exists());
         assert!(utils.join("load-env.ts").exists());
     }
 }
