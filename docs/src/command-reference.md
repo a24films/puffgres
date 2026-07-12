@@ -50,9 +50,11 @@ Nuke the whole project back to a clean slate. Drops the `puffgres` replication s
 
 Unlike `remove`, `reset` is a recovery command: it works even when the state database is broken (for example a half-applied migration that makes `run` fail with `relation "configs" already exists`) — dropping the state schema is what clears that up. After a reset, run `puffgres init` to start over.
 
-## `puffgres tombstone --name <name>`
+## `puffgres tombstone [--name <name>]`
 
 Creates a `tombstone.toml` file in a config directory so the CDC loop ignores it (a soft delete that leaves the namespace and its data in place).
+
+Without `--name`, it prompts you to pick from the applied configs that aren't tombstoned yet. Pass `--name` to skip the prompt (for scripts and agents).
 
 ## `puffgres generate`
 

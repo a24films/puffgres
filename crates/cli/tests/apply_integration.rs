@@ -1,4 +1,4 @@
-use pg::test_utils::setup_postgres;
+use pg::test_utils::setup_postgres_logical;
 use puffgres_cli::EnvConfig;
 use puffgres_cli::apply::run_async;
 use puffgres_cli::test_utils::{
@@ -8,7 +8,7 @@ use puffgres_cli::test_utils::{
 use state::Store;
 
 async fn start_postgres_env() -> (pg::test_utils::TestContext, EnvConfig) {
-    let ctx = setup_postgres().await;
+    let ctx = setup_postgres_logical().await;
     let env_config = EnvConfig {
         database_url: ctx.connection_string.clone(),
         turbopuffer_api_key: "fake-key".to_string(),

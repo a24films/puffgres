@@ -50,11 +50,12 @@ enum Command {
     Apply,
     /// Start the replication pipeline
     Run,
-    /// Tombstone a config (exclude from CDC, backfill, and DLQ replay)
+    /// Tombstone a config (exclude from CDC, backfill, and DLQ replay).
+    /// Prompts you to pick one when --name is omitted.
     Tombstone {
-        /// Name of the config to tombstone
+        /// Name of the config to tombstone (defaults to an interactive picker)
         #[arg(long)]
-        name: String,
+        name: Option<String>,
     },
     /// Remove config(s): deletes turbopuffer namespace(s), state, and files
     Remove {
@@ -271,7 +272,8 @@ async fn run() -> (
         };
 
         return (
-            puffgres_cli::tombstone::run(&paths, &database_url, &state_schema, name).await,
+            puffgres_cli::tombstone::run(&paths, &database_url, &state_schema, name.as_deref())
+                .await,
             None,
         );
     }

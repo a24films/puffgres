@@ -2,8 +2,8 @@ mod common;
 
 use common::setup_postgres;
 use pg::batch::{
-    BatchQueryConfig, CURSOR_CAST_INT, CURSOR_CAST_NONE, CURSOR_CAST_UUID, count_rows, fetch_batch,
-    fetch_row_by_id, resolve_cursor_cast, validate_id_column_uniqueness,
+    BatchQueryConfig, CURSOR_ALIAS, CURSOR_CAST_INT, CURSOR_CAST_NONE, CURSOR_CAST_UUID,
+    count_rows, fetch_batch, fetch_row_by_id, resolve_cursor_cast, validate_id_column_uniqueness,
 };
 use pg::connect::connect;
 
@@ -491,7 +491,9 @@ async fn fetch_batch_paginates_uuid_ids() {
         let batch = fetch_batch(&client, &config, cursor.as_deref(), &cast)
             .await
             .expect("uuid cursor must serialize as text");
-        seen.extend(batch.rows.iter().map(|r| r.get::<_, String>("id")));
+        // `columns: None` selects `*`, so `id` comes back as a native UUID —
+        // the text projection pagination actually walks is the cursor column.
+        seen.extend(batch.rows.iter().map(|r| r.get::<_, String>(CURSOR_ALIAS)));
         if !batch.has_more {
             break;
         }
@@ -537,7 +539,7 @@ async fn fetch_batch_paginates_int_ids() {
         .await
         .expect("int cursor must serialize as text");
     assert_eq!(second.rows.len(), 2);
-    assert_eq!(second.rows[0].get::<_, String>("id"), "3");
+    assert_eq!(second.rows[0].get::<_, String>(CURSOR_ALIAS), "3");
 }
 
 // DLQ replay re-queries a single row by id and hits the same `$1{cast}` binding.
