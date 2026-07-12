@@ -1,5 +1,7 @@
 use std::fs;
+use std::io::IsTerminal;
 
+use crate::env_discovery;
 use crate::error::CliError;
 use crate::paths::ProjectPaths;
 use crate::project_config::ProjectConfig;
@@ -7,6 +9,13 @@ use crate::project_config::ProjectConfig;
 pub fn run() -> Result<(), CliError> {
     let cwd = std::env::current_dir()?;
     run_in(&cwd)
+}
+
+/// Whether `init` should prompt interactively. Requires both stdin and stdout
+/// to be a TTY so non-interactive runs (Docker, CI, tests, piped input) skip the
+/// picker and fall back to the default `environment_files`.
+fn is_interactive() -> bool {
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
 pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
@@ -21,55 +30,48 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     };
 
     let paths = ProjectPaths::new(root)?;
+    let config_exists = paths.project_config.exists();
 
     fs::create_dir_all(&paths.configs)?;
     fs::create_dir_all(&paths.transforms)?;
     ensure_gitignore(cwd, &paths)?;
-    ensure_project_config(cwd, &paths)?;
     ensure_dockerfile(&paths)?;
     ensure_dockerignore(&paths)?;
     ensure_package_json(&paths)?;
     ensure_vitest_config(&paths)?;
     ensure_utils(&paths)?;
 
+    // Interactive .env discovery — only on a fresh init at a TTY. Reinit (config
+    // already present) and non-interactive runs keep the default env files.
+    let chosen_env_files = if is_interactive() && !config_exists {
+        let candidates = env_discovery::discover_candidates(cwd);
+        let picked = env_discovery::pick_env_files(&candidates, &paths.root)?;
+        (!picked.is_empty()).then_some(picked)
+    } else {
+        None
+    };
+    ensure_project_config(cwd, &paths, chosen_env_files.as_deref())?;
+
     println!("Initialized puffgres project at {}", paths.root.display());
     println!();
 
-    // -- environment_files hint ----------------------------------------
+    // Echo the env files puffgres will load, read back from the config just
+    // written so the example line reflects reality rather than a placeholder.
+    let env_files = ProjectConfig::load_unvalidated(&paths.project_config)
+        .map(|pc| pc.environment_files)
+        .unwrap_or_default();
+    let env_files_toml = env_files
+        .iter()
+        .map(|f| format!("{f:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     println!(
-        "Configure env file paths in {}:",
+        "Env files (edit environment_files in {}):",
         paths.project_config.display()
     );
-    println!();
-    println!("  environment_files = [\".env\", \".env.local\"]");
-    println!();
-    println!("  Files are loaded in order — later files override earlier ones.");
-    println!("  Shell environment variables take highest precedence over all files.");
-    println!();
-
-    // -- per-variable status -------------------------------------------
-    println!("Environment variables:");
-    println!();
-
-    let env_vars: &[(&str, bool)] = &[
-        ("DATABASE_URL", true),
-        ("TURBOPUFFER_API_KEY", true),
-        ("TURBOPUFFER_REGION", false),
-        ("TURBOPUFFER_NAMESPACE_PREFIX", false),
-        ("PUFFGRES_STATE_SCHEMA", false),
-        ("OTEL_EXPORTER_OTLP_ENDPOINT", false),
-    ];
-
-    for &(name, required) in env_vars {
-        let req_label = if required { "required" } else { "optional" };
-        let status = if std::env::var(name).is_ok() {
-            "set"
-        } else {
-            "not set"
-        };
-        println!("  {name:<32} ({req_label}, {status})");
-    }
-
+    println!("  environment_files = [{env_files_toml}]");
+    println!("  Loaded in order — later files, then shell vars, override earlier ones.");
     println!();
 
     Ok(())
@@ -195,17 +197,24 @@ fn ensure_utils(paths: &ProjectPaths) -> Result<(), CliError> {
     Ok(())
 }
 
-fn ensure_project_config(cwd: &std::path::Path, paths: &ProjectPaths) -> Result<(), CliError> {
+fn ensure_project_config(
+    cwd: &std::path::Path,
+    paths: &ProjectPaths,
+    chosen_env_files: Option<&[String]>,
+) -> Result<(), CliError> {
     if paths.project_config.exists() {
         return Ok(());
     }
 
     let mut config = ProjectConfig::default();
 
-    // In fresh-init mode (subdir), point .env to the parent directory so
-    // runtime resolution finds the repo-root .env instead of looking inside
-    // the puffgres subdirectory.
-    if paths.root != cwd {
+    if let Some(files) = chosen_env_files {
+        // The user picked env files interactively — use them verbatim.
+        config.environment_files = files.to_vec();
+    } else if paths.root != cwd {
+        // In fresh-init mode (subdir), point .env to the parent directory so
+        // runtime resolution finds the repo-root .env instead of looking inside
+        // the puffgres subdirectory.
         config.environment_files = vec!["../.env".to_string()];
     }
 

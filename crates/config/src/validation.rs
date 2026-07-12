@@ -26,7 +26,7 @@ impl Config {
     }
 }
 
-fn is_valid_identifier(s: &str) -> bool {
+pub fn is_valid_identifier(s: &str) -> bool {
     s.chars()
         .next()
         .is_some_and(|first| !first.is_numeric() && (first.is_alphanumeric() || first == '_'))

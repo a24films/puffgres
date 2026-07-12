@@ -2,6 +2,7 @@ pub mod apply;
 pub mod check;
 pub mod dry_transform;
 pub mod env;
+pub mod env_discovery;
 pub mod error;
 pub mod faker;
 pub mod generate;

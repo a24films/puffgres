@@ -130,8 +130,7 @@ pub async fn run_async(paths: &ProjectPaths, database_url: &str) -> Result<(), C
     let configs = loader.load_all()?;
 
     if configs.is_empty() {
-        println!("No config files found in configs/");
-        return Ok(());
+        return Err(CliError::NoConfigs);
     }
 
     // Filter out tombstoned configs
