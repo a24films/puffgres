@@ -40,6 +40,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     ensure_package_json(&paths)?;
     ensure_vitest_config(&paths)?;
     ensure_utils(&paths)?;
+    ensure_node_modules(&paths);
 
     // Interactive .env discovery — only on a fresh init at a TTY. Reinit (config
     // already present) and non-interactive runs keep the default env files.
@@ -71,7 +72,7 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
         paths.project_config.display()
     );
     println!("  environment_files = [{env_files_toml}]");
-    println!("  Loaded in order — later files, then shell vars, override earlier ones.");
+    println!("  Loaded in order — earlier files take priority; shell vars override all files.");
     println!();
 
     Ok(())
@@ -141,6 +142,48 @@ fn ensure_package_json(paths: &ProjectPaths) -> Result<(), CliError> {
     fs::write(&path, template)?;
 
     Ok(())
+}
+
+/// Install the scaffolded Node dependencies with pnpm so the first transform
+/// run doesn't fail with `ERR_MODULE_NOT_FOUND`. Best-effort: any failure
+/// prints a hint rather than aborting `init`.
+fn ensure_node_modules(paths: &ProjectPaths) {
+    if paths.root.join("node_modules").exists() {
+        return;
+    }
+
+    println!("Installing Node dependencies (pnpm install)...");
+
+    let status = std::process::Command::new("pnpm")
+        .arg("install")
+        .current_dir(&paths.root)
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!(
+                "Warning: `pnpm install` exited with {status}. \
+                 Run `pnpm install` in {} before running transforms.",
+                paths.root.display()
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "puffgres uses pnpm for the node modules needed on JS transforms. \
+                 Please install pnpm at https://pnpm.io/installation to proceed, \
+                 then run `pnpm install` in {}.",
+                paths.root.display()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "Warning: could not run `pnpm install` ({e}). \
+                 Run `pnpm install` in {} before running transforms.",
+                paths.root.display()
+            );
+        }
+    }
 }
 
 fn ensure_vitest_config(paths: &ProjectPaths) -> Result<(), CliError> {

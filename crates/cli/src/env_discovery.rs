@@ -274,9 +274,10 @@ fn format_var_summary(keys: &[String]) -> String {
 ///
 /// Flow: a [`MultiSelect`] chooses the files (each row previews its variable
 /// names inline), and when more than one file is chosen a [`Sort`] step sets the
-/// load order. Order matters — files load first-to-last and later files override
-/// earlier ones — so the chosen order is preserved verbatim into the config. An
-/// empty selection returns an empty vec (the caller falls back to a default).
+/// priority order. Order matters — files load first-to-last and earlier files
+/// take priority over later ones — so the chosen order is preserved verbatim into
+/// the config. An empty selection returns an empty vec (the caller falls back to
+/// a default).
 ///
 /// Discovery can't reach everything (paths outside the scan, files not yet
 /// created), so instead of an inline manual-entry prompt we point the user at
@@ -325,13 +326,13 @@ pub fn pick_env_files(
         .collect();
 
     // Discovery misses paths outside the scan; the picker can't add those, so
-    // tell the user where to add them by hand. The load order is set on the
+    // tell the user where to add them by hand. The priority order is set on the
     // next (Sort) screen when more than one file is chosen.
     println!(
         "Don't see a file? Add it later in {} (environment_files).",
         config_path.display()
     );
-    println!("If you pick more than one, the next screen sets their load order.");
+    println!("If you pick more than one, the next screen sets their priority order.");
     println!();
 
     let checked = MultiSelect::with_theme(&theme)
@@ -344,17 +345,17 @@ pub fn pick_env_files(
         chosen.push((rels[idx].clone(), candidates[idx].keys.clone()));
     }
 
-    // With more than one file, let the user set the load/override priority.
+    // With more than one file, let the user set the override priority.
     // MultiSelect always hands back its selections in list order, so this Sort
     // step is the only way the user can actually express override order.
     if chosen.len() > 1 {
         order_by_priority(&theme, &mut chosen)?;
     }
 
-    // Echo the final load order, numbered so the override chain is obvious.
+    // Echo the final priority order, numbered so the override chain is obvious.
     if !chosen.is_empty() {
         println!();
-        println!("Env files in load order (earlier loads first, later overrides):");
+        println!("Env files in priority order (earlier takes priority, later fills gaps):");
         for (i, (rel, keys)) in chosen.iter().enumerate() {
             let n = i + 1;
             if keys.is_empty() {
@@ -385,7 +386,7 @@ fn order_by_priority(
 
     // `order[new_position] == original_index`.
     let order = Sort::with_theme(theme)
-        .with_prompt("Order by load priority — top loads first, bottom overrides (space grabs, ↑↓ move, enter confirms)")
+        .with_prompt("Order by priority — top wins, bottom fills gaps (space grabs, ↑↓ move, enter confirms)")
         .items(&labels)
         .interact()
         .map_err(|e| CliError::Generate(format!("prompt failed: {e}")))?;

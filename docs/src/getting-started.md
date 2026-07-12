@@ -28,7 +28,7 @@ Navigate to the root level of your repo and run `puffgres init`. This will gener
 
 The generated `puffgres.toml` is the main configuration file for your project. It controls both runtime behavior and environment variable loading. See the [Configuration](./configuration.md) section for a full reference.
 
-Your environment variable paths are set in `puffgres.toml` — later paths override earlier ones. Our config looks like this, which works both in production and in dev:
+Your environment variable paths are set in `puffgres.toml` — earlier paths take priority over later ones. Our config looks like this, which works both in production and in dev:
 
 ```toml
 environment_files = ["./.env", "../.env", "../.env.development"]

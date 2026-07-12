@@ -394,6 +394,14 @@ impl JsTransformer {
                     };
                     msg.push_str(&format!(":\n{truncated}"));
                 }
+                if stderr_snippet.contains("ERR_MODULE_NOT_FOUND")
+                    || stderr_snippet.contains("Cannot find package")
+                {
+                    msg.push_str(
+                        "\n\nhint: a package failed to resolve — run `pnpm install` in your \
+                         puffgres project directory to install transform dependencies.",
+                    );
+                }
 
                 return Err(CoreError::pipeline(msg));
             }
