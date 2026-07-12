@@ -30,7 +30,7 @@ dlq_permanent_max_age_hours = 72
 
 ### `environment_files`
 
-**Required.** List of `.env` file paths to load, relative to the `puffgres.toml` location. Later files override earlier ones. Shell environment variables take highest precedence over all files.
+**Required.** List of `.env` file paths to load, relative to the `puffgres.toml` location. Earlier files take priority over later ones. Shell environment variables take highest precedence over all files.
 
 ### `batch_size`
 

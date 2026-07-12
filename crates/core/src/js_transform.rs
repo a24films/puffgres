@@ -394,6 +394,17 @@ impl JsTransformer {
                     };
                     msg.push_str(&format!(":\n{truncated}"));
                 }
+                if stderr_snippet.contains("ERR_MODULE_NOT_FOUND")
+                    || stderr_snippet.contains("Cannot find package")
+                {
+                    msg.push_str(
+                        "\n\nhint: a package failed to resolve — run `pnpm install` in your \
+                         puffgres project directory to install transform dependencies. \
+                         If puffgres lives inside an existing pnpm workspace, run \
+                         `pnpm install --ignore-workspace` so its own dependencies are installed \
+                         (a plain `pnpm install` installs the workspace and skips them).",
+                    );
+                }
 
                 return Err(CoreError::pipeline(msg));
             }
