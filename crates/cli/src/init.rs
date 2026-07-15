@@ -26,10 +26,8 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
         // Re-init / Docker: puffgres.toml already in cwd, operate in-place
         cwd.to_path_buf()
     } else {
-        // Fresh init: create puffgres/ subdirectory
-        let sub = cwd.join("puffgres");
-        fs::create_dir_all(&sub)?;
-        sub
+        // Fresh init: scaffold into a puffgres/ subdirectory
+        cwd.join("puffgres")
     };
 
     let paths = ProjectPaths::new(root)?;
@@ -37,6 +35,12 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
 
     let interactive = is_interactive();
 
+    if interactive && !config_exists && !confirm_scaffold(&paths)? {
+        println!("Aborted — nothing was created.");
+        return Ok(());
+    }
+
+    fs::create_dir_all(&paths.root)?;
     fs::create_dir_all(&paths.configs)?;
     fs::create_dir_all(&paths.transforms)?;
     ensure_gitignore(cwd, &paths)?;
@@ -81,6 +85,51 @@ pub fn run_in(cwd: &std::path::Path) -> Result<(), CliError> {
     println!();
 
     Ok(())
+}
+
+fn planned_structure(root_label: &str) -> String {
+    format!(
+        "  {root_label}/\n\
+         \x20 ├── puffgres.toml       project config: env files to load, settings\n\
+         \x20 ├── .gitignore\n\
+         \x20 ├── configs/            table sync configs (added by `puffgres new`)\n\
+         \x20 ├── transforms/         TypeScript row transforms\n\
+         \x20 ├── utils/              transform helpers (env loading, embeddings, tokenizing)\n\
+         \x20 ├── package.json        Node deps for transforms (`pnpm install` runs during init)\n\
+         \x20 ├── vitest.config.ts    vitest setup for transform tests\n\
+         \x20 ├── Dockerfile          used to deploy this project\n\
+         \x20 └── .dockerignore\n"
+    )
+}
+
+fn confirm_scaffold(paths: &ProjectPaths) -> Result<bool, CliError> {
+    let root_label = paths
+        .root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| paths.root.display().to_string());
+
+    println!(
+        "puffgres init will create this structure at {}:",
+        paths.root.display()
+    );
+    println!();
+    println!("{}", planned_structure(&root_label));
+    println!(
+        "  puffgres needs a DATABASE_URL and TURBOPUFFER_API_KEY — the next step picks\n\
+         \x20 which .env files to load them from. puffgres stores its own state (applied\n\
+         \x20 configs, checkpoints) in that database, under a `puffgres` schema.\n\
+         \n\
+         \x20 Deploys reference this directory: the Dockerfile builds and ships everything\n\
+         \x20 in it.\n\
+         \n\
+         \x20 Existing files are left untouched."
+    );
+    Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Create these files?")
+        .default(true)
+        .interact()
+        .map_err(|e| CliError::Generate(format!("prompt failed: {e}")))
 }
 
 fn ensure_gitignore(_cwd: &std::path::Path, paths: &ProjectPaths) -> Result<(), CliError> {
@@ -458,6 +507,25 @@ mod tests {
         };
         fs::create_dir_all(root.join("node_modules")).unwrap();
         run_in(cwd)
+    }
+
+    #[test]
+    fn planned_structure_lists_scaffold() {
+        let tree = planned_structure("puffgres");
+        for entry in [
+            "puffgres/",
+            "puffgres.toml",
+            ".gitignore",
+            "configs/",
+            "transforms/",
+            "utils/",
+            "package.json",
+            "vitest.config.ts",
+            "Dockerfile",
+            ".dockerignore",
+        ] {
+            assert!(tree.contains(entry), "missing {entry} in:\n{tree}");
+        }
     }
 
     #[test]

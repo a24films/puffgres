@@ -1,4 +1,6 @@
-# Command Reference
+# Command reference
+
+NOTE: All commands must be run from within the user's generated `puffgres` directory (the folder created after init), or one level up, in order to work.
 
 ## `puffgres init`
 
@@ -38,27 +40,25 @@ Apply configs on the file system into state, so that replication will begin for 
 
 ## `puffgres check [--name <name>]`
 
-Regenerate `schema.ts` from the live database and validate configs against it — referenced tables exist, the id column has a unique index, id types are compatible, and each transform runs successfully on a sample row. Pass `--name <name>` to validate just one config. Never writes to the state database, so it's safe to run before `apply` and good to run in CI.
+Regenerate `schema.ts` from the live database and validate configs against it. Makes sure referenced tables exist, the id column has a unique index, id types are compatible, each transform runs successfully on a sample row, and schemas are correct. Safe to run before `apply` to check, and we run this in CI.  
 
 ## `puffgres remove`
 
-Permanently remove config(s): deletes the turbopuffer namespace, the on-disk config directory, and all state (checkpoints, backfill progress, DLQ). Use `--name <name>` to remove a specific config, `--last` to remove the most recently applied one, or `--all` to remove every applied config. `--force` skips the confirmation prompt (use with `--all`).
+Permanently remove config(s): deletes the turbopuffer namespace, the on-disk config directory, and all state (checkpoints, backfill progress, DLQ). Use `--name <name>` to remove a specific config, `--last` to remove the most recently applied one, or `--all` to remove every applied config. `--force` skips the confirmation prompt (use with `--all`). This should only be used in local dev / when testing, not in production. 
 
 ## `puffgres reset`
 
-Nuke the whole project back to a clean slate. Drops the `puffgres` replication slot (and the `puffgres_debug` debug slot), drops the `puffgres` publication, drops the state schema, and deletes the local project directory. Turbopuffer namespaces are left untouched — use `puffgres remove --all` first if you also want those gone. Prompts for confirmation; pass `--force` to skip it.
-
-Unlike `remove`, `reset` is a recovery command: it works even when the state database is broken (for example a half-applied migration that makes `run` fail with `relation "configs" already exists`) — dropping the state schema is what clears that up. After a reset, run `puffgres init` to start over.
+Nuke the whole project back to a clean slate. Drops the `puffgres` replication slot (and the `puffgres_debug` debug slot), drops the `puffgres` publication, drops the state schema, and deletes the local project directory. turbopuffer namespaces are left untouched — use `puffgres remove --all` first if you also want those gone. We also use this for debugging / puffgres dev. This will also work if the state database is in a weird state, functioning as a total reset. Run `puffgres init` to start over afterwards.
 
 ## `puffgres tombstone [--name <name>]`
 
-Creates a `tombstone.toml` file in a config directory so the CDC loop ignores it (a soft delete that leaves the namespace and its data in place).
+Creates a `tombstone.toml` file in a config directory so the CDC loop ignores it. Effectively a "soft delete" of a namespace. Rather than changing an active config, you should make a new one and tombstone the old one. 
 
-Without `--name`, it prompts you to pick from the applied configs that aren't tombstoned yet. Pass `--name` to skip the prompt (for scripts and agents).
+Without `--name`, puffgres interactively prompts you to pick from the applied configs that aren't tombstoned yet. Pass `--name` to skip the prompt (for scripts and agents).
 
 ## `puffgres generate`
 
-(Re)generate typed `schema.ts` files. If you have a Postgres migration on a table you are watching, you need to run this so that transforms access the correct columns. (`check` also regenerates, so you usually don't need to call this directly.)
+(Re)generate typed `schema.ts` files. If you have a Postgres migration on a table you are watching, you need to run this so that transforms access the correct columns. 
 
 ## `puffgres run`
 
