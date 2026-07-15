@@ -1,20 +1,20 @@
-# Configuration
+# Advanced options
 
 puffgres is configured in two places:
 
-- **`puffgres.toml`** — runtime behavior (batch sizes, retries, timeouts) and which `.env` files to load.
-- **Environment variables** — secrets and connection details (database URL, turbopuffer key), loaded from the `.env` files that `puffgres.toml` points at.
+- **`puffgres.toml`** — this is a commmited file that defines runtime behavior (batch sizes, retries, timeouts) and which `.env` files to load.
+- **Environment variables** — secrets and connection details (database URL, turbopuffer key), loaded from the config above. 
 
 ## `puffgres.toml`
 
-All runtime configuration lives in `puffgres.toml` at the root of your puffgres project. Every field except `environment_files` is optional and has a sensible default.
+This lives at the root of your puffgres project and is created with `puffgres init`. Every field except `environment_files` is optional and has a sensible default. It will look something like this
 
 ```toml
 environment_files = ["./.env", "../.env", "../.env.development"]
 batch_size = 100
 max_retries = 5
 
-# Dead letter queue
+# Dead letter queue 
 dlq_replay_interval = 10
 dlq_replay_batch_size = 50
 dlq_max_retries = 5
@@ -34,7 +34,7 @@ dlq_permanent_max_age_hours = 72
 
 ### `batch_size`
 
-Number of replication events to collect before flushing a batch to turbopuffer. Default: **100**. This is a deliberately low cap to get around rate limits of some of the included providers by default.
+Number of replication events to collect before flushing a batch to turbopuffer. Default: **100**. This is a deliberately low cap so that it doesn't break for users setting this up as a test with low-rate-limit embedding providers. See [the programming model](./programming-model.md#batching-and-retries) for how batching works.
 
 ### `max_retries`
 
@@ -42,7 +42,7 @@ Number of times to retry a failed batch before sending it to the dead letter que
 
 ### Dead letter queue
 
-When a batch fails after `max_retries`, it goes to the dead letter queue (DLQ) so the stream isn't blocked. These knobs control how the DLQ is drained and pruned; the defaults are sensible and most projects never touch them.
+When a batch fails after `max_retries`, it goes to the dead letter queue (DLQ) so the stream isn't blocked. These knobs control how the DLQ is drained and pruned. You probably don't need to change these and can use the defaults. See [the programming model](./programming-model.md#dead-letter-queue) for how the DLQ works.
 
 #### `dlq_replay_interval`
 
@@ -54,7 +54,7 @@ Maximum number of dead letter queue entries to replay per interval. Default: **5
 
 #### `dlq_max_retries`
 
-Number of times to retry a dead letter queue entry before marking it as permanent. Default: **5**.
+Number of times to retry a dead letter queue entry before marking it as permanently failed / unretryable. Default: **5**.
 
 #### `dlq_permanent_max_age_hours`
 
@@ -64,11 +64,11 @@ How long (in hours) to keep permanently-failed dead letter queue entries before 
 
 #### `max_transaction_events`
 
-Maximum number of events allowed in a single Postgres transaction. Transactions exceeding this limit are skipped and logged. Has no effect when `sub_batch_size` is set. Default: **1,000,000**.
+Maximum number of events allowed in a single Postgres transaction. This is a way to deal with transactions that might exaust the memory of the puffgres process all at once. Transactions exceeding this limit are skipped and logged. Has no effect when `sub_batch_size` is set, and we break them up. Default: **1,000,000**.
 
 #### `sub_batch_size`
 
-When set, large transactions are streamed in sub-batches of this size instead of buffering the entire transaction in memory. The pipeline processes chunks as they arrive, giving natural backpressure; the commit finalizes the group. Unset by default (entire transaction is buffered).
+When set, large transactions are streamed in sub-batches of this size instead of buffering the entire transaction in memory. The pipeline processes chunks as they arrive, giving natural backpressure. We don't commit until all of them. Unset by default (entire transaction is buffered). Obviously this interrupts some of our consistency goals, so use with caution. 
 
 ### `transform_timeout_secs`
 
@@ -80,11 +80,9 @@ How often (in seconds) puffgres runs background maintenance — currently prunin
 
 ### `tls_unclean_close_level`
 
-Logging level for unclean TLS shutdowns (missing `close_notify`). Supported values: `error`, `warn`, `silent`. Default: **error**.
+Logging level for unclean TLS shutdowns (missing `close_notify`). Supported values: `error`, `warn`, `silent`. Default: **error**. This was throwing a bunch of unecessary errors for us in Sentry, that weren't severe, so we swapped to `warn`.
 
 ## Environment variables
-
-These are loaded from the `.env` files listed in `environment_files` (shell environment always wins). Keep secrets here, not in `puffgres.toml`.
 
 ### `DATABASE_URL`
 
@@ -102,7 +100,7 @@ TURBOPUFFER_API_KEY="tpuf_abc123..."
 
 ### `TURBOPUFFER_NAMESPACE_PREFIX`
 
-Prefix for all turbopuffer namespaces. If set to `PUFFGRES_PRODUCTION` and you create a namespace called `internal_film`, it saves as `PUFFGRES_PRODUCTION_internal_film`.
+Prefix for all turbopuffer namespaces. If set to `PUFFGRES_PRODUCTION` and you create a namespace called `page`, it saves as `PUFFGRES_PRODUCTION_page`.
 
 ```sh
 TURBOPUFFER_NAMESPACE_PREFIX="PUFFGRES_PRODUCTION"
@@ -116,11 +114,11 @@ Postgres schema (in the same database as `DATABASE_URL`) where puffgres keeps it
 PUFFGRES_STATE_SCHEMA="puffgres"
 ```
 
-Because state lives in the source database, source rollbacks (e.g. PITR restores) naturally roll puffgres' state back with them — backfill cursors and config registrations stay consistent. The trade-off is that `puffgres remove` and `tombstone` require the source DB to be reachable.
+Because state lives in the source database, point in time restores will roll the backfill cursors back and should work. 
 
 ### `OTEL_EXPORTER_OTLP_ENDPOINT`
 
-OpenTelemetry endpoint, if you want observability.
+OpenTelemetry endpoint, if you want observability. We use Sentry for this and it works well. 
 
 ```sh
 OTEL_EXPORTER_OTLP_ENDPOINT="https://a123.ingest.us.sentry.io/api/1234/integration/otlp"
