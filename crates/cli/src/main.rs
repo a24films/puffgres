@@ -155,6 +155,8 @@ async fn run() -> (
         );
     }
 
+    puffgres_cli::observability::install_panic_hook();
+
     // All remaining commands need at least ProjectPaths
     let paths = match ProjectPaths::from_current_dir() {
         Ok(p) => p,
