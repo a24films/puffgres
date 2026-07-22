@@ -180,17 +180,22 @@ pub fn init_fmt_only() {
         .init();
 }
 
+/// Read a panic payload as text. Handles `&str` and `String`; otherwise
+/// returns `"unknown panic"`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
+}
+
 /// Install panic hook that emits tracing::error! so panics
 /// flow through the OTel pipeline.
 pub fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
-            .unwrap_or("unknown panic");
+        let payload = panic_message(info.payload());
         let location = info
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
@@ -279,4 +284,14 @@ fn parse_otlp_headers(raw: &str) -> HashMap<String, String> {
             Some((k.trim().to_string(), v.trim().to_string()))
         })
         .collect()
+}
+
+#[cfg(test)]  // The crash reporter must never itself panic: a non-string payload falls back instead of unwrap/expect.
+
+mod tests {
+    use super::*;
+    #[test]
+    fn panic_message_falls_back_for_non_string_payload() {
+        assert_eq!(panic_message(&42i32), "unknown panic");
+    }
 }
