@@ -24,6 +24,7 @@ dlq_permanent_max_age_hours = 72
 # max_transaction_events = 1000000
 # sub_batch_size = 1000
 # transform_timeout_secs = 30
+# transform_concurrency = 4
 # maintenance_interval_secs = 600
 # tls_unclean_close_level = "error"
 ```
@@ -73,6 +74,10 @@ When set, large transactions are streamed in sub-batches of this size instead of
 ### `transform_timeout_secs`
 
 How long puffgres waits for a single `transform.ts` batch response before killing and respawning the worker process. Default: **30** seconds.
+
+### `transform_concurrency`
+
+Number of concurrent `transform.ts` subprocesses (embedding lanes) per config. Each event's document id is hashed into a lane so edits to the same id stay in arrival order on one subprocess, while distinct ids can run on different subprocesses in parallel. Default: **1** (serial). Raise this for large multi-row batches; without provider-level 429 retry, high values can dead-letter on rate limits.
 
 ### `maintenance_interval_secs`
 

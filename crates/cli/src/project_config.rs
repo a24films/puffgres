@@ -33,6 +33,12 @@ pub struct ProjectConfig {
     pub tls_unclean_close_level: Option<String>,
     #[serde(default)]
     pub transform_timeout_secs: Option<u64>,
+    /// Number of concurrent transform subprocesses (embedding lanes) per config.
+    /// Events are partitioned by document id so same-id edits stay ordered.
+    /// Default = 1 (serial, previous behavior). Set > 1 to speed up large
+    /// batches; pair with provider-level 429 retry to avoid dead-lettering.
+    #[serde(default)]
+    pub transform_concurrency: Option<usize>,
     #[serde(default)]
     pub maintenance_interval_secs: Option<u64>,
 }
@@ -87,6 +93,11 @@ impl ProjectConfig {
                 "transform_timeout_secs must be at least 1 in puffgres.toml".to_string(),
             ));
         }
+        if self.transform_concurrency == Some(0) {
+            return Err(CliError::RunValidation(
+                "transform_concurrency must be at least 1 in puffgres.toml".to_string(),
+            ));
+        }
         if self.maintenance_interval_secs == Some(0) {
             return Err(CliError::RunValidation(
                 "maintenance_interval_secs must be at least 1 in puffgres.toml".to_string(),
@@ -139,6 +150,10 @@ impl ProjectConfig {
         self.transform_timeout_secs.unwrap_or(30)
     }
 
+    pub fn transform_concurrency(&self) -> usize {
+        self.transform_concurrency.unwrap_or(1)
+    }
+
     pub fn maintenance_interval_secs(&self) -> u64 {
         self.maintenance_interval_secs.unwrap_or(600)
     }
@@ -165,6 +180,7 @@ impl Default for ProjectConfig {
             sub_batch_size: None,
             tls_unclean_close_level: None,
             transform_timeout_secs: None,
+            transform_concurrency: None,
             maintenance_interval_secs: None,
         }
     }
@@ -248,6 +264,7 @@ dlq_max_retries = 3
 dlq_permanent_max_age_hours = 48
 tls_unclean_close_level = "warn"
 transform_timeout_secs = 45
+transform_concurrency = 4
 maintenance_interval_secs = 300
 "#;
         let config: ProjectConfig = toml::from_str(toml).unwrap();
@@ -260,6 +277,7 @@ maintenance_interval_secs = 300
         assert_eq!(config.dlq_permanent_max_age_hours(), 48);
         assert_eq!(config.tls_unclean_close_level(), "warn");
         assert_eq!(config.transform_timeout_secs(), 45);
+        assert_eq!(config.transform_concurrency(), 4);
         assert_eq!(config.maintenance_interval_secs(), 300);
     }
 
@@ -377,6 +395,29 @@ maintenance_interval_secs = 300
             err.contains("transform_timeout_secs"),
             "error should mention transform_timeout_secs: {err}"
         );
+    }
+
+    #[test]
+    fn zero_transform_concurrency_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("puffgres.toml");
+        std::fs::write(
+            &path,
+            "environment_files = [\".env\"]\ntransform_concurrency = 0\n",
+        )
+        .unwrap();
+
+        let result = ProjectConfig::load(&path);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "transform_concurrency must be at least 1 in puffgres.toml"
+        );
+    }
+
+    #[test]
+    fn transform_concurrency_defaults_to_one() {
+        let config = ProjectConfig::default();
+        assert_eq!(config.transform_concurrency(), 1);
     }
 
     #[test]

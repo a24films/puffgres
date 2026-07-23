@@ -191,6 +191,7 @@ pub(crate) async fn setup_pipeline(
 
     let pg_client = pg::connect::connect(&env_config.database_url).await?;
     let transform_timeout = Duration::from_secs(project_config.transform_timeout_secs());
+    let transform_concurrency = project_config.transform_concurrency();
 
     // Build transformers after PG connect so we can compute column reindex
     // mappings for configs that specify a column subset/reorder.
@@ -217,17 +218,19 @@ pub(crate) async fn setup_pipeline(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            Box::new(JsTransformer::with_column_reindex_and_timeout(
+            Box::new(JsTransformer::with_column_reindex_timeout_and_concurrency(
                 info.transform_path.clone(),
                 info.id_type.clone(),
                 reindex,
                 transform_timeout,
+                transform_concurrency,
             ))
         } else {
-            Box::new(JsTransformer::new_with_timeout(
+            Box::new(JsTransformer::new_with_timeout_and_concurrency(
                 info.transform_path.clone(),
                 info.id_type.clone(),
                 transform_timeout,
+                transform_concurrency,
             ))
         };
         transformers.insert(name.clone(), transformer);
