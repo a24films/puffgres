@@ -15,9 +15,8 @@ pub enum DocumentId {
 }
 
 impl DocumentId {
-    /// Sticky lane for concurrent embedding: all edits to the same id share a
-    /// lane so they stay in arrival order, while distinct ids fan out across
-    /// `lane_count` workers.
+    /// Lane index in `0..lane_count` for this id. Same id maps to the same lane
+    /// (ordered); different ids may use different lanes (parallel).
     pub fn lane(&self, lane_count: usize) -> usize {
         debug_assert!(lane_count > 0, "lane_count must be >= 1");
         let n = lane_count.max(1);
