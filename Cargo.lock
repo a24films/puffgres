@@ -2461,6 +2461,7 @@ dependencies = [
  "chrono",
  "config",
  "derive_more",
+ "futures",
  "pg",
  "proptest",
  "replication",
