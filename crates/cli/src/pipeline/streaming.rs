@@ -87,7 +87,12 @@ async fn process_config_events(
     events_processed: &mut HashMap<String, u64>,
     dlq_lsn: u64,
 ) -> Result<(), CliError> {
+    let transform_start = std::time::Instant::now();
     let transform_result = transformer.transform_batch(events).await;
+    if let Some(m) = metrics {
+        m.cdc_transform_duration
+            .record(transform_start.elapsed().as_millis() as f64, &[]);
+    }
 
     match transform_result {
         Err(e) => {

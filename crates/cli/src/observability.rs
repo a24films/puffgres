@@ -43,6 +43,7 @@ pub struct Metrics {
     pub cdc_events_processed: Counter<u64>,
     pub cdc_events_failed: Counter<u64>,
     pub cdc_batch_duration: Histogram<f64>,
+    pub cdc_transform_duration: Histogram<f64>,
     pub backfill_rows_processed: Counter<u64>,
     pub backfill_batches_failed: Counter<u64>,
     pub backfill_batch_duration: Histogram<f64>,
@@ -217,6 +218,10 @@ fn build_metrics(meter: &Meter) -> Metrics {
         cdc_batch_duration: meter
             .f64_histogram("puffgres.cdc.batch_duration_ms")
             .with_description("Time to process one CDC batch")
+            .build(),
+        cdc_transform_duration: meter
+            .f64_histogram("puffgres.cdc.transform_duration_ms")
+            .with_description("Time spent in transform_batch for one CDC config batch")
             .build(),
         backfill_rows_processed: meter
             .u64_counter("puffgres.backfill.rows_processed")
