@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::CoreError;
 
 /// A typed document identifier extracted from a row's primary key column.
-#[derive(Debug, Clone, PartialEq, Display, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Display, Serialize, Deserialize)]
 pub enum DocumentId {
     Uint(u64),
     Int(i64),
@@ -15,6 +15,18 @@ pub enum DocumentId {
 }
 
 impl DocumentId {
+    /// Sticky lane for concurrent embedding: all edits to the same id share a
+    /// lane so they stay in arrival order, while distinct ids fan out across
+    /// `lane_count` workers.
+    pub fn lane(&self, lane_count: usize) -> usize {
+        debug_assert!(lane_count > 0, "lane_count must be >= 1");
+        let n = lane_count.max(1);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        (hasher.finish() as usize) % n
+    }
+
     /// Parse a text string into a DocumentId according to the configured IdType.
     /// This is the core parsing logic — used by extract_id (raw WAL bytes) and
     /// from_value (JSON) alike.
@@ -212,6 +224,28 @@ mod tests {
     #[test]
     fn to_string_string() {
         assert_eq!(DocumentId::String("hello".to_string()).to_string(), "hello");
+    }
+
+    #[test]
+    fn lane_is_stable_for_same_id() {
+        let id = DocumentId::Uint(42);
+        assert_eq!(id.lane(8), id.lane(8));
+    }
+
+    #[test]
+    fn lane_stays_in_range() {
+        for n in 1..=16 {
+            for i in 0..200u64 {
+                assert!(DocumentId::Uint(i).lane(n) < n);
+            }
+        }
+    }
+
+    #[test]
+    fn same_id_edits_share_a_lane() {
+        let a = DocumentId::String("doc-1".into());
+        let b = DocumentId::String("doc-1".into());
+        assert_eq!(a.lane(4), b.lane(4));
     }
 
     mod proptests {
