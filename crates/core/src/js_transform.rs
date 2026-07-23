@@ -107,8 +107,7 @@ struct ChildProcess {
 /// Holds one transform subprocess per lane (`concurrency` children).
 /// Events are partitioned by [`DocumentId`] so same-id edits stay on one
 /// child (ordered) while distinct ids can run on different children in
-/// parallel. With `concurrency = 1` this is a single child, matching the
-/// previous serial behavior.
+/// parallel. With concurrency = 1 this is a single child, matching the previous serial behavior
 pub struct JsTransformer {
     script_path: PathBuf,
     id_type: IdType,
@@ -457,15 +456,17 @@ impl JsTransformer {
     }
 
     /// Partition events by document id into lanes, preserving arrival order
-    /// within each lane. Empty lanes are omitted from the result.
+    /// within each lane. Each item is `(original_index, event, id)`. Empty
+    /// lanes are omitted from the result.
     fn partition_lanes<'a>(
         &self,
         events: &'a [(&'a RowEvent, DocumentId)],
-    ) -> Vec<(usize, Vec<(&'a RowEvent, DocumentId)>)> {
+    ) -> Vec<(usize, Vec<(usize, &'a RowEvent, DocumentId)>)> {
         let n = self.concurrency();
-        let mut lanes: Vec<Vec<(&RowEvent, DocumentId)>> = (0..n).map(|_| Vec::new()).collect();
-        for &(event, ref id) in events {
-            lanes[id.lane(n)].push((event, id.clone()));
+        let mut lanes: Vec<Vec<(usize, &RowEvent, DocumentId)>> =
+            (0..n).map(|_| Vec::new()).collect();
+        for (idx, &(event, ref id)) in events.iter().enumerate() {
+            lanes[id.lane(n)].push((idx, event, id.clone()));
         }
         lanes
             .into_iter()
@@ -490,6 +491,35 @@ impl JsTransformer {
                 Err(e)
             }
         }
+    }
+
+    /// Transform one lane, tagging each action with its original batch index.
+    ///
+    /// The script must return exactly one action per input event. That 1:1
+    /// pairing is how we put concurrent lane results back into batch order:
+    /// action i belongs to event i, even if the transform remaps document ids.
+    async fn transform_lane_indexed(
+        &self,
+        lane: usize,
+        events: &[(usize, &RowEvent, DocumentId)],
+    ) -> Result<Vec<(usize, Action)>, CoreError> {
+        let bare: Vec<(&RowEvent, DocumentId)> = events
+            .iter()
+            .map(|(_, event, id)| (*event, id.clone()))
+            .collect();
+        let actions = self.transform_lane(lane, &bare).await?;
+        if actions.len() != events.len() {
+            return Err(CoreError::pipeline(format!(
+                "transform returned {} actions for {} events (need one action per event when transform_concurrency > 1)",
+                actions.len(),
+                events.len()
+            )));
+        }
+        Ok(events
+            .iter()
+            .map(|(idx, _, _)| *idx)
+            .zip(actions)
+            .collect())
     }
 }
 
@@ -524,14 +554,35 @@ impl Transformer for JsTransformer {
             // common for tiny OLTP transactions).
             if partitions.len() == 1 {
                 let (lane, lane_events) = &partitions[0];
-                return self.transform_lane(*lane, lane_events).await;
+                let bare: Vec<(&RowEvent, DocumentId)> = lane_events
+                    .iter()
+                    .map(|(_, event, id)| (*event, id.clone()))
+                    .collect();
+                return self.transform_lane(*lane, &bare).await;
             }
 
-            let futs = partitions.iter().map(|(lane, lane_events)| {
-                self.transform_lane(*lane, lane_events)
-            });
-            let lane_results = futures::future::try_join_all(futs).await?;
-            Ok(lane_results.into_iter().flatten().collect())
+            let futs = partitions
+                .iter()
+                .map(|(lane, lane_events)| self.transform_lane_indexed(*lane, lane_events));
+            // Finish every lane before returning (batch latency follows the
+            // slowest lane; a failure must not cancel another mid round trip).
+            let lane_results = futures::future::join_all(futs).await;
+            let mut indexed = Vec::new();
+            let mut first_err = None;
+            for result in lane_results {
+                match result {
+                    Ok(pairs) => indexed.extend(pairs),
+                    Err(e) if first_err.is_none() => first_err = Some(e),
+                    Err(_) => {}
+                }
+            }
+            if let Some(e) = first_err {
+                return Err(e);
+            }
+            // Restore original batch order so remapped turbopuffer ids still
+            // apply in WAL/event order across lanes.
+            indexed.sort_by_key(|(idx, _)| *idx);
+            Ok(indexed.into_iter().map(|(_, action)| action).collect())
         })
     }
 }
@@ -776,11 +827,13 @@ mod tests {
             .find(|(lane, _)| *lane == lane_42)
             .expect("lane for id 42");
         assert_eq!(part_42.1.len(), 2);
-        assert_eq!(part_42.1[0].1, DocumentId::Uint(42));
-        assert_eq!(part_42.1[1].1, DocumentId::Uint(42));
+        assert_eq!(part_42.1[0].0, 0); // original batch index
+        assert_eq!(part_42.1[1].0, 2);
+        assert_eq!(part_42.1[0].2, DocumentId::Uint(42));
+        assert_eq!(part_42.1[1].2, DocumentId::Uint(42));
         // Arrival order within the lane: insert then update.
-        assert_eq!(part_42.1[0].0.operation, Operation::Insert);
-        assert_eq!(part_42.1[1].0.operation, Operation::Update);
+        assert_eq!(part_42.1[0].1.operation, Operation::Insert);
+        assert_eq!(part_42.1[1].1.operation, Operation::Update);
 
         if lane_42 != lane_99 {
             let part_99 = partitions
@@ -788,8 +841,42 @@ mod tests {
                 .find(|(lane, _)| *lane == lane_99)
                 .expect("lane for id 99");
             assert_eq!(part_99.1.len(), 1);
-            assert_eq!(part_99.1[0].1, DocumentId::Uint(99));
+            assert_eq!(part_99.1[0].0, 1);
+            assert_eq!(part_99.1[0].2, DocumentId::Uint(99));
         }
+    }
+
+    #[test]
+    fn merge_indexed_actions_restores_batch_order() {
+        // Simulate two lanes finishing out of order with remapped targets:
+        // source indices 0 then 1 must win over lane-number concat order.
+        let mut indexed = vec![
+            (1, Action::Delete {
+                id: DocumentId::String("shared".into()),
+            }),
+            (0, Action::Upsert {
+                id: DocumentId::String("shared".into()),
+                document: json!({}),
+                vector: None,
+                distance_metric: None,
+                schema: None,
+            }),
+        ];
+        indexed.sort_by_key(|(idx, _)| *idx);
+        let actions: Vec<_> = indexed.into_iter().map(|(_, a)| a).collect();
+        assert!(matches!(
+            &actions[0],
+            Action::Upsert {
+                id: DocumentId::String(s),
+                ..
+            } if s == "shared"
+        ));
+        assert!(matches!(
+            &actions[1],
+            Action::Delete {
+                id: DocumentId::String(s)
+            } if s == "shared"
+        ));
     }
 
     #[test]
