@@ -245,6 +245,7 @@ async fn run_cdc_inner(
     let puff_client = TurbopufferClient::new(
         env_config.turbopuffer_api_key.clone(),
         env_config.turbopuffer_region.clone(),
+        env_config.turbopuffer_base_url.clone(),
     )?;
 
     // Check backfill status and run backfills
@@ -446,6 +447,7 @@ mod tests {
             database_url,
             turbopuffer_api_key: "fake".to_string(),
             turbopuffer_region: None,
+            turbopuffer_base_url: None,
             turbopuffer_namespace_prefix: None,
             otel_endpoint: None,
             otel_headers: None,

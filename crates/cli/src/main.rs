@@ -205,7 +205,8 @@ async fn run() -> (
             }
         };
         let region = puffgres_cli::env::resolve_env_var("TURBOPUFFER_REGION", &file_vars);
-        let client = match puff::TurbopufferClient::new(api_key, region) {
+        let base_url = puffgres_cli::env::resolve_env_var("TURBOPUFFER_BASE_URL", &file_vars);
+        let client = match puff::TurbopufferClient::new(api_key, region, base_url) {
             Ok(c) => c,
             Err(e) => return (Err(CliError::Debug(e.to_string())), None),
         };

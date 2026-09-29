@@ -8,6 +8,7 @@ pub struct EnvConfig {
     pub database_url: String,
     pub turbopuffer_api_key: String,
     pub turbopuffer_region: Option<String>,
+    pub turbopuffer_base_url: Option<String>,
     pub turbopuffer_namespace_prefix: Option<String>,
     pub otel_endpoint: Option<String>,
     pub otel_headers: Option<String>,
@@ -104,6 +105,7 @@ impl EnvConfig {
         let turbopuffer_api_key = resolve("TURBOPUFFER_API_KEY")
             .ok_or_else(|| CliError::MissingEnvVar("TURBOPUFFER_API_KEY".into()))?;
         let turbopuffer_region = resolve("TURBOPUFFER_REGION");
+        let turbopuffer_base_url = resolve("TURBOPUFFER_BASE_URL");
         let turbopuffer_namespace_prefix = resolve("TURBOPUFFER_NAMESPACE_PREFIX");
         let otel_endpoint = resolve("OTEL_EXPORTER_OTLP_ENDPOINT");
         let otel_headers = resolve("OTEL_EXPORTER_OTLP_HEADERS");
@@ -112,6 +114,7 @@ impl EnvConfig {
             database_url,
             turbopuffer_api_key,
             turbopuffer_region,
+            turbopuffer_base_url,
             turbopuffer_namespace_prefix,
             otel_endpoint,
             otel_headers,
@@ -128,10 +131,11 @@ mod tests {
 
     /// All env vars that EnvConfig::load reads. Each test clears these via
     /// temp_env so that real env vars don't leak between tests.
-    const ENV_KEYS: [&str; 7] = [
+    const ENV_KEYS: [&str; 8] = [
         "DATABASE_URL",
         "TURBOPUFFER_API_KEY",
         "TURBOPUFFER_REGION",
+        "TURBOPUFFER_BASE_URL",
         "TURBOPUFFER_NAMESPACE_PREFIX",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_EXPORTER_OTLP_HEADERS",
@@ -164,6 +168,7 @@ mod tests {
             assert_eq!(cfg.database_url, "postgres://localhost/test");
             assert_eq!(cfg.turbopuffer_api_key, "tp-key-123");
             assert!(cfg.turbopuffer_region.is_none());
+            assert!(cfg.turbopuffer_base_url.is_none());
             assert_eq!(cfg.state_schema, "my_schema");
         });
     }
@@ -210,6 +215,7 @@ mod tests {
                 ("DATABASE_URL", Some("postgres://env")),
                 ("TURBOPUFFER_API_KEY", Some("env-key")),
                 ("TURBOPUFFER_REGION", None),
+                ("TURBOPUFFER_BASE_URL", None),
                 ("TURBOPUFFER_NAMESPACE_PREFIX", None),
                 ("PUFFGRES_STATE_SCHEMA", None),
             ],
@@ -283,12 +289,31 @@ mod tests {
     }
 
     #[test]
+    fn turbopuffer_base_url_loaded() {
+        let dir = TempDir::new().unwrap();
+        let p = write_env(
+            dir.path(),
+            ".env",
+            "DATABASE_URL=postgres://localhost/test\nTURBOPUFFER_API_KEY=key\nTURBOPUFFER_BASE_URL=http://localhost:8080\n",
+        );
+
+        temp_env::with_vars(cleared(), || {
+            let cfg = EnvConfig::load(&[&p]).unwrap();
+            assert_eq!(
+                cfg.turbopuffer_base_url.as_deref(),
+                Some("http://localhost:8080")
+            );
+        });
+    }
+
+    #[test]
     fn no_files_falls_back_to_env_vars() {
         temp_env::with_vars(
             [
                 ("DATABASE_URL", Some("postgres://env-only")),
                 ("TURBOPUFFER_API_KEY", Some("env-only-key")),
                 ("TURBOPUFFER_REGION", None),
+                ("TURBOPUFFER_BASE_URL", None),
                 ("TURBOPUFFER_NAMESPACE_PREFIX", None),
                 ("PUFFGRES_STATE_SCHEMA", None),
             ],

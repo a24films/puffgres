@@ -21,7 +21,7 @@ mod tests {
 
     #[test]
     fn reexports_accessible() {
-        let _client = TurbopufferClient::new("key".to_string(), None).unwrap();
+        let _client = TurbopufferClient::new("key".to_string(), None, None).unwrap();
         let _err = PuffError::Client("test".to_string());
     }
 }
