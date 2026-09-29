@@ -19,10 +19,18 @@ pub struct TurbopufferClient {
 }
 
 impl TurbopufferClient {
-    pub fn new(api_key: String, region: Option<String>) -> Result<Self, PuffError> {
-        let client = match region {
-            Some(r) => rs_puff::Client::with_region(&api_key, &r),
-            None => rs_puff::Client::new(&api_key),
+    /// Build a client. `base_url` points at any turbopuffer-compatible
+    /// endpoint (a proxy, gateway or local mock) and takes precedence over
+    /// `region`.
+    pub fn new(
+        api_key: String,
+        region: Option<String>,
+        base_url: Option<String>,
+    ) -> Result<Self, PuffError> {
+        let client = match (base_url, region) {
+            (Some(url), _) => rs_puff::Client::with_base_url(&api_key, url.trim_end_matches('/')),
+            (None, Some(r)) => rs_puff::Client::with_region(&api_key, &r),
+            (None, None) => rs_puff::Client::new(&api_key),
         };
         Ok(Self { inner: client })
     }
@@ -202,14 +210,54 @@ mod tests {
 
     #[test]
     fn client_construction() {
-        let client = TurbopufferClient::new("test-key".to_string(), None);
+        let client = TurbopufferClient::new("test-key".to_string(), None, None);
         assert!(client.is_ok());
     }
 
     #[test]
     fn client_construction_with_region() {
-        let client = TurbopufferClient::new("test-key".to_string(), Some("us-east-1".to_string()));
+        let client =
+            TurbopufferClient::new("test-key".to_string(), Some("us-east-1".to_string()), None);
         assert!(client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn base_url_routes_requests_to_custom_endpoint() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request_line)
+                .unwrap();
+            let body = r#"{"status":"ok"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            request_line
+        });
+
+        // Trailing slash is trimmed so paths don't double up.
+        let client = TurbopufferClient::new(
+            "test-key".to_string(),
+            Some("us-east-1".to_string()),
+            Some(format!("http://{addr}/")),
+        )
+        .unwrap();
+        client.delete_namespace("docs").await.unwrap();
+
+        let request_line = server.join().unwrap();
+        assert!(
+            request_line.starts_with("DELETE /v2/namespaces/docs "),
+            "unexpected request line: {request_line}"
+        );
     }
 
     #[test]
@@ -251,7 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_batch_rejects_mixed_distance_metrics() {
-        let client = TurbopufferClient::new("test-key".to_string(), None).unwrap();
+        let client = TurbopufferClient::new("test-key".to_string(), None, None).unwrap();
         let actions = vec![
             Action::Upsert {
                 id: DocumentId::Uint(1),

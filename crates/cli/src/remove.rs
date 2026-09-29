@@ -147,6 +147,7 @@ async fn run_remove_saga(
     let puff_client = puff::TurbopufferClient::new(
         env_config.turbopuffer_api_key.clone(),
         env_config.turbopuffer_region.clone(),
+        env_config.turbopuffer_base_url.clone(),
     )
     .map_err(|e| CliError::Remove(format!("failed to create turbopuffer client: {e}")))?;
 

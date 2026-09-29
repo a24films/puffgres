@@ -98,6 +98,14 @@ DATABASE_URL="postgresql://user:pass@host:5432/db"
 TURBOPUFFER_API_KEY="tpuf_abc123..."
 ```
 
+### `TURBOPUFFER_BASE_URL`
+
+Optional. Send turbopuffer API calls to a different endpoint, such as a proxy or gateway that speaks the turbopuffer API, or a local mock in tests. Takes precedence over `TURBOPUFFER_REGION`. `TURBOPUFFER_API_KEY` is sent to this endpoint as the bearer token.
+
+```sh
+TURBOPUFFER_BASE_URL="https://gateway.internal.example.com"
+```
+
 ### `TURBOPUFFER_NAMESPACE_PREFIX`
 
 Prefix for all turbopuffer namespaces. If set to `PUFFGRES_PRODUCTION` and you create a namespace called `page`, it saves as `PUFFGRES_PRODUCTION_page`.

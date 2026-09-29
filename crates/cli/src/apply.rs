@@ -221,6 +221,7 @@ mod tests {
             database_url,
             turbopuffer_api_key: "fake".to_string(),
             turbopuffer_region: None,
+            turbopuffer_base_url: None,
             turbopuffer_namespace_prefix: None,
             otel_endpoint: None,
             otel_headers: None,
