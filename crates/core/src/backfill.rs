@@ -70,7 +70,13 @@ pub struct BackfillResult {
 pub enum BackfillOutcome {
     Completed,
     Cancelled,
-    Failed { error: String, processed: u64 },
+    Failed {
+        error: String,
+        processed: u64,
+        /// Whether a restart could succeed. False for permanent errors such as
+        /// a 400 from turbopuffer, which would fail the same way on every retry.
+        retryable: bool,
+    },
 }
 
 pub trait BackfillSink: Send + Sync {
@@ -103,6 +109,7 @@ pub async fn run_backfill(
                 processed_rows: 0,
                 status: BackfillOutcome::Failed {
                     error: e.to_string(),
+                    retryable: e.is_transient(),
                     processed: 0,
                 },
             };
@@ -115,6 +122,7 @@ pub async fn run_backfill(
             processed_rows: 0,
             status: BackfillOutcome::Failed {
                 error: e.to_string(),
+                retryable: e.is_transient(),
                 processed: 0,
             },
         };
@@ -135,6 +143,7 @@ pub async fn run_backfill(
                 processed_rows: 0,
                 status: BackfillOutcome::Failed {
                     error: e.to_string(),
+                    retryable: e.is_transient(),
                     processed: 0,
                 },
             };
@@ -150,6 +159,7 @@ pub async fn run_backfill(
                 processed_rows: 0,
                 status: BackfillOutcome::Failed {
                     error: e.to_string(),
+                    retryable: e.is_transient(),
                     processed: 0,
                 },
             };
@@ -199,6 +209,7 @@ pub async fn run_backfill(
                     processed_rows: processed,
                     status: BackfillOutcome::Failed {
                         error: e.to_string(),
+                        retryable: e.is_transient(),
                         processed,
                     },
                 };
@@ -220,6 +231,7 @@ pub async fn run_backfill(
                     processed_rows: processed,
                     status: BackfillOutcome::Failed {
                         error: e.to_string(),
+                        retryable: e.is_transient(),
                         processed,
                     },
                 };
@@ -245,6 +257,7 @@ pub async fn run_backfill(
                     processed_rows: processed,
                     status: BackfillOutcome::Failed {
                         error: e.to_string(),
+                        retryable: e.is_transient(),
                         processed,
                     },
                 };
@@ -268,6 +281,7 @@ pub async fn run_backfill(
                     processed_rows: processed,
                     status: BackfillOutcome::Failed {
                         error: e.to_string(),
+                        retryable: e.is_transient(),
                         processed,
                     },
                 };
@@ -307,6 +321,7 @@ pub async fn run_backfill(
                                 processed_rows: processed,
                                 status: BackfillOutcome::Failed {
                                     error: e.to_string(),
+                                    retryable: e.is_transient(),
                                     processed,
                                 },
                             };

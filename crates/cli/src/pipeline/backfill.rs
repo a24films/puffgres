@@ -147,11 +147,14 @@ pub(crate) async fn check_and_run_backfills(
                     tracing::info!(config = %config.name, "backfill cancelled");
                     return Ok(watermark_lsns);
                 }
-                BackfillOutcome::Failed { error, .. } => {
-                    return Err(CliError::Run(format!(
-                        "backfill failed for {}: {}",
-                        config.name, error
-                    )));
+                BackfillOutcome::Failed {
+                    error, retryable, ..
+                } => {
+                    return Err(CliError::Backfill {
+                        config: config.name.clone(),
+                        message: error,
+                        retryable,
+                    });
                 }
             }
         }

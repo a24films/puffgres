@@ -50,6 +50,13 @@ pub enum CliError {
     #[error("{0}")]
     RunValidation(String),
 
+    #[error("backfill failed for {config}: {message}")]
+    Backfill {
+        config: String,
+        message: String,
+        retryable: bool,
+    },
+
     #[error("{0}")]
     Tombstone(String),
 
@@ -95,6 +102,7 @@ impl CliError {
     pub fn is_retryable(&self) -> bool {
         match self {
             CliError::Run(_) => true,
+            CliError::Backfill { retryable, .. } => *retryable,
             CliError::State(e) => e.is_transient(),
             CliError::Pg(e) => e.is_transient(),
             CliError::Replication(e) => e.is_transient(),
@@ -135,5 +143,26 @@ mod tests {
             "connection reset by peer".into(),
         ));
         assert!(!err.is_tls_unclean_close());
+    }
+
+    #[test]
+    fn backfill_error_keeps_retryability() {
+        let permanent = CliError::Backfill {
+            config: "cf_contract_chunk".into(),
+            message: "api error (status 400)".into(),
+            retryable: false,
+        };
+        assert!(!permanent.is_retryable());
+        assert_eq!(
+            permanent.to_string(),
+            "backfill failed for cf_contract_chunk: api error (status 400)"
+        );
+
+        let transient = CliError::Backfill {
+            config: "c".into(),
+            message: "connection reset".into(),
+            retryable: true,
+        };
+        assert!(transient.is_retryable());
     }
 }
