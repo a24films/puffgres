@@ -219,7 +219,15 @@ async fn sink_failure_exhausts_retries() {
     )
     .await;
 
-    assert!(matches!(result.status, BackfillOutcome::Failed { .. }));
+    // A permanent sink error must not be marked retryable, or the CDC loop
+    // restarts the backfill forever against the same bad batch.
+    assert!(matches!(
+        result.status,
+        BackfillOutcome::Failed {
+            retryable: false,
+            ..
+        }
+    ));
     assert_eq!(result.processed_rows, 0);
 }
 

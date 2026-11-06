@@ -31,17 +31,27 @@ pub async fn dry_run_transform(
 
     // Validate output
     for action in &actions {
-        if let Action::Upsert {
+        let Action::Upsert {
             vector,
             distance_metric,
             ..
         } = action
-            && vector.is_some()
-            && distance_metric.is_none()
-        {
-            return Err("transform returns a vector but no distance_metric — \
+        else {
+            continue;
+        };
+        match distance_metric.as_deref() {
+            Some(m) if !puff::client::is_valid_distance_metric(m) => {
+                return Err(format!(
+                    "transform returns distance_metric {m:?} — \
+                     expected \"cosine_distance\" or \"euclidean_squared\""
+                ));
+            }
+            None if vector.is_some() => {
+                return Err("transform returns a vector but no distance_metric — \
                      turbopuffer requires distance_metric for namespaces with vectors"
-                .to_string());
+                    .to_string());
+            }
+            _ => {}
         }
     }
 
